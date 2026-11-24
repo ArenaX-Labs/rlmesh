@@ -88,8 +88,6 @@ fn episode_seed_survives_completion_until_the_lane_rolls() {
     state.start_episodes_at(&[0], vec!["ep-a".to_string()], false, &[0]);
     state.note_episode_seeds(&["ep-a".to_string()], &[7]);
 
-    // Completion emit reads the seed non-destructively: the same iteration
-    // still builds the terminal predict for this episode id.
     state.complete_episode("ep-a");
     let request = state.predict_request_at(
         &[0],
@@ -99,7 +97,6 @@ fn episode_seed_survives_completion_until_the_lane_rolls() {
     );
     assert_eq!(request.route.episodes[0].seed, Some(7));
 
-    // The lane rolling to a fresh id is what retires the seed.
     state.observe_episode_ids_at(&[0], vec!["ep-b".to_string()], &[Some(1)]);
     assert_eq!(state.seed_for_episode("ep-a"), None);
 }
@@ -110,15 +107,8 @@ fn trial_cursor_walks_forward_across_whole_and_partial_resets() {
     spec.num_envs = 2;
     let mut state = RouteState::new(&spec);
 
-    // A whole-vector reset opens the first window of num_envs ordinals, aligned
-    // to the lanes it restarts.
     assert_eq!(state.claim_trial_indices(100, 2), vec![100, 101]);
-    // A partial reset claims one ordinal per restarted lane from the same
-    // cursor, so no two episodes on the route share an ordinal.
     assert_eq!(state.claim_trial_indices(100, 1), vec![102]);
-    // The cursor only ever walks forward, so the ordinals a route hands out are
-    // distinct and contiguous from its base (the window rule's other half -- a
-    // window is the max_episodes budget -- is pinned in tests/driver.rs).
     assert_eq!(state.claim_trial_indices(100, 2), vec![103, 104]);
 }
 

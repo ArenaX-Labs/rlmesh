@@ -1,60 +1,4 @@
-"""Describe an env/model as a versioned, Rust-standardized metadata envelope.
-
-``rlmesh.describe(EnvOrModel)`` (or ``python -m rlmesh._describe --env pkg:Env``)
-emits the single, self-contained JSON artifact a managed service reads to present,
-validate, sweep, and list an uploaded env or model. It is generated once
-(build/generate-time -- constructing the env to read its spaces is allowed) and is
-forward-compatible with an OCI image label baked later.
-
-Two layers:
-
-* **This Python module is a gatherer.** It does only the irreducibly-Python work:
-  resolve the target, reflect ``make``/``load``'s signature, run the author's
-  ``enumerate_*`` classmethods, and construct the env to read its obs/action
-  spaces. It assembles those raw pieces into one dict.
-* **Rust owns the format.** :func:`rlmesh._rlmesh.describe_envelope_normalize`
-  (``rlmesh-adapters``) stamps the ``schema_version``, validates the wrapper +
-  the env/model invariant, and re-serializes the whole tree through one
-  ``serde_json`` pass -- so the bytes are identical across Python versions and
-  any future native (C++/TS) producer that hands over the same pieces.
-
-Emitted shape (env)::
-
-    {
-        "schema_version": 1,            # Rust-stamped
-        "kind": "env",                  # or "model"
-        "target": {"entrypoint", "qualname"},
-        "generated_at": "...",          # only if the caller supplies one
-        "env_spec": {"observation_space", "action_space"[, "num_envs"]} | {"error"},
-        "env_tags": {...} | null,
-        "env_contracts": {"discriminants", "branches"},   # only if tag_params
-        "params": {"param_spec", "signature_tier"},
-        "variants": {"catalog", "variations"[, "*_error"]},
-        "runtime": {...},               # PeerInfo: python/framework versions, os, arch,
-                                        # plus the edition handshake (below)
-    }
-
-``runtime`` carries what the served peer's handshake will advertise, under the
-handshake's own field names: ``protocol_generation`` (the wire generation),
-``session_wire_revision`` (the 0.2 pre-release wire revision: two builds on
-different revisions cannot talk; absent before the field),
-``supported_workflow_editions`` (every edition this build can drive, newest
-first) and ``preferred_workflow_edition`` (the edition the class declares, or
-this build's newest). A platform reads them to decide, before it runs the
-image, whether its runtime can talk to it and shares an edition with it.
-
-A model envelope drops ``env_spec``/``env_tags`` and carries ``model_spec``
-plus ``corners`` (the predict corners the class defines, e.g.
-``["predict_chunk_batch"]`` -- the introspected source of truth for batching
-support) instead. Every gathered piece is best-effort: a failure to build
-the env, read a spec, or run an enumeration becomes an ``"error"`` badge, never a
-crash -- the artifact is always emitted.
-
-The module doubles as the pre-push checker behind ``rlmesh check`` /
-``rlmesh check-image`` / ``rlmesh describe``: :func:`check_target` runs the
-class-level checks on a describe envelope and :func:`check_labels` the same
-checks on a built image's labels, both reporting into a :class:`CheckReport`.
-"""
+"""Describe an env/model as a versioned, Rust-standardized metadata envelope."""
 
 from __future__ import annotations
 
@@ -136,8 +80,6 @@ def describe_json(
         obj = resolve_entrypoint(obj, label="describe entrypoint")
     if _is_empty_lane_list(served_env):
         raise ValueError("served_env must hold at least one lane env, got []")
-    # A wrapping rlmesh.Model(policy) describes its policy's declarations, as
-    # describe(policy) would; only its spec is its own.
     declared = _declaring_object(obj)
     kind, _ = _kind_and_method(obj, kind)
     kind, _ = _kind_and_method(obj, kind)
@@ -145,22 +87,13 @@ def describe_json(
     pieces = _gather(
         declared, method, kind, entrypoint, served_env, workflow_edition, spec_of=obj
     )
-    # default=repr keeps describe total: an exotic catalog/param value renders as
-    # a string rather than crashing the artifact; allow_nan=False matches the Rust
-    # codec's RFC-8259 strictness (NaN/Infinity are rejected, not silently passed).
+    # default=repr keeps describe total; allow_nan=False matches the Rust codec's RFC 8259 strictness.
     return describe_envelope_normalize(
         kind, json.dumps(_finite(pieces), allow_nan=False, default=repr), generated_at
     )
 
 
 def _finite(value: object) -> object:
-    """Map non-finite floats to ``None`` so the envelope stays serializable.
-
-    A half-bounded Box (CartPole's ``low``/``high``) carries ``inf`` leaves, and
-    ``allow_nan=False`` would reject them. ``null`` is serde_json's own rendering
-    of a non-finite ``f64``, so the Rust normalizer round-trips it unchanged; in a
-    Box edge it reads as "unbounded on this edge".
-    """
     if isinstance(value, float) and not math.isfinite(value):
         return None
     if isinstance(value, dict):
@@ -182,11 +115,6 @@ def _gather(
     *,
     spec_of: object | None = None,
 ) -> dict[str, Any]:
-    """Assemble the per-language raw pieces; Rust owns the wrapper + serialization.
-
-    ``spec_of`` is the object whose ``spec`` a model envelope reports (a
-    wrapping ``Model``); every type-level item is ``obj``'s.
-    """
     spec, target, enumerate_fn, catalog_fn = _resolve_target(obj, method)
     pieces: dict[str, Any] = {
         "target": _target(obj, entrypoint),
@@ -220,13 +148,7 @@ def _gather(
 
 
 def _declaring_object(obj: object) -> object:
-    """The object whose type carries ``obj``'s declarations.
-
-    A wrapping ``rlmesh.Model(policy)`` declares through its policy (its type),
-    or through the bare predict callable it wraps; a ``Model`` subclass, and
-    anything else, through itself.
-    """
-    from ._models.base import ModelBase  # lazy: the classmethods import this module
+    from ._models.base import ModelBase
 
     if not _is_model_instance(obj, ModelBase):
         return obj
@@ -249,13 +171,7 @@ def _is_empty_lane_list(served_env: object) -> bool:
 
 
 def _declared_native_chunk(obj: object, corners: Sequence[str]) -> int | None:
-    """The model's static native chunk length K, read from the type.
-
-    Never an instance attribute: a K that ``load()`` set from a checkpoint is
-    invisible here on purpose, since describe reads only what the type
-    declares. A declaration the model's construction or resolve would refuse
-    is refused here too, rather than recorded.
-    """
+    """The model's static native chunk length K, read from the type."""
     cls = obj if isinstance(obj, type) or inspect.isroutine(obj) else type(obj)
     native_chunk = getattr(cls, "native_chunk", None)
     if not isinstance(native_chunk, int) or isinstance(native_chunk, bool):
@@ -274,14 +190,7 @@ def _declared_native_chunk(obj: object, corners: Sequence[str]) -> int | None:
 
 
 def _corners(obj: object) -> list[str]:
-    """The predict corners the model class actually defines.
-
-    Introspected, not declared, so a packaging claim like ``supportsBatching``
-    can be checked against the code that ships. Identity-compared against
-    ``ModelBase`` (imported lazily -- a module-level import would cycle through
-    the describe classmethods); a duck-typed policy falls back to attribute
-    presence.
-    """
+    """The predict corners the model class actually defines."""
     from ._models.base import PREDICT_CORNERS, ModelBase
 
     cls: type = obj if isinstance(obj, type) else type(obj)
@@ -296,22 +205,11 @@ def _corners(obj: object) -> list[str]:
 
 
 def _kind_and_method(obj: object, kind: str | None) -> tuple[str, str]:
-    """Resolve (kind, construction-method), auto-detecting env vs model.
-
-    An explicit ``kind`` is honored (the classmethods pass it, and it is the only
-    way to classify a bare callable -- preserving the old ``--env``/``--model``
-    capability). Otherwise duck-type on the distinctive method: a model has
-    ``predict``, a factory has ``make``. Deliberately attribute-based, not
-    ``issubclass(EnvFactory/Model)`` -- importing those bases here would form an
-    ``_authoring``/``_models`` <-> ``describe`` import cycle (the classmethods
-    import this module).
-    """
+    """Resolve (kind, construction-method), auto-detecting env vs model."""
     cls = obj if isinstance(obj, type) else type(obj)
     if kind is not None:
         if kind not in ("env", "model"):
             raise ValueError(f"kind must be 'env' or 'model', got {kind!r}")
-        # The object fixes its kind; an explicit one is a cross-check. A bare
-        # callable (neither make nor predict) takes the kind it is given.
         has_make, has_predict = hasattr(cls, "make"), hasattr(cls, "predict")
         if (kind == "env" and not has_make and has_predict) or (
             kind == "model" and not has_predict and has_make
@@ -332,13 +230,12 @@ def _kind_and_method(obj: object, kind: str | None) -> tuple[str, str]:
 
 
 def _target(obj: object, entrypoint: str | None) -> dict[str, Any]:
-    """Self-identity so the artifact maps back to its source in a dashboard."""
     if inspect.isclass(obj):
         ref: Any = obj
     elif inspect.isroutine(obj):
-        ref = obj  # a bare function/lambda carries its own module/qualname
+        ref = obj
     else:
-        ref = type(obj)  # a factory/model instance
+        ref = type(obj)
     module = getattr(ref, "__module__", None) or "?"
     name = (
         getattr(ref, "__qualname__", None)
@@ -354,12 +251,7 @@ def _variants(
     spec: Any,
     target: Callable[..., object],
 ) -> dict[str, Any]:
-    """Group the author's enumerate_params axes + enumerate_variants catalog.
-
-    Each is best-effort and badged on failure (running author code must not crash
-    describe), kept as distinct sub-keys -- axes are independent sweep dimensions,
-    the catalog is dependent named entries.
-    """
+    """Group the author's enumerate_params axes + enumerate_variants catalog."""
     out: dict[str, Any] = {}
     if enumerate_fn is not None:
         try:
@@ -375,7 +267,6 @@ def _variants(
 
 
 def _env_tags(obj: object) -> Any:
-    """Serialize the factory's ``tags`` (the obs/action contract); null/badged."""
     cls = obj if isinstance(obj, type) else type(obj)
     tags = getattr(cls, "tags", None)
     return None if tags is None else _env_tags_dict(tags)
@@ -395,19 +286,7 @@ def _env_contracts(
     catalog_fn: Callable[..., Any] | None,
     pieces: Mapping[str, Any],
 ) -> dict[str, Any] | None:
-    """The factory's contract-branch table, or ``None`` for a single-contract env.
-
-    Self-describing on purpose: ``discriminants`` names the axes and every branch
-    carries its *full* binding plus the ``env_tags``/``env_spec`` that binding
-    produces, so a reader that never runs the author's code can say which branch a
-    contract belongs to (and a static check can name the one it validated).
-
-    The default branch (``default: true``) is not a copy: its ``env_tags`` and
-    ``env_spec`` are the very objects the envelope's top-level ``env_tags`` and
-    ``env_spec`` carry, so the branch-blind view and the table can never drift.
-    A factory with no ``tag_params`` emits no table at all, which is what keeps
-    every already-published envelope byte-identical.
-    """
+    """The factory's contract-branch table, or ``None`` for a single-contract env."""
     cls = cast("Any", obj if isinstance(obj, type) else type(obj))
     discriminants: tuple[str, ...] = getattr(cls, "tag_params", ())
     if not discriminants:
@@ -446,17 +325,9 @@ def _branch_tags(cls: Any, binding: Mapping[str, Any]) -> Any:
 
 
 def _model_spec(obj: object) -> Any:
-    """Serialize the model's ``ModelSpec``; read the instance's resolved spec.
+    """Serialize the model's ``ModelSpec``; read the instance's resolved spec."""
+    from .adapters.specs import ModelSpec
 
-    A class-level read is ``None`` for wrapped/kwarg specs, so prefer the instance
-    attribute when given one. Non-``ModelSpec`` content (``NO_ADAPTER``/``None``)
-    serializes as null; ``to_dict`` raising on an un-publishable custom input is
-    badged, not fatal.
-    """
-    from .adapters.specs import ModelSpec  # lazy: avoid a heavy import at module load
-
-    # getattr resolves the instance's spec (set at load/__init__) or the class
-    # attribute -- both are the right read for their input.
     spec = getattr(obj, "spec", None)
     if not isinstance(spec, ModelSpec):
         return None
@@ -475,19 +346,7 @@ def _env_spec(
     *,
     served_env: object | None = None,
 ) -> dict[str, Any]:
-    """Construct one representative env and serialize its obs/action spaces.
-
-    A ``served_env`` (or the first lane of a list of them) is read as-is and left
-    open; it is the caller's env, not a throwaway built here.
-
-    One shape per *contract branch*: a factory's variants share spaces, but a
-    declared ``tag_params`` discriminant may move them, so ``branch`` binds one
-    discriminant combination and each branch is captured separately (see
-    :func:`_env_contracts`). The whole capture is best-effort -- a
-    constructor/``make`` that needs unavailable args, a missing GPU, or any
-    failure becomes ``{"error":...}`` so the rest of the envelope still ships
-    (e.g. a no-GPU OCI build).
-    """
+    """Construct one representative env and serialize its obs/action spaces."""
     env: Any
     close: Callable[[], object]
     if served_env is not None:
@@ -499,7 +358,6 @@ def _env_spec(
         except Exception as exc:
             return _badge(exc)
     try:
-        # Vector envs expose single_* (+ num_envs), not observation_space/action_space.
         if _is_vector_env(env):
             return {
                 "observation_space": _space_dict(env.single_observation_space),
@@ -517,24 +375,12 @@ def _env_spec(
 
 
 def _badge(exc: BaseException) -> dict[str, str]:
-    """An ``env_spec`` error badge: the message plus the exception's type name.
-
-    The type is what lets a pre-build check tell "this machine cannot build
-    it" (an ``ImportError`` for a simulator only the image has, a CUDA
-    error) from "it is broken" (a ``TypeError`` in ``make``); see
-    :func:`_needs_local_resources`.
-    """
+    """An ``env_spec`` error badge: the message plus the exception's type name."""
     return {"error": str(exc), "error_type": type(exc).__name__}
 
 
 def _is_vector_env(env: object) -> bool:
-    """Whether an env exposes the vector shape (``single_observation_space``).
-
-    Probes the type and the instance ``__dict__`` rather than a plain ``hasattr``,
-    so a gymnasium env does not trigger its deprecated wrapper-attribute
-    forwarding warning just because we probed (mirrors
-    :func:`rlmesh._models._connect._native_contract`).
-    """
+    """Whether an env exposes the vector shape (``single_observation_space``)."""
     return getattr(type(env), "single_observation_space", None) is not None or (
         "single_observation_space" in getattr(env, "__dict__", {})
     )
@@ -547,13 +393,12 @@ def _build_env(
     catalog_fn: Callable[..., Any] | None,
     branch: Mapping[str, Any] | None = None,
 ) -> tuple[Any, Callable[[], object]]:
-    """Build a representative env from a class, instance, or bare make-callable."""
     factory = obj() if isinstance(obj, type) else obj
     prepare = getattr(factory, "prepare", None)
     if callable(prepare):
         prepare()
     make = getattr(factory, "make", None)
-    builder = make if callable(make) else factory  # bare make-callable
+    builder = make if callable(make) else factory
     env = cast("Callable[..., Any]", builder)(
         **_make_kwargs(spec, target, catalog_fn, branch)
     )
@@ -569,12 +414,7 @@ def _make_kwargs(
     catalog_fn: Callable[..., Any] | None,
     branch: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Pick ``make`` kwargs: declared defaults, else the first variant's params.
-
-    ``branch`` pins the contract discriminants and always wins: a branch's spaces
-    must be read off an env built for that branch, never off a variant that
-    happens to name the same key.
-    """
+    """Pick ``make`` kwargs: declared defaults, else the first variant's params."""
     branch = branch or {}
     try:
         return dict(resolve(spec, target, branch))
@@ -597,12 +437,7 @@ def _make_kwargs(
 
 
 def _space_dict(space: object) -> dict[str, object]:
-    """Serialize a space via the Rust-canonical ``spec_to_json`` codec.
-
-    The same Rust function renders a native (C/C++) host's spaces, so both
-    producers embed byte-identical space JSON.
-    """
-    from .spaces import Space, from_gymnasium_space  # lazy: keep module import light
+    from .spaces import Space, from_gymnasium_space
     from .spaces._internals import spec_to_json
 
     spec = space.spec if isinstance(space, Space) else from_gymnasium_space(space).spec
@@ -610,29 +445,13 @@ def _space_dict(space: object) -> dict[str, object]:
 
 
 def _collect_peer_info() -> Mapping[str, Any]:
-    from ._peer_info import collect_peer_info  # lazy
+    from ._peer_info import collect_peer_info
 
     return collect_peer_info()
 
 
 def _workflow_offer(obj: object, resolved: str | None = None) -> dict[str, Any]:
-    """The edition handshake a peer serving ``obj`` will send, by its wire names.
-
-    ``protocol_generation``, ``session_wire_revision`` and
-    ``supported_workflow_editions`` come from the native build the same way
-    the Rust handshake builder reads them (there is no second list). ``preferred_workflow_edition`` is the declaration the
-    server hosting ``obj`` sends: ``resolved`` when a server already settled it
-    (``""`` when it settled on none), else what
-    :func:`rlmesh._editions.resolve_workflow_edition` settles on for the class
-    -- its ``workflow_edition`` declaration, ``RLMESH_WORKFLOW_EDITION``, or
-    ``[tool.rlmesh]`` -- and in either case this build's newest edition when
-    nothing is declared, exactly as the handshake spells it. A declaration
-    this build cannot run is not fatal here (describe stays total); it is
-    recorded as ``workflow_edition_error`` and ``rlmesh check`` fails on it.
-    ``workflow_edition_floats`` is ``true`` when nothing declares one (and an
-    empty ``RLMESH_WORKFLOW_EDITION`` does not float deliberately), so the
-    checks can say where to pin it; it is absent otherwise.
-    """
+    """The edition handshake a peer serving ``obj`` will send, by its wire names."""
     from ._editions import WORKFLOW_EDITION_ENV_VAR, resolve_declaration
     from ._load_native import load_native
 
@@ -650,7 +469,6 @@ def _workflow_offer(obj: object, resolved: str | None = None) -> dict[str, Any]:
     floats = False
     if resolved is not None:
         preferred = resolved.strip() or None
-        # A server that settled on nothing floats unless the variable says so.
         floats = preferred is None and os.environ.get(WORKFLOW_EDITION_ENV_VAR) is None
     else:
         try:
@@ -670,13 +488,7 @@ def _resolve_target(
 ) -> tuple[
     Any, Callable[..., object], Callable[..., Any] | None, Callable[..., Any] | None
 ]:
-    """Find (param_spec, signature target, enumerate_params, enumerate_variants).
-
-    For a factory/model *class*, the construction method is bound to a bare
-    instance via ``object.__new__`` so its signature reflects without running
-    ``__init__`` -- describing a model must not load weights. A bare make/predict
-    callable has no declared params and is described directly.
-    """
+    """Find (param_spec, signature target, enumerate_params, enumerate_variants)."""
     if isinstance(obj, type):
         spec = getattr(obj, "params", None)
         target = _signature_target(obj, method)
@@ -689,19 +501,11 @@ def _resolve_target(
         catalog_fn = _enumerate_variants(type(obj))
 
     if not callable(target):
-        # A bare make-env / predict callable: no params surface, describe as-is.
         return None, _as_callable(obj), None, None
     return spec, target, enumerate_fn, catalog_fn
 
 
 def _signature_target(cls: type, method: str) -> Callable[..., object] | None:
-    """Return ``cls.method`` for signature reflection, without running __init__.
-
-    Prefer a bare instance (``object.__new__``) so the bound method's signature
-    drops ``self``; a class that forbids that -- a custom ``__new__`` needing args,
-    or a C-extension type -- falls back to the unbound function with ``self`` bound
-    off via ``partial``, so describe still emits a schema instead of crashing.
-    """
     import functools
 
     try:
@@ -731,17 +535,7 @@ def _enumerate_variants(cls: type) -> Callable[..., Any] | None:
 def _catalog(
     raw: object, spec: Any, target: Callable[..., object]
 ) -> list[dict[str, object]]:
-    """Normalize ``enumerate_variants()`` to a list of catalog entries.
-
-    Each entry is nested ``{"id", "params", "metadata"}`` -- never flattened, so an
-    open metadata key cannot clobber the structural ``id``/``params`` and a future
-    top-level field stays unambiguous. ``id`` must be a unique, non-empty string: a
-    duplicate would silently collapse a by-id spawn map, so it is rejected here (the
-    caller turns the raise into ``catalog_error``, keeping describe total). Each
-    variant's ``params`` is best-effort validated against the ParamSpec + ``make``
-    signature off-GPU; an unbuildable variant gets an ``"error"`` key but keeps its
-    params verbatim, so the catalog never silently drops or rewrites an entry.
-    """
+    """Normalize ``enumerate_variants()`` to a list of catalog entries."""
     out: list[dict[str, object]] = []
     seen: set[str] = set()
     for item in cast("Iterable[object]", raw):
@@ -768,9 +562,8 @@ def _catalog(
             "metadata": dict(meta),
         }
         try:
-            # Off-GPU buildability lint: run the same gate as a real bind, but keep
-            # the author's params verbatim (resolve() fills free-dial defaults, which
-            # a variant must not advertise -- it binds only identity params).
+            # Run the same gate as a real bind but keep the author's params verbatim: resolve() fills
+            # free-dial defaults, which a variant must not advertise.
             resolve(spec, target, cast("Mapping[str, object]", params))
         except Exception as exc:
             entry["error"] = str(exc)
@@ -779,12 +572,7 @@ def _catalog(
 
 
 def _variations(raw: object) -> dict[str, list[object]]:
-    """Normalize ``enumerate_params()`` to ``{axis: [values]}``.
-
-    Kept as independent axes -- the Cartesian product is intentionally *not*
-    materialized here, so a dependent ``(suite, task)`` space never emits invalid
-    combinations; the sweep planner expands what it knows is independent.
-    """
+    """Normalize ``enumerate_params()`` to ``{axis: [values]}``."""
     if not isinstance(raw, Mapping):
         raise TypeError("enumerate_params() must return a mapping of axis -> values")
     axes = cast("Mapping[object, Sequence[object]]", raw)
@@ -792,12 +580,6 @@ def _variations(raw: object) -> dict[str, list[object]]:
 
 
 def _axis_values(values: object) -> list[object]:
-    """Normalize one sweep axis to a list, treating a bare ``str`` as one value.
-
-    A ``str`` satisfies ``Sequence`` but ``list("pick-place")`` explodes it into
-    characters, emitting a dozen bogus single-char sweep values; guard it the same
-    way :func:`rlmesh._sandbox.session.string_sequence` guards package lists.
-    """
     if isinstance(values, str):
         return [values]
     return list(cast("Sequence[object]", values))
@@ -809,23 +591,14 @@ def _as_callable(obj: object) -> Callable[..., object]:
     return obj
 
 
-# ---- pre-push checks (rlmesh check / check-image) --------------------------
-
-#: OCI config labels used to validate a built image.
 DESCRIBE_LABEL = "dev.rlmesh.describe"
 PACKAGE_LABEL = "dev.rlmesh.package"
 
-#: Checkpoint names must be valid workload references
-#: (DNS label); mirror its pattern so the failure happens before the push.
 _CHECKPOINT_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 
-#: A checkpoint's ``entrypoint``: the ``module:Class`` ``rlmesh.serve`` loads
-#: for it (``RLMESH_SERVE_TARGET``), so one image serves every checkpoint.
 _ENTRYPOINT = re.compile(r"^[A-Za-z_][\w.]*:[A-Za-z_][\w.]*$")
 
-#: Exception types that always mean the env is broken, never that this machine
-#: lacks something: a ``TypeError`` in ``make`` is a bug wherever it runs, and
-#: a generic ``FileNotFoundError`` is an asset the author forgot, not a driver.
+#: Exception types that always mean the env is broken, never that this machine lacks something.
 _NEVER_SOFTENED = frozenset(
     {
         "TypeError",
@@ -840,11 +613,9 @@ _NEVER_SOFTENED = frozenset(
         "SyntaxError",
     }
 )
-#: Exception types that mean a dependency is present only in the image: a lazy
-#: simulator import inside ``make`` cannot be satisfied on the host.
+#: Exception types that mean a dependency is present only in the image.
 _SOFTENED_TYPES = frozenset({"ImportError", "ModuleNotFoundError"})
-#: Whole-word hints (so ``egl`` does not match ``illegal``) that an error came
-#: from a GPU, a driver, or a display this machine does not have.
+#: Whole-word hints (so ``egl`` does not match ``illegal``) that an error came from a GPU, driver or display.
 _RESOURCE_WORDS = re.compile(
     r"\b(cuda|cudnn|nvrtc|nccl|gpu|nvidia|driver|display|egl|opengl|vulkan|x11|xcb|"
     r"libgl|libcuda|no such device|shared object file)\b",
@@ -908,7 +679,6 @@ def check_target(target: object, *, kind: str | None = None) -> CheckReport:
         return report
     _check_envelope(envelope, report, "", baked=False)
     if envelope.get("kind") == "model" and _declares_no_adapter(target):
-        # The envelope carries no spec either way; the class says it on purpose.
         report.warnings[:] = [
             w for w in report.warnings if not w.startswith("model_spec: ")
         ]
@@ -919,7 +689,6 @@ def check_target(target: object, *, kind: str | None = None) -> CheckReport:
 
 
 def _declares_no_adapter(target: object) -> bool:
-    """Whether the model ``target`` names sets ``spec = NO_ADAPTER`` on its class."""
     from ._models._adapter_mode import NO_ADAPTER
 
     if isinstance(target, str):
@@ -975,14 +744,7 @@ def _check_describe(raw: str, report: CheckReport) -> None:
 def _check_envelope(
     envelope: Mapping[str, Any], report: CheckReport, where: str, *, baked: bool
 ) -> None:
-    """The class-level checks, shared by a fresh envelope and a baked label.
-
-    ``where`` prefixes every message (the label name for a label check, empty
-    for a class check). ``baked`` selects the verdict for an
-    ``env_spec`` badge: in a label it fails validation whatever caused it; on
-    a class checked before the build, a badge that only says this machine
-    lacks a GPU, a driver, or an in-image dependency is ``not_checked``.
-    """
+    """The class-level checks, shared by a fresh envelope and a baked label."""
     if envelope.get("schema_version") != 1:
         report.failed.append(
             f"{where}schema_version {envelope.get('schema_version')!r} is not the "
@@ -1001,10 +763,6 @@ def _check_envelope(
     if kind == "model":
         spec = envelope.get("model_spec")
         if spec is None:
-            # A class-level read: a model that sets self.spec in load() (a VLA
-            # whose action dim comes from the checkpoint) serves fine and its
-            # handshake envelope carries the spec, so this is not a failure --
-            # but a label baked from the class will not carry it.
             report.warnings.append(
                 f"{where}model_spec: {name} declares no class-level spec. Set in "
                 "load()? Fine for a label-less image (the handshake carries it); "
@@ -1032,7 +790,6 @@ def _check_envelope(
                 "it without EnvTags (set `tags = EnvTags(...)` on the class)"
             )
         elif isinstance(tags, Mapping) and "error" in tags:
-            # A tags badge warns because the spaces can still be read.
             badge = cast("Mapping[str, object]", tags)["error"]
             report.warnings.append(f"{where}env_tags: {badge}")
         else:
@@ -1062,7 +819,7 @@ def _check_envelope(
 
     for path, badge in _describe_badges(envelope):
         if path in ("env_spec", "env_tags", "model_spec"):
-            continue  # reported above, with their own severity
+            continue
         report.warnings.append(f"{where}{path}: {badge}")
     _check_specs(envelope, report, where)
     _check_branches(envelope, report, where)
@@ -1070,13 +827,7 @@ def _check_envelope(
 
 
 def _needs_local_resources(error_type: str, message: str) -> bool:
-    """Whether an ``env_spec`` badge means "not buildable here", not "broken".
-
-    Decided by the exception type first (see :data:`_NEVER_SOFTENED` and
-    :data:`_SOFTENED_TYPES`), then by a CUDA-named type, then by whole-word
-    GPU/driver/display hints in the message. Only ``rlmesh check`` on a class
-    consults this; a badge baked into a label always fails validation.
-    """
+    """Whether an ``env_spec`` badge means "not buildable here", not "broken"."""
     if error_type in _NEVER_SOFTENED:
         return False
     if error_type in _SOFTENED_TYPES or "cuda" in error_type.lower():
@@ -1085,15 +836,7 @@ def _needs_local_resources(error_type: str, message: str) -> bool:
 
 
 def _check_specs(envelope: Mapping[str, Any], report: CheckReport, where: str) -> None:
-    """A spec/tags that does not resolve fails; ad hoc roles only warn.
-
-    ``passthrough`` is the structural gate every tier shares: a spec it refuses
-    resolves nowhere. ``strict`` is the managed tier: registered roles pass, so
-    does the ``x/`` escape namespace, and anything else is an accident waiting
-    to resolve against nothing. A warning there, not a failure -- the open
-    vocabulary still runs everywhere; it is the curated boundary that refuses
-    it.
-    """
+    """A spec/tags that does not resolve fails; ad hoc roles only warn."""
     for side, key in (("env", "env_tags"), ("model", "model_spec")):
         spec = envelope.get(key)
         if not isinstance(spec, Mapping) or "error" in spec:
@@ -1115,13 +858,6 @@ def _check_specs(envelope: Mapping[str, Any], report: CheckReport, where: str) -
 def _check_branches(
     envelope: Mapping[str, Any], report: CheckReport, where: str
 ) -> None:
-    """Each non-default contract branch needs tags that fit its own spaces.
-
-    A branch without tags, or whose tags are an error badge, fails validation.
-
-    The default branch is the top-level ``env_tags``/``env_spec`` pair, checked
-    by :func:`_check_specs`.
-    """
     contracts = envelope.get("env_contracts")
     if not isinstance(contracts, Mapping):
         return
@@ -1159,11 +895,7 @@ def _check_join(
     report: CheckReport,
     where: str,
 ) -> None:
-    """Join tags against the spaces they claim, as ``rlmesh.serve`` does at startup.
-
-    Spaces that could not be read (an ``env_spec`` badge) are reported where the
-    badge is; there is nothing to join here.
-    """
+    """Join tags against the spaces they claim, as ``rlmesh.serve`` does at startup."""
     if not isinstance(env_spec, Mapping) or "error" in env_spec:
         return
     spaces = cast("Mapping[str, Any]", env_spec)
@@ -1183,7 +915,6 @@ def _check_join(
 def _check_runtime(
     envelope: Mapping[str, Any], report: CheckReport, where: str
 ) -> None:
-    """The edition handshake the envelope advertises (see :func:`_workflow_offer`)."""
     raw = envelope.get("runtime")
     runtime: Mapping[str, object] = (
         cast("Mapping[str, object]", raw) if isinstance(raw, Mapping) else {}
@@ -1212,7 +943,6 @@ def _check_runtime(
 
 
 def _describe_badges(envelope: Mapping[str, Any]) -> list[tuple[str, str]]:
-    """Best-effort ``error`` badges the gatherer left in the envelope."""
     out: list[tuple[str, str]] = []
     for key in ("env_spec", "env_tags", "model_spec"):
         value = envelope.get(key)
@@ -1226,11 +956,8 @@ def _describe_badges(envelope: Mapping[str, Any]) -> list[tuple[str, str]]:
             out.append(("env_contracts", str(contract_map["error"])))
         branches = contract_map.get("branches")
         if isinstance(branches, list):
-            # The default branch's badges are already reported against the
-            # top-level env_spec/env_tags (same objects), so only the non-default
-            # branches -- the ones a branch-blind reader never sees -- are added,
-            # each named by its own binding. A branch's env_tags badge is not a
-            # best-effort note: _check_branches fails it.
+            # The default branch's badges are already reported against the top-level env_spec/env_tags;
+            # only the non-default branches are added.
             for branch in cast("list[object]", branches):
                 if not isinstance(branch, Mapping):
                     continue
@@ -1324,7 +1051,7 @@ def _check_package(raw: str, report: CheckReport) -> None:
 
 
 def _docker_labels(image: str) -> Mapping[str, str] | None:
-    import subprocess  # lazy: only the --check path shells out
+    import subprocess
 
     result = subprocess.run(
         ["docker", "inspect", image, "--format", "{{json .Config.Labels}}"],
@@ -1339,7 +1066,6 @@ def _docker_labels(image: str) -> Mapping[str, str] | None:
 
 
 def _read_labels(source: str) -> Mapping[str, str] | None:
-    """A labels JSON object from a file, or stdin for ``-``."""
     text = sys.stdin.read() if source == "-" else open(source, encoding="utf-8").read()
     labels = cast("object", json.loads(text or "null"))
     if labels is None:
@@ -1351,21 +1077,12 @@ def _read_labels(source: str) -> Mapping[str, str] | None:
 
 @contextlib.contextmanager
 def _stdout_to_stderr() -> Iterator[None]:
-    """Route everything written to stdout, Python's and C libraries', to stderr.
-
-    Describing runs the author's code: importing a simulator prints banners, a
-    ``make()`` may print, a C library writes to fd 1 directly. The envelope
-    (and the JSON report the ``rlmesh`` CLI parses) must be the only bytes on
-    stdout, so fd 1 is dup2'd onto fd 2 for the duration and ``sys.stdout`` is
-    pointed at ``sys.stderr`` (a replaced ``sys.stdout``, as under a test
-    harness, is not backed by fd 1), then both are restored before the payload
-    is written.
-    """
+    """Route everything written to stdout, Python's and C libraries', to stderr."""
     sys.stdout.flush()
     try:
         saved = os.dup(1)
     except OSError:
-        saved = None  # no usable fd 1: the Python-level redirect still applies
+        saved = None
     with contextlib.redirect_stdout(sys.stderr):
         if saved is not None:
             os.dup2(2, 1)
@@ -1379,7 +1096,6 @@ def _stdout_to_stderr() -> Iterator[None]:
 
 
 def _print_report(report: CheckReport, subject: str, as_json: bool) -> int:
-    """Print a report (one line per finding, or JSON) and return the exit code."""
     if as_json:
         print(json.dumps(report.to_dict()))
         return 0 if report.ok else 1

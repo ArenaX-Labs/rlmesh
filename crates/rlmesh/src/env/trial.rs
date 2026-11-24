@@ -4,17 +4,17 @@ use crate::{Error, InfoDict, Result, Value};
 
 /// The reserved `trial_index` reset option, or `None` when absent.
 ///
-/// The ordinal of the episode a `reset` starts, 0-based and walked in order
-/// by the runtime. Delivered only to an env that declared `"trial_index"` in
-/// [`EnvFactory::reset_options`](crate::EnvFactory::reset_options). A reset
-/// covering one lane carries a bare integer; a reset covering several lanes
-/// of a vector env carries a list, one ordinal per lane, read with `lane`
-/// (the position among the lanes this reset covers).
+/// The 0-based ordinal of the episode a `reset` starts, delivered only to an env that declared
+/// `"trial_index"` in [`EnvFactory::reset_options`](crate::EnvFactory::reset_options). A reset
+/// covering one lane carries an integer; a reset covering several lanes of a vector env carries
+/// a list, read at `lane` (the position among the lanes this reset covers).
 ///
-/// Integers are returned as is (negatives too), an integral float in
-/// `[-2^63, 2^63)` is converted, and a bool or anything else is `None`. A
-/// list read without `lane`, or a `lane` outside the lanes it covers, is the
-/// ValueError class.
+/// Integers are returned as is, an integral float in `[-2^63, 2^63)` is converted, and a bool or
+/// anything else is `None`.
+///
+/// # Errors
+///
+/// A list read without `lane`, or a `lane` outside it, is the ValueError class.
 pub fn trial_index(options: Option<&InfoDict>, lane: Option<usize>) -> Result<Option<i64>> {
     let Some(value) = options.and_then(|options| options.get("trial_index")) else {
         return Ok(None);
@@ -44,10 +44,8 @@ pub fn trial_index(options: Option<&InfoDict>, lane: Option<usize>) -> Result<Op
     Ok(as_ordinal(value))
 }
 
-/// `value` as an integer ordinal (an integer, or an integral float that fits
-/// `i64`), else `None`.
 fn as_ordinal(value: &Value) -> Option<i64> {
-    const LIMIT: f64 = 9_223_372_036_854_775_808.0; // 2^63
+    const LIMIT: f64 = 9_223_372_036_854_775_808.0;
     match value {
         Value::Int(int) => Some(*int),
         Value::Float(float) if float.fract() == 0.0 && (-LIMIT..LIMIT).contains(float) => {

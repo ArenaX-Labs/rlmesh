@@ -247,7 +247,6 @@ def test_serve_env_parser_rejects_non_positive_num_envs() -> None:
 def test_serve_from_args_shuts_down_server_even_when_serve_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Every exit path must run server.shutdown() so the env's close() runs."""
     import rlmesh
     from rlmesh._cli import serve_env
 
@@ -321,15 +320,13 @@ def test_write_ready_fd_writes_address_line_and_closes() -> None:
     read_fd, write_fd = os.pipe()
     try:
         serve_env.write_ready_fd(write_fd, "tcp://127.0.0.1:54321")
-        # write_ready_fd takes ownership of and closes write_fd.
         with os.fdopen(read_fd, "r") as reader:
-            read_fd = -1  # fdopen owns it now
+            read_fd = -1
             contents = reader.read()
         assert contents == "tcp://127.0.0.1:54321\n"
     finally:
         if read_fd != -1:
             os.close(read_fd)
-        # write_fd is closed by write_ready_fd; nothing to clean up.
 
 
 def test_serve_from_args_writes_ready_fd(monkeypatch: pytest.MonkeyPatch) -> None:

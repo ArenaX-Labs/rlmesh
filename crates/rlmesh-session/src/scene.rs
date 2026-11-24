@@ -201,8 +201,6 @@ pub struct Scene {
     text: String,
 }
 
-/// The 1-based line of `key` in table `[table]` of `text` (the header's
-/// line when `key` is empty or absent), found by reading the lines.
 fn line_of(text: &str, table: &str, key: &str) -> Option<usize> {
     let mut lines = text.lines().enumerate();
     let header = |line: &str| -> Option<String> {
@@ -235,12 +233,10 @@ fn line_of(text: &str, table: &str, key: &str) -> Option<usize> {
     Some(start + 1)
 }
 
-/// The 1-based line of byte `offset`.
 fn line_at(text: &str, offset: usize) -> usize {
     text[..offset.min(text.len())].lines().count().max(1)
 }
 
-/// A duration: a number and `ms`, `s`, `min` or `h` (`0` alone is none).
 fn duration(text: &str) -> Option<Duration> {
     if text == "0" {
         return Some(Duration::ZERO);
@@ -268,14 +264,12 @@ fn priority(name: &str) -> Option<PriorityClass> {
     }
 }
 
-/// The parser's state: the text and the problems found so far.
 struct Reader<'a> {
     text: &'a str,
     problems: Vec<Problem>,
 }
 
 impl Reader<'_> {
-    /// Records a problem with `key` of `[table]`.
     fn refuse(&mut self, status: CtlStatus, table: &str, key: &str, what: String, fix: String) {
         let full = if key.is_empty() {
             table.to_string()
@@ -301,7 +295,6 @@ impl Reader<'_> {
         );
     }
 
-    /// Refuses every key of `t` outside `known` and `x_*`.
     fn keys(&mut self, table: &str, t: &Table, known: &[&str]) {
         for key in t.keys() {
             if known.contains(&key.as_str()) || key.starts_with("x_") {
@@ -854,7 +847,6 @@ impl Scene {
                             .get(&m.name)
                             .map(|p| p.device.clone())
                             .or_else(|| device.clone()),
-                        // The home daemon names who else may pin it.
                         may_pin: vec![LOCAL_DEVICE.to_string()],
                     },
                     Role::Controller { max_priority, .. } => HostMember::Controller {

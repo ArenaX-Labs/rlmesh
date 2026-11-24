@@ -1,6 +1,3 @@
-// Frames: `type: u8 | seq: u8 | payload | crc: u16 LE`, COBS-encoded and
-// ended by 0x00. The CRC covers `type | seq | payload`.
-
 #ifndef RLMESH_TETHER_FRAME_H_
 #define RLMESH_TETHER_FRAME_H_
 
@@ -42,13 +39,11 @@ enum class FrameError : uint8_t {
 // Checks and splits a COBS-decoded frame into `out`.
 FrameError parseFrame(const uint8_t* decoded, uint16_t len, Frame& out);
 
-// Writes one frame to `out`: CRC first, then COBS straight from the header,
-// the payload pieces and the CRC, then the 0x00 delimiter. Writes nothing
-// and returns false when the payload is empty, longer than `kMaxPayload`,
-// or in more than `kMaxPayloadPieces` pieces.
+// Writes one frame to `out`: CRC first, then COBS straight from the header, the
+// payload pieces and the CRC, then the 0x00 delimiter.
 bool writeFrame(uint8_t type, uint8_t seq, const Bytes* payload, uint8_t count, Sink out);
 
 }  // namespace tether
 }  // namespace rlmesh
 
-#endif  // RLMESH_TETHER_FRAME_H_
+#endif

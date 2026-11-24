@@ -1,11 +1,3 @@
-//! Human-readable formatting shared by binding errors and `describe()`.
-//!
-//! These strings are *reference snapshots*: the conformance vectors pin them
-//! so every implementation renders the same text, but they are NOT a stable
-//! cross-language contract. Structural callers should match on the error
-//! [`code`](super::Error::code) rather than parse this text, and a C++ or
-//! other binding is free to render its own wording.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -15,12 +7,10 @@ use crate::spec::role::input::Accept;
 use crate::spec::role::roles::registry::is_known_role;
 use crate::spec::rotation::Rotation;
 
-/// A quoted string, for keys and roles in messages.
 pub(crate) fn quoted(value: &str) -> String {
     format!("{value:?}")
 }
 
-/// A quoted optional rotation encoding, or `None`.
 pub(crate) fn quoted_encoding(value: Option<Rotation>) -> String {
     match value {
         Some(encoding) => format!("{:?}", encoding.name()),
@@ -28,9 +18,6 @@ pub(crate) fn quoted_encoding(value: Option<Rotation>) -> String {
     }
 }
 
-/// A quoted optional rotation-encoding accept-set, or `None`. A single-entry set
-/// renders exactly like [`quoted_encoding`] (`"quat_xyzw"`) so the common case
-/// reads the same; a multi-entry set renders as a list (`["rot6d", "quat_xyzw"]`).
 pub(crate) fn quoted_accept_set(value: Option<&Accept<Rotation>>) -> String {
     match value {
         None => "None".to_owned(),
@@ -41,25 +28,19 @@ pub(crate) fn quoted_accept_set(value: Option<&Accept<Rotation>>) -> String {
     }
 }
 
-/// A single float, e.g. `-2.0` (Debug form, so it always reads as a float).
 pub(crate) fn number(value: f64) -> String {
     format!("{value:?}")
 }
 
-/// A float pair, e.g. `(-1.0, 1.0)`.
 pub(crate) fn quoted_range(range: (f64, f64)) -> String {
     format!("{range:?}")
 }
 
-/// A map's sorted keys, quoted, e.g. `["a", "b"]`.
 pub(crate) fn quoted_keys<V>(map: &BTreeMap<String, V>) -> String {
     let keys: Vec<&String> = map.keys().collect();
     format!("{keys:?}")
 }
 
-/// A leaf-keyed map's sorted keys, quoted, a bare key as its role (`"a"`,
-/// exactly as [`quoted_keys`] prints it), a parted one as `"role#part"`, and
-/// a provenance as a further `#sensed`.
 pub(crate) fn quoted_leaf_keys<V>(
     map: &BTreeMap<(String, Option<String>, Option<String>), V>,
 ) -> String {
@@ -77,18 +58,6 @@ pub(crate) fn quoted_leaf_keys<V>(
     format!("{keys:?}")
 }
 
-/// The tail of a `MissingRole` message: a "did you mean" over the offered
-/// roles, and, when either side is an `x/` role, the reminder that roles bind
-/// only on the identical string. Empty when there is nothing to add.
-///
-/// A suggestion is a hint for a human, never a binding: the binder does not
-/// act on it. A candidate is an offered role of the same kind (an `x/` role
-/// counts as any kind, so `x/base_rot` points at `proprio/base_rot`) whose name
-/// shares a `_`-separated word with the missing one, starts with it or is its
-/// start (`steer`/`steering`), or is within two edits of it; at most three,
-/// closest first. Two *registered* roles are never offered for each other: the
-/// registry defines them as distinct quantities, and `proprio/joint_vel` fed to
-/// a `proprio/joint_pos` input is a mis-binding, not a typo.
 pub(crate) fn missing_role_hint<'a>(
     missing: &str,
     offered: impl IntoIterator<Item = &'a str>,
@@ -132,13 +101,10 @@ pub(crate) fn missing_role_hint<'a>(
     hint
 }
 
-/// `(kind, name)` of a role: `proprio/eef_pos` -> `("proprio", "eef_pos")`. A
-/// role with no `/` is all name.
 fn split_role(role: &str) -> (&str, &str) {
     role.split_once('/').unwrap_or(("", role))
 }
 
-/// Levenshtein distance over chars.
 fn edit_distance(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect();
     let mut row: Vec<usize> = (0..=b.len()).collect();

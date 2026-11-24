@@ -1,13 +1,11 @@
 //! Evaluation plans: an evaluation request (the file `rlmesh eval submit`
 //! sends) compiled into the workloads one machine runs.
 //!
-//! Models are paired with tasks, and each task's episodes are split over its
-//! `workers`: one per episode by default, scaled back to 300 per run. The base
-//! seed defaults to 0; each workload carries its seed key, slot offset and
-//! trial base. Environment bindings combine the scenario's make kwargs, the
-//! model's pairing refined by the scenario, and the episode cap. Image
-//! `dev.rlmesh.package` labels and environment describe envelopes supply the
-//! binding metadata. `conformance/eval_plans.v1.json` pins the results.
+//! Models are paired with tasks, and each task's episodes are split over its `workers`: one per
+//! episode by default, capped at 300 per run. The base seed defaults to 0; each workload carries
+//! its seed key, slot offset and trial base. Environment bindings combine the scenario's make
+//! kwargs, the model's pairing refined by the scenario, and the episode cap.
+//! `conformance/eval_plans.v1.json` pins the results.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -21,17 +19,12 @@ use crate::{Error, Result};
 /// env's or a model's make kwargs through it.
 pub const MAKE_KWARGS_VAR: &str = "RLMESH_MAKE_KWARGS";
 
-/// The seed a task without `seed` or `seeds` runs under.
 const DEFAULT_SEED: i64 = 0;
 
-/// The routes the default worker count stays under.
 const MAX_DEFAULT_WORKERS: i64 = 300;
 
-/// Pairing keys the runner consumes as the episode cap instead of passing
-/// them to the env.
 const EPISODE_CAP_KEYS: [&str; 2] = ["max_episode_steps", "max_steps"];
 
-/// Metadata keys `workers` stamps on each shard.
 const SHARD_KEYS: [&str; 3] = [
     "episodeShardIndex",
     "episodeShardCount",
@@ -55,7 +48,6 @@ const TASK_FIELDS: &[&str] = &[
 const BATCHER: &str = "a local model container batches with its own defaults (rlmesh.BatchOptions)";
 const RECORD: &str = "local runs do not record media yet";
 
-/// Request fields only the platform can honour, with why.
 const PLATFORM_ONLY: &[(&str, &str)] = &[
     ("projectId", "projects scope evaluations on the platform"),
     (
@@ -218,7 +210,6 @@ impl EvalRequest {
         Ok(request)
     }
 
-    /// Validate the evaluation request.
     fn validate(&self) -> Result<()> {
         let invalid = |message: String| Err(Error::invalid_argument(message));
         if self.models.is_empty() {
@@ -441,10 +432,8 @@ pub struct Plan {
     pub warnings: Vec<String>,
 }
 
-/// A task after `workers` split it.
 struct TaskShard<'a> {
     task: &'a TaskRef,
-    /// The shard's own id, `<taskId>--s<n>`.
     id: String,
     episodes: i64,
     seed: Option<i64>,
@@ -536,8 +525,6 @@ pub fn compile(request: &EvalRequest, images: &Images) -> Result<Plan> {
                     .and_then(|offset| offset.parse::<u64>().ok())
                 {
                     Some(offset) => (offset, Some(offset)),
-                    // A shard with no offset keys on its index (routeSeedKey's
-                    // legacy branch) and has no global ordinal to offer.
                     None => {
                         seed_env = format!("{seed_env}#{index}");
                         (0, None)
@@ -587,9 +574,6 @@ pub fn compile(request: &EvalRequest, images: &Images) -> Result<Plan> {
     Ok(plan)
 }
 
-/// `withDefaultSeeds`, `defaultWorkers` and `expandWorkers`: every task with
-/// workers > 1 becomes that many shards of one episode space, the remainder
-/// on the first, at consecutive offsets.
 fn expand_workers(tasks: &[TaskRef]) -> Vec<TaskShard<'_>> {
     let total: i64 = tasks.iter().map(|t| t.episodes).sum();
     let per_worker = ((total + MAX_DEFAULT_WORKERS - 1) / MAX_DEFAULT_WORKERS).max(1);
@@ -641,7 +625,6 @@ fn expand_workers(tasks: &[TaskRef]) -> Vec<TaskShard<'_>> {
     shards
 }
 
-/// The models a request lists at two or more checkpoints.
 fn checkpoint_split(models: &[ModelRef]) -> BTreeSet<String> {
     let mut checkpoints: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for model in models {
@@ -657,14 +640,11 @@ fn checkpoint_split(models: &[ModelRef]) -> BTreeSet<String> {
         .collect()
 }
 
-/// `resolveCheckpointName`: the named checkpoint (which must be declared),
-/// else the default, else the first, else none.
 fn resolve_checkpoint(model: &ModelRef, checkpoints: &[Value]) -> Result<Option<String>> {
     for checkpoint in checkpoints {
         let name = checkpoint["name"].as_str().unwrap_or_default();
         if !list(&checkpoint["scenarios"]).is_empty() || checkpoint.get("entrypoint").is_some() {
-            // TODO: port checkpointForScenario's per-scenario pick and the
-            // entrypoint override once a catalog image declares either.
+            // TODO: port checkpointForScenario's per-scenario pick and the entrypoint override.
             return Err(Error::invalid_argument(format!(
                 "model {}: checkpoint {name} declares scenarios or an entrypoint, which local \
                  runs do not pick by yet",
@@ -691,8 +671,6 @@ fn resolve_checkpoint(model: &ModelRef, checkpoints: &[Value]) -> Result<Option<
     }
 }
 
-/// `unscopedCheckpointReason`: a ref naming no checkpoint of a model that
-/// declares several would run its default on every suite unchecked.
 fn refuse_unscoped_checkpoint(
     model: &ModelRef,
     task: &TaskRef,
@@ -721,8 +699,6 @@ fn refuse_unscoped_checkpoint(
     )))
 }
 
-/// A model's make kwargs: the package's `RLMESH_MAKE_KWARGS` (the request's
-/// replaces it whole), then the checkpoint's params over it.
 fn model_params(
     model: &ModelRef,
     package: &Value,
@@ -749,7 +725,6 @@ fn model_params(
     Ok(params)
 }
 
-/// `taskModelsMatch` (variants are refused before this).
 fn task_models_match(filter: &[String], model: &str, checkpoint: Option<&str>) -> bool {
     filter.iter().any(|entry| match entry.split_once('@') {
         Some((name, at)) => name == model && Some(at) == checkpoint,
@@ -757,17 +732,12 @@ fn task_models_match(filter: &[String], model: &str, checkpoint: Option<&str>) -
     })
 }
 
-/// One scenario of an env.
 #[derive(Clone, Debug)]
 struct Scenario {
-    /// `<group>/<scenario>`.
     key: String,
-    /// The make kwargs that pin it.
     params: Option<Map<String, Value>>,
 }
 
-/// An env's scenario groups: its package's `scenarioGroups`, else the
-/// variants its describe envelope declares (`ScenarioGroupsFromDescribe`).
 fn scenario_groups(env: &ImageEntry) -> Vec<(String, Vec<(String, Scenario)>)> {
     let mut groups: Vec<(String, Vec<(String, Scenario)>)> = Vec::new();
     let packaged = list(&env.package["scenarioGroups"]);
@@ -824,9 +794,6 @@ fn scenario_groups(env: &ImageEntry) -> Vec<(String, Vec<(String, Scenario)>)> {
     groups
 }
 
-/// `resolveScenario`: the scenario a task names on an env with scenarios,
-/// by `<group>/<scenario>` (a `--` suffix ignored), a bare unique scenario
-/// id, or `metadata.environmentId` (`<env>:<group>/<scenario>`).
 fn resolve_scenario(
     groups: &[(String, Vec<(String, Scenario)>)],
     task: &TaskRef,
@@ -892,10 +859,6 @@ struct Binding {
     cap: Option<u64>,
 }
 
-/// `bindEnvironment` without the camera dial (the sandbox binds the model's
-/// render size on the env itself) or the expected-branch assertion: the
-/// scenario's (or the task's) make kwargs, the model's pairing for the env
-/// filled in under them key by key, and the episode cap lifted out of both.
 fn bind_env(
     model_package: &Value,
     env: &ImageEntry,
@@ -978,7 +941,6 @@ fn bind_env(
                     model.model
                 )));
             }
-            // The caller is more specific than the catalog.
             Some(_) => {}
         }
     }
@@ -988,8 +950,6 @@ fn bind_env(
     })
 }
 
-/// `envCompatNames`: the tiers a pairing table is searched by, most specific
-/// first: the env's id, then its name, flattened id and leaf, then its gym id.
 fn env_names(env: &str, package: &Value) -> Vec<Vec<String>> {
     let id = repository(env);
     let leaf = id.rsplit('/').next().unwrap_or_default().to_string();
@@ -1004,8 +964,6 @@ fn env_names(env: &str, package: &Value) -> Vec<Vec<String>> {
     ]
 }
 
-/// `PairingFor`: the model's pairing for the env, under its most specific
-/// name; two names of one tier is an ambiguity.
 fn pairing_for<'a>(
     model_package: &'a Value,
     env: &str,
@@ -1035,7 +993,6 @@ fn pairing_for<'a>(
     Ok(None)
 }
 
-/// `takeEpisodeCap`: lift the reserved cap keys out of `bound`.
 fn take_cap(
     bound: &mut Map<String, Value>,
     owner: &str,
@@ -1058,8 +1015,6 @@ fn take_cap(
     Ok(cap)
 }
 
-/// `ParamSpecNames`: whether the env's describe declares `name` as a make
-/// param (a passthrough spec declares nothing).
 fn env_declares_param(describe: &Value, name: &str) -> bool {
     let params = &describe["params"];
     let spec = &params["param_spec"];
@@ -1083,7 +1038,6 @@ fn discriminants(describe: &Value) -> Vec<String> {
         .collect()
 }
 
-/// `PositiveInt32`.
 fn positive_int32(value: &Value) -> Option<u64> {
     let n = match value {
         Value::Number(n) => n.as_i64().or_else(|| {
@@ -1097,7 +1051,6 @@ fn positive_int32(value: &Value) -> Option<u64> {
     (1..=i64::from(i32::MAX)).contains(&n).then_some(n as u64)
 }
 
-/// `SameParam`: equal once integral floats read as integers.
 fn same_param(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),
@@ -1115,7 +1068,6 @@ fn same_kwargs(a: &Map<String, Value>, b: &Map<String, Value>) -> bool {
             .all(|(k, v)| b.get(k).is_some_and(|o| same_param(v, o)))
 }
 
-/// A make-kwargs blob.
 fn kwargs(raw: &str, owner: &str) -> Result<Map<String, Value>> {
     serde_json::from_str(raw).map_err(|err| {
         Error::invalid_argument(format!(
@@ -1124,8 +1076,6 @@ fn kwargs(raw: &str, owner: &str) -> Result<Map<String, Value>> {
     })
 }
 
-/// An image reference without its tag or digest, as the catalog
-/// id is a repository path.
 fn repository(image: &str) -> &str {
     let image = image.split('@').next().unwrap_or(image);
     match image.rfind(':') {
@@ -1163,8 +1113,6 @@ fn text(value: &Value) -> String {
 mod tests {
     use super::*;
 
-    /// Equal JSON, with numbers compared by value (a JSON encoder
-    /// writes `0.0` as `0`).
     fn same_json(a: &Value, b: &Value) -> bool {
         match (a, b) {
             (Value::Object(x), Value::Object(y)) => {

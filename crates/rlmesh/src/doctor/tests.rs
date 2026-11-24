@@ -1,5 +1,3 @@
-//! The probes end to end against an env and a model served in this process.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,8 +37,6 @@ fn action_space() -> WireSpec {
         .unwrap()
 }
 
-/// A camera and a position, both a pure function of the reset seed and the
-/// step count, so its replays reproduce.
 struct Scene {
     seed: u64,
     step: u64,
@@ -90,8 +86,6 @@ fn serve_scene() -> EnvServer {
     server
 }
 
-/// A [`Scene`] that, like a catalog env, refuses a reset without the
-/// `trial_index` it declares among its reset options.
 struct Trial(Scene);
 
 impl Env for Trial {
@@ -274,7 +268,6 @@ fn a_model_is_checked_against_its_spec_or_its_reference_env() {
             rlmesh_session::address::redact(server.address()),
         ),
         (Some(adapter_less), None, CheckStatus::Warn, String::new()),
-        // Nothing to synthesize from: no label, and this model describes nothing.
         (None, None, CheckStatus::Fail, String::new()),
     ];
     for (describe, reference_env, handshake, env_id) in cases {
@@ -291,8 +284,6 @@ fn a_model_is_checked_against_its_spec_or_its_reference_env() {
         assert_eq!(report.checks[0].status, handshake, "{:#?}", report.checks);
         assert_eq!(report.env.env_id, env_id);
         if handshake == CheckStatus::Warn {
-            // Adapter-less with no reference env: tagged, saying how to get the
-            // predict checks, and each skipped check says why.
             assert!(report.checks[0].tags.iter().any(|tag| tag == ADAPTER_LESS));
             assert!(
                 report.checks[0]
@@ -307,7 +298,6 @@ fn a_model_is_checked_against_its_spec_or_its_reference_env() {
             }
         }
         if handshake == CheckStatus::Pass {
-            // The random baseline answers in range, but never alike.
             for (name, status) in [
                 ("resolve", CheckStatus::Pass),
                 ("shape_single", CheckStatus::Pass),

@@ -1,7 +1,5 @@
-//! Delivered keys: what the host draws, scopes and
-//! delivers to a participant, and what the participant acknowledges. The
-//! key bytes travel only inside sealed messages (a `KeyDelivery` under the
-//! recipient's `k_down`, a `CtlReply`); authority state never carries one.
+//! Delivered keys: what the host draws, scopes and delivers to a participant,
+//! and what the participant acknowledges.
 
 #[allow(unused_imports)]
 use crate::prelude::*;

@@ -1,8 +1,5 @@
 //! Link and lag metrics per participant, as the host sees them,
 //! plus what each participant reports in its heartbeats.
-//!
-//! Edge-side lag metrics (`action_age_at_apply`, deadline misses, fallback
-//! time) live in [`edge`](crate::edge); the heartbeat carries its queue report.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -18,7 +15,6 @@ pub struct LinkStats {
     gaps_ns: VecDeque<u64>,
     last_arrival_ns: Option<i64>,
     last_rtt_ns: Option<u64>,
-    /// RFC 3550 style smoothed |Δrtt|.
     jitter_ns: f64,
     heartbeats: u64,
     report: Report,
@@ -159,7 +155,6 @@ pub struct ParticipantHealth {
 /// How long the host took to relay a robot's chunks: from its subscriber
 /// receiving each to the datagram written to the socket, in buckets of
 /// milliseconds as an edge times chunks (`[0, 1)`, `[1, 2)`, `[2, 4)`, ...
-/// `[64, inf)`), and the longest.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RelayTiming {
     /// Chunks by the time they took.
@@ -290,7 +285,6 @@ mod tests {
             stats.on_heartbeat(at);
         }
         let id = ParticipantId::new("p").expect("id");
-        // The 55 ns gap has slid out of a three-gap window.
         assert_eq!(stats.health(&id, None, 105).heartbeat_gap_max_ns, 10);
         stats.on_round_trip(100);
         stats.on_round_trip(260);

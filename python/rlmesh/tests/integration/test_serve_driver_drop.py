@@ -1,10 +1,3 @@
-"""A served env or model outlives a driver that vanishes mid-run.
-
-The driver is killed (SIGKILL) in the middle of an episode or a predict, or
-its link is cut under it; the served process keeps serving, and the next
-driver runs to completion, an env from a clean reset.
-"""
-
 from __future__ import annotations
 
 import os
@@ -111,8 +104,6 @@ def _free_base() -> int:
 
 @final
 class _Relay:
-    """A relayed session port, whose connections can be cut."""
-
     def __init__(self, target: int) -> None:
         self.base = _free_base()
         self.sockets: list[socket.socket] = []
@@ -253,7 +244,6 @@ def test_a_killed_driver_leaves_the_server_serving(tmp_path: Path, kind: str) ->
         _ = first.wait()
         out = _run_to_completion(served, seed=2)
         if kind == "env":
-            # A clean reset: the abandoned episode's count does not carry.
             assert out == f"DONE steps={EPISODE} last={float(EPISODE)}\n", out
             assert "reset 2\n" in served.marks_text()
     finally:

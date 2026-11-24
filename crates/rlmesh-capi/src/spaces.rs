@@ -1,4 +1,3 @@
-//! Immutable space spec handles and checked FFI slices.
 #![allow(unsafe_code)]
 use crate::abi::status::{CapiError, guard_value};
 use rlmesh_spaces::SpaceSpec;
@@ -11,8 +10,6 @@ pub(crate) fn spec_ref<'a>(spec: *const RLMeshSpaceSpec) -> Option<&'a SpaceSpec
     unsafe { spec.cast::<SpaceSpec>().as_ref() }
 }
 
-/// # Safety
-/// `ptr` is NULL only when `len == 0`; otherwise it points at `len` readable `T`s.
 pub(crate) unsafe fn slice_arg<'a, T>(
     ptr: *const T,
     len: usize,

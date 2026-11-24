@@ -1,35 +1,4 @@
-"""Where a workflow edition is declared, and which declaration wins.
-
-A workflow edition is a *sticky declaration*, not a version ceiling: a
-participant states the edition it was authored against and keeps it until its
-author deliberately bumps it, so upgrading the rlmesh package never changes how
-that participant behaves. This module is the single Python-side resolver for
-that declaration -- every surface that can carry one funnels through
-:func:`resolve_workflow_edition`, so the precedence is written down once.
-
-Precedence, highest first:
-
-1. an explicit call keyword (``run(workflow_edition=...)`` /
-   ``session(workflow_edition=...)``);
-2. the ``RLMESH_WORKFLOW_EDITION`` environment variable (per process);
-3. ``ServeOptions(workflow_edition=...)`` / ``--workflow-edition`` (per served
-   peer);
-4. the :attr:`rlmesh.EnvFactory.workflow_edition` / :attr:`rlmesh.Model.workflow_edition`
-   class declaration (source-resident);
-5. ``[tool.rlmesh] workflow_edition`` in the ``pyproject.toml`` of the project
-   that contains the authored class's module, else of the working directory
-   (project-resident);
-6. nothing -- the peer floats to this build's newest edition.
-
-Running and serving resolve quietly. A float is reported where an author
-reviews a participant before an upgrade: ``rlmesh check``, ``rlmesh
-check-image`` and ``rlmesh doctor`` (see :func:`float_nudge`), and a session
-refused because its peers share no edition.
-
-An empty ``RLMESH_WORKFLOW_EDITION`` short-circuits the chain at rung 2: it
-declares nothing *deliberately*, so rungs 3-5 are not consulted and no check
-reports the float.
-"""
+"""Where a workflow edition is declared, and which declaration wins."""
 
 from __future__ import annotations
 
@@ -61,19 +30,15 @@ class WorkflowEditionWarning(UserWarning):
     """
 
 
-#: Process-wide declaration, above every in-code surface but a call keyword.
-#: Set it to the empty string to declare nothing *deliberately*: resolution stops
-#: there -- no lower surface is consulted -- the peer floats to this build's
-#: newest edition, and no check reports it. That is what this repo's own test
-#: suites do.
+#: Process-wide declaration, above every in-code surface but a call keyword. The empty
+#: string declares nothing deliberately: resolution stops there and the peer floats.
 WORKFLOW_EDITION_ENV_VAR: Final = "RLMESH_WORKFLOW_EDITION"
 
-#: The ``[tool.rlmesh]`` table and key read from the project's ``pyproject.toml``.
+#: The ``[tool.rlmesh]`` table and key read from ``pyproject.toml``.
 _PYPROJECT_TABLE: Final = "[tool.rlmesh]"
 _PYPROJECT_KEY: Final = "workflow_edition"
 
-#: This package's own directory: a class defined in rlmesh (a ``Model``
-#: wrapping a callable) names no user project.
+#: This package's own directory: classes defined in rlmesh name no user project.
 _PACKAGE_DIR: Final = Path(__file__).resolve().parent
 
 
@@ -159,8 +124,6 @@ def resolve_declaration(
     The flag is ``False`` for a declaration and for the deliberate float (an
     empty ``RLMESH_WORKFLOW_EDITION``): only an undeclared float is reported.
     """
-    # Rungs 1-4 are the native resolver's, shared with every language (COR-6);
-    # Python layers its project-file rung on top (D-7).
     resolved, deliberate = load_native("resolve_workflow_edition_rungs")(
         call=call, option=option, declared=declared
     )
@@ -174,19 +137,12 @@ def resolve_declaration(
     return None, True
 
 
-#: The project-manifest rung, scanned once per starting directory: every
-#: server or session a process opens would otherwise walk the same ancestors.
+#: Project-manifest rung, scanned once per starting directory.
 _pyproject_cache: dict[Path, str | None] = {}
 
 
 def _from_pyproject(origin: object | None = None) -> str | None:
-    """``[tool.rlmesh] workflow_edition`` from the project that holds ``origin``.
-
-    The project is the nearest ``pyproject.toml`` above ``origin``'s module
-    file, so the answer does not change with where the process starts; the
-    working directory's is the fallback for an origin with no file or no
-    enclosing project.
-    """
+    """``[tool.rlmesh] workflow_edition`` from the project that holds ``origin``."""
     manifest = _origin_manifest(origin)
     if manifest is not None:
         return _cached(manifest.parent, lambda: _manifest_edition(manifest))
@@ -201,7 +157,6 @@ def _cached(key: Path, scan: Callable[[], str | None]) -> str | None:
 
 
 def _origin_manifest(origin: object | None) -> Path | None:
-    """The ``pyproject.toml`` of the project ``origin``'s module lies in, if any."""
     if origin is None:
         return None
     module_name = getattr(origin, "__module__", None)
@@ -233,19 +188,10 @@ def _manifest_edition(manifest: Path) -> str | None:
     try:
         return _scan_table_string(manifest.read_text(encoding="utf-8"))
     except OSError:
-        # An unreadable manifest is not this resolver's error to raise: the
-        # project is simply not declaring an edition here.
         return None
 
 
 def _scan_table_string(text: str) -> str | None:
-    """Read ``workflow_edition`` out of a ``[tool.rlmesh]`` table by line scan.
-
-    A declaration is one quoted string on its own line, so this reads it without
-    a TOML parser -- ``tomllib`` is 3.11+ and this package supports 3.10. The
-    same single-key scan is what ``crates/rlmesh-proto/build.rs`` does to read
-    ``rlmesh.toml`` before any TOML crate is available to it.
-    """
     in_table = False
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].strip()

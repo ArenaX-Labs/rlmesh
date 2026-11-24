@@ -93,10 +93,9 @@ pub struct EpisodeCompletedEvent {
     pub truncated: bool,
     pub duration_ms: i64,
     pub final_info: Option<MetaMap>,
-    /// The env-reported task outcome from the final step's info (`is_success`,
-    /// `success`, or `task_success`; the first holding a bool or number wins,
-    /// numbers coerce by truthiness), the same value the episode summary carries, so a hook
-    /// never re-derives it. `None` when the env emits no such key.
+    /// The env-reported task outcome from the final step's info (`is_success`, `success` or
+    /// `task_success`; the first holding a bool or number wins, numbers by truthiness), the
+    /// same value the episode summary carries. `None` when the env emits no such key.
     pub success: Option<bool>,
     pub seed: Option<i64>,
     /// The trial ordinal this episode walked (`trial_index_base` + its
@@ -141,22 +140,18 @@ pub struct StepCompletedEvent {
     pub env_index: i32,
     pub rewards: Vec<f64>,
     pub infos: Option<MetaMap>,
-    /// Per lane, aligned with `rewards`: whether this step ended the lane's
-    /// episode in a terminal state / by truncation (env-reported or a runtime
-    /// cap), known at the step itself, so a hook never waits for the
-    /// `episode_completed` event to learn how a step ended.
+    /// Per lane, aligned with `rewards`: whether this step ended the lane's episode in a
+    /// terminal state / by truncation (env-reported or a runtime cap), known at the step itself.
     pub terminated: Vec<bool>,
     pub truncated: Vec<bool>,
-    /// Per lane, aligned with `rewards`: true where this response is the
-    /// lane's `NEXT_STEP` autoreset roll -- the new episode's reset observation,
-    /// still attributed to the ended id, not a step of any episode. Lanes roll
-    /// independently, so the other lanes' entries are real steps. `infos` is
-    /// `None` when any lane rolled.
+    /// Per lane, aligned with `rewards`: true where this response is the lane's `NEXT_STEP`
+    /// autoreset roll, the new episode's reset observation still attributed to the ended id
+    /// rather than a step. Other lanes' entries are real steps. `infos` is `None` when any lane
+    /// rolled.
     pub autoreset_roll: Vec<bool>,
-    /// Wall time, in milliseconds, of the predict(s) that landed since the
-    /// group's previous step -- zero for a step served from chunk replay, and
-    /// under prefetch the next chunk's predict, attributed to the step it
-    /// landed on -- and of this step's env round trip. Every lane of the
+    /// Wall time, in milliseconds, of the predict(s) that landed since the group's previous
+    /// step (zero for a step served from chunk replay; under prefetch, the next chunk's predict
+    /// counts on the step it landed on) and of this step's env round trip. Every lane of the
     /// group experienced both.
     pub predict_ms: f64,
     pub step_ms: f64,
@@ -190,11 +185,9 @@ pub struct ObservationEmittedEvent {
 
 /// A live telemetry snapshot tagged with the route/session it belongs to.
 ///
-/// One `RuntimeHooks` can be shared across concurrent routes, so —
-/// like every other event — the snapshot carries identity inline. Identity
-/// lives on the event, not on the `Snapshot` itself, which stays a pure metrics
-/// payload (it is also the durable `RuntimeReport.telemetry`). Use
-/// `snapshot.horizon` to tell a window tick from the cumulative session.
+/// One hooks object can serve concurrent routes, so the identity rides on the event; the
+/// snapshot itself stays a pure metrics payload. Use `snapshot.horizon` to tell a window tick
+/// from the cumulative session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TelemetrySnapshotEvent {
     pub session_id: String,

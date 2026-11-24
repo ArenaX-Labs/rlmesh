@@ -8,7 +8,6 @@ import { createClient, createEvaluation } from '../src/managed/node.js';
 
 type Call = { url: string; auth: string | null; body: string };
 
-/** A fetch that records each call and answers with `reply` (JSON `{}` by default). */
 function fakeFetch(calls: Call[], reply: (call: Call) => Response = () => Response.json({})): typeof fetch {
   return (async (request: Request) => {
     const call = { url: request.url, auth: request.headers.get('authorization'), body: await request.text() };
@@ -24,7 +23,6 @@ test('the bearer token comes from apiKey, else getAccessToken, and never replace
   await getMe({ client: createBrowserClient({ apiKey: 'key', getAccessToken, fetch: fakeFetch(calls), baseUrl: 'https://p.example/' }) });
   const browser = createBrowserClient({ getAccessToken, fetch: fakeFetch(calls) });
   await listEvaluations({ client: browser, query: { status: 'running', tag: ['team:a', 'run:1'] } });
-  // An operation under another scheme (none in the public contract today) takes its token from the caller.
   await browser.post({ url: '/v1/other', security: [{ key: 'otherAuth', scheme: 'bearer', type: 'http' }], headers: { Authorization: 'Bearer own-token' } });
   assert.deepEqual(
     calls.map((c) => [c.url, c.auth]),
@@ -48,7 +46,6 @@ test('in Node, credentials fall back to RLMESH_API_KEY, then to the signed-in CL
 
     delete process.env.RLMESH_API_KEY;
     delete process.env.RLMESH_PLATFORM_URL;
-    // Each run prints the next token: cli-1, cli-2, ...
     writeFileSync(
       join(bin, 'rlmesh'),
       `#!/bin/sh\necho "$@" >> "${bin}/argv"\nn=$(wc -l < "${bin}/argv")\necho "{\\"platform\\":\\"https://cli.example/\\",\\"token\\":\\"cli-$n\\",\\"expiresAt\\":null}"\n`,

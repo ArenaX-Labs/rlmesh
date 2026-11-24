@@ -20,8 +20,6 @@ use crate::participant::shared::{KeyWork, SharedLink};
 
 /// A participant's delivered keys, for its publishers, subscribers, edges
 /// and lockstep links: seals and opens under what its link holds.
-/// A message under a key it doesn't hold makes the participant recover its
-/// keys (`GetKeys`). Cheap to clone.
 #[derive(Clone)]
 pub struct Sealer {
     pub(super) link: SharedLink,
@@ -35,7 +33,6 @@ impl std::fmt::Debug for Sealer {
 }
 
 impl Sealer {
-    /// A sealer with no link: everything is refused.
     #[cfg(test)]
     pub(crate) fn detached() -> Self {
         Self {
@@ -86,8 +83,6 @@ impl Sealer {
         sample: &Sample,
         applied: bool,
     ) -> Result<Vec<u8>, SessionError> {
-        // Only the seq is taken under the link's lock: a camera frame is
-        // sealed without holding up the process's chunks.
         let sealing =
             self.with(|link| Ok(link.keyring_mut().begin_sample(sample.channel, applied)?))?;
         let body = codec::encode_sample(sample).to_vec();
@@ -98,10 +93,6 @@ impl Sealer {
         Ok(out)
     }
 
-    /// Opens a sample of `robot`'s stream `channel` received on `keyexpr`
-    /// for one subscription (its replay `windows`), verifying it outside
-    /// the link's lock: the sample, its encoded body, and whether it is the
-    /// first under a robot's newer stream key (its `seq`s restarted).
     pub(crate) fn open_stream(
         &self,
         keyexpr: &str,

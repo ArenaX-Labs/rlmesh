@@ -17,11 +17,9 @@ pub struct ToDlpackOptions {
 
 /// An immutable n-dimensional array with shared storage.
 ///
-/// The constructor copies its buffer; [`Clone`], [`buffer`](Self::buffer)
-/// and a contiguous [`reshape`](Self::reshape) share storage, and
-/// [`copy`](Self::copy) makes a fresh one. Strides are in bytes.
-///
-/// `PartialEq` compares dtype, shape and element bytes.
+/// The constructor copies its buffer; [`Clone`], [`buffer`](Self::buffer) and a contiguous
+/// [`reshape`](Self::reshape) share storage, and [`copy`](Self::copy) makes a fresh one. Strides
+/// are in bytes. `PartialEq` compares dtype, shape and element bytes.
 #[derive(Clone)]
 pub struct Tensor {
     inner: CoreTensor,
@@ -38,8 +36,6 @@ impl Tensor {
         Ok(Self::wrap(inner))
     }
 
-    /// Wrap a core tensor whose dtype is specified (every core constructor
-    /// refuses `Unspecified`) and whose dims are non-negative.
     pub(crate) fn wrap(inner: CoreTensor) -> Tensor {
         let shape = inner.shape().iter().map(|&dim| dim as usize).collect();
         Tensor { inner, shape }
@@ -137,7 +133,6 @@ impl Tensor {
     }
 }
 
-/// Text representation: `Tensor(dtype="float32", shape=[2, 3], bytes=24)`.
 impl fmt::Display for Tensor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(

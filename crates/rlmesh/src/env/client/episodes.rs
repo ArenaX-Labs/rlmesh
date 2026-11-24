@@ -4,15 +4,9 @@
 use crate::binding::spaces;
 use crate::env::types::StepResult as VectorStepResult;
 
-/// The episodes a lockstep client's lanes run. A lockstep reply carries no
-/// episode metadata, so the client, which holds the episode ids, keeps the
-/// accounting the v1 env server reports in `completed_episodes`: an episode
-/// ends on a done step or when a reset replaces it, and under NEXT_STEP the
-/// lane's next step starts the autoreset episode.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Episodes {
     lanes: Vec<Lane>,
-    /// Episodes a reset replaced, reported by the next step.
     interrupted: Vec<super::super::types::EpisodeMetadata>,
 }
 
@@ -21,8 +15,6 @@ enum Lane {
     #[default]
     Idle,
     Active(Episode),
-    /// Done under NEXT_STEP (the next step is the autoreset observation) or
-    /// SAME_STEP (the next step is the new episode's first).
     Pending {
         same_step: bool,
     },
@@ -85,7 +77,6 @@ impl Episodes {
         }
     }
 
-    /// `lanes` (empty: every lane) start episodes `ids`, seeded by `seeds`.
     pub(super) fn reset(&mut self, lanes: &[u32], seeds: &[i64], ids: &[String]) {
         let all: Vec<u32>;
         let lanes = if lanes.is_empty() {
@@ -106,8 +97,6 @@ impl Episodes {
         }
     }
 
-    /// A full-width step: the episodes it completed (`ids`: the lanes'
-    /// current ids, which an autoreset episode adopts).
     pub(super) fn step(
         &mut self,
         result: &VectorStepResult,
@@ -122,7 +111,6 @@ impl Episodes {
             let id = || ids.get(lane).cloned().unwrap_or_default();
             let mut episode = match std::mem::take(slot) {
                 Lane::Active(episode) => episode,
-                // The autoreset observation: the episode the env rolled.
                 Lane::Pending { same_step: false } => {
                     *slot = Lane::Active(Episode::new(id(), None));
                     continue;

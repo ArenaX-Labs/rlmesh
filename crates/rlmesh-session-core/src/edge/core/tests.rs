@@ -1,5 +1,3 @@
-//! The edge core's tests, by topic, and the fixture they share.
-
 mod dispatch;
 mod fence;
 mod group;
@@ -20,10 +18,7 @@ fn pid(id: &str) -> ParticipantId {
     ParticipantId::new(id).expect("id")
 }
 
-/// `cmd`: 6 float joints at 1 kHz, hold 10 ms; `grip`: binary, limited;
-/// `arm` + `arm/tcp`: a group.
 fn robot_map(hold_last: bool) -> String {
-    // A core joint set holds its target; a custom kind runs safe.
     let kind = if hold_last {
         r#""kind": "joints", "count": 6, "fields": ["pos"]"#
     } else {
@@ -60,7 +55,6 @@ struct Fixture {
     edge: EdgeCore,
     snapshot: Option<AuthoritySnapshot>,
     observed: i64,
-    /// Mappings (offset, error) of the robot and the controllers.
     mapping: Option<(i64, u64)>,
 }
 
@@ -204,7 +198,6 @@ impl Fixture {
         self.grant_with(from, "cmd", &[], now)
     }
 
-    /// The edge observes the host's snapshot taken at `now`.
     fn publish(&mut self, now: i64) {
         let clocks = self
             .mapping
@@ -226,8 +219,6 @@ impl Fixture {
         self.snapshot = Some(self.auth.snapshot(clocks, now));
     }
 
-    /// `n` actions at 1 ms from `t0` (session time) for `path`, each
-    /// value `fill`.
     #[allow(clippy::too_many_arguments)]
     fn chunk_for(
         &self,

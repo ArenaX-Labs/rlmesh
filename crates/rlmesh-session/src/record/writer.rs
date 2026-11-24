@@ -21,9 +21,6 @@ pub(super) fn write_loop(
     let mut stats = RecordStats::default();
     let mut metadata = Metadata::new();
     let mut authority_seen = false;
-    // Each topic's last (log, publish) time: both come through clock
-    // offsets the host keeps re-estimating, and a refinement can step one
-    // back by its jitter, so a topic's times are held non-decreasing.
     let mut last: BTreeMap<String, (i64, i64)> = BTreeMap::new();
     while let Ok(entry) = rx.recv() {
         match entry {
@@ -35,9 +32,6 @@ pub(super) fn write_loop(
                 data,
             } => {
                 queue.queued.fetch_sub(data.len(), Ordering::Relaxed);
-                // Anything before the first snapshot is skipped, so a
-                // recording opens with the authority: a busy host can
-                // deliver a sample ahead of it.
                 authority_seen |= topic.key == TopicKey::Authority;
                 if !authority_seen {
                     continue;
@@ -86,13 +80,11 @@ pub(super) fn write_loop(
     Ok(stats)
 }
 
-/// Where the writer thread puts messages.
 pub(super) enum Sink {
     File(Box<Segment>),
     Rolling(Box<RollingSink>),
 }
 
-/// A queued message.
 pub(super) struct Message {
     pub(super) topic: Arc<Topic>,
     pub(super) log_time: i64,
@@ -101,11 +93,9 @@ pub(super) struct Message {
     data: Vec<u8>,
 }
 
-/// One MCAP file being written.
 pub(super) struct Segment {
     writer: mcap::Writer<BufWriter<File>>,
     path: PathBuf,
-    /// The log time it was opened at.
     pub(super) started: i64,
     schemas: BTreeMap<&'static str, u16>,
     /// MCAP channel and its newest log time, by topic.
@@ -123,8 +113,6 @@ impl Segment {
             path: path.to_path_buf(),
             source,
         })?;
-        // zstd at level 1: numeric topics shrink several times over, and
-        // JPEG frames, already compressed, cost little time to pass through.
         let mut writer = mcap::WriteOptions::new()
             .compression(Some(mcap::Compression::Zstd))
             .compression_level(1)
@@ -195,7 +183,6 @@ impl Segment {
         self.writer.write_to_known_channel(
             &mcap::records::MessageHeader {
                 channel_id,
-                // The low 32 bits; the envelope keeps the full seq.
                 sequence: u32::try_from(m.sequence & u64::from(u32::MAX)).unwrap_or(0),
                 log_time,
                 publish_time: ns(m.publish_time),

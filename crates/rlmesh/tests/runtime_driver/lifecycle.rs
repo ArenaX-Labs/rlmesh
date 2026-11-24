@@ -1,6 +1,3 @@
-//! The basic route loop: episodes, ids, chunk replay, predict timeouts,
-//! seeds, RPC error sources, cancellation reasons and observation events.
-
 use super::*;
 
 #[tokio::test]
@@ -21,15 +18,12 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
 
     assert_eq!(report.total_steps, 1);
     assert_eq!(report.total_episodes, 1);
-    // A driver-owned reset completes the episode right at its terminal step:
-    // no observation follows under its id, and the completion is its last event.
     let completed = hooks.completed_ids();
     assert_eq!(completed.len(), 1);
     assert_eq!(
         hooks.events_for(&completed[0]),
         ["started", "observation", "step", "completed"]
     );
-    // Telemetry flows end-to-end: the session snapshot carries per-op rows.
     let predict_rpc = report
         .telemetry
         .rows
@@ -37,7 +31,6 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
         .find(|row| row.source.op == "model.predict" && row.metric.name == "rpc.total")
         .expect("model.predict rpc.total recorded");
     assert_eq!(predict_rpc.count, 1);
-    // The request/response byte sizes are recorded alongside latency.
     for metric in ["request.bytes", "response.bytes"] {
         assert!(
             report
@@ -48,8 +41,6 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
             "model.predict {metric} recorded",
         );
     }
-    // Each completed loop iteration records its wall clock, and it bounds the
-    // per-op time it contains.
     let round = report
         .telemetry
         .rows
@@ -70,7 +61,6 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
         *hooks.step_infos.lock().unwrap(),
         vec![Some(info_map("phase", "step"))]
     );
-    // The terminal step says so itself, on the step event.
     assert_eq!(
         *hooks.step_flags.lock().unwrap(),
         vec![(vec![true], vec![false], vec![false])]
@@ -90,10 +80,6 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
 
 #[tokio::test]
 async fn runtime_mints_uuidv7_episode_id_and_emits_reset_adapter_on_episode_end() {
-    // R1 + R2: the runtime is the sole id authority — it mints a fresh UUIDv7
-    // episode id per reset (the env merely adopts + echoes it) — and fires an
-    // explicit ResetAdapter to the model when the episode ends, so the model
-    // evicts that episode's state without any position-diffing.
     let env = TestEnv::default();
     let model = TestModel::default();
     let report = new_driver(
@@ -118,8 +104,6 @@ async fn runtime_mints_uuidv7_episode_id_and_emits_reset_adapter_on_episode_end(
     );
     assert_eq!(resets[0].len(), 1, "one ended episode id was evicted");
     let id = &resets[0][0];
-    // A runtime-minted UUIDv7 in hyphenated string form (8-4-4-4-12), not the
-    // old env-minted placeholder. Version nibble is 7.
     assert_eq!(id.len(), 36, "episode id must be a UUID string, got {id:?}");
     assert_eq!(id.matches('-').count(), 4, "UUID has four hyphens: {id:?}");
     assert_eq!(
@@ -131,12 +115,6 @@ async fn runtime_mints_uuidv7_episode_id_and_emits_reset_adapter_on_episode_end(
 
 #[tokio::test]
 async fn runtime_replays_buffered_chunk_frames_and_skips_predict() {
-    // Runtime-owned action chunking: a model returns its ordered frames in
-    // `actions` (frame 0 plus `replay_frames` future frames); the driver applies
-    // one per step WITHOUT re-calling the model and re-plans only when the buffer
-    // drains. With chunk size 3 (2 replay frames) over a 6-step episode, predict
-    // fires on steps 1 and 4 only, while env.step and the observation ledger fire
-    // every step — the invariant the managed perturbation hooks depend on.
     let env = TestEnv {
         terminal_after: 6,
         ..Default::default()
@@ -155,7 +133,6 @@ async fn runtime_replays_buffered_chunk_frames_and_skips_predict() {
 
     assert_eq!(report.total_steps, 6, "env advanced a full 6-step episode");
     assert_eq!(report.total_episodes, 1);
-    // Chunk size 3 => predict on steps 1 and 4 only (4 of 6 steps are replays).
     assert_eq!(
         model.predicts.load(Ordering::SeqCst),
         2,
@@ -166,14 +143,11 @@ async fn runtime_replays_buffered_chunk_frames_and_skips_predict() {
         6,
         "env stepped every step, replay or not",
     );
-    // The observation ledger stays intact: one observation emitted per step input
-    // (reset obs + 5 step obs), even on the 4 replay steps the model never saw.
     assert_eq!(
         hooks.emitted_observations.lock().unwrap().len(),
         6,
         "observation emitted every step, including replay steps",
     );
-    // action_received fires every step (action perturbations apply to replays too).
     assert_eq!(hooks.actions.load(Ordering::SeqCst), 6);
 }
 
@@ -201,11 +175,6 @@ async fn model_predict_timeout_fails_session() {
         }
     ));
     assert_eq!(hooks.failed.load(Ordering::SeqCst), 1);
-    // The durable session telemetry is delivered even when the run errors out:
-    // the epilogue pushes the final Session snapshot on every exit path. With the
-    // 1s default window the ticker never fired in this ~5ms run, so EXACTLY one
-    // Session push arrives — from the failure epilogue, not the ticker — and it
-    // carries the reset rows recorded before the predict timed out.
     assert_eq!(
         hooks.telemetry_sessions.load(Ordering::SeqCst),
         1,
@@ -233,14 +202,9 @@ async fn zero_telemetry_window_disables_streaming_but_still_delivers_final() {
         .await
         .unwrap();
 
-    // A zero window disables the background ticker (no live Window stream)...
     assert_eq!(hooks.telemetry_windows.load(Ordering::SeqCst), 0);
-    // ...but the final durable Session push still fires exactly once at session
-    // end, carrying real rows...
     assert_eq!(hooks.telemetry_sessions.load(Ordering::SeqCst), 1);
     assert!(hooks.telemetry_session_rows.load(Ordering::SeqCst) >= 1);
-    // ...and the pull report still carries the per-op session total (pinned to
-    // model.predict so the mandatory env.reset row alone cannot satisfy it).
     assert!(
         report
             .telemetry
@@ -273,7 +237,6 @@ async fn driver_continues_after_non_terminal_step() {
     assert_eq!(model.predicts.load(Ordering::SeqCst), 2);
 }
 
-/// The reset seeds a route threads, one inner list per reset.
 async fn threaded_seeds(spec: RuntimeSessionSpec, hooks: Arc<RecordingHooks>) -> Vec<Vec<i64>> {
     let env = TestEnv::default();
     new_driver(spec, env.clone(), TestModel::default(), hooks)
@@ -304,12 +267,10 @@ async fn base_seed_episodes_are_paired_across_models_and_shards() {
         })
         .collect();
     assert_eq!(seeds, derived);
-    // Both episode events carry the seed the episode was reset with.
     let seeded: Vec<Option<i64>> = seeds.iter().map(|seeds| Some(seeds[0])).collect();
     assert_eq!(*hooks.started_seeds.lock().unwrap(), seeded);
     assert_eq!(*hooks.completed_seeds.lock().unwrap(), seeded);
 
-    // Another model in another session draws the same episodes.
     let other_model = RuntimeSessionSpec {
         session_id: "session-2".to_string(),
         model_component_id: "model-2".to_string(),
@@ -317,7 +278,6 @@ async fn base_seed_episodes_are_paired_across_models_and_shards() {
     };
     assert_eq!(threaded_seeds(other_model, Arc::default()).await, seeds);
 
-    // Two one-episode shards walk the same slots as the two-episode route.
     let mut sharded = Vec::new();
     for base in 0..2 {
         let shard = RuntimeSessionSpec {
@@ -339,8 +299,6 @@ fn env_rpc_preserves_recoverability_and_source() {
     let fatal = RuntimeError::env_rpc("env.reset", 0, FakeTransportError);
     assert!(!fatal.is_recoverable());
 
-    // The structured source is preserved and downcastable, not flattened to a
-    // string.
     use std::error::Error;
     let source = recoverable.source().expect("EnvRpc carries a source");
     assert!(source.downcast_ref::<FakeTransportError>().is_some());
@@ -371,7 +329,6 @@ async fn cancellation_reason_is_threaded_from_caller() {
     let env = TestEnv::default();
     let model = TestModel::default();
     let cancellation = CancellationToken::new();
-    // Pre-cancel so the first cancellation check trips during the session.
     cancellation.cancel();
 
     let error = new_driver(
@@ -440,15 +397,11 @@ async fn observation_emitted_carries_what_the_model_receives() {
         .expect("emitted observation recorder lock poisoned")
         .clone();
 
-    // Model saw: initial reset observation + the step observation for the
-    // non-terminal step. (The terminal step's observation is never sent.)
     assert_eq!(emitted.len(), 2, "emitted: {emitted:?}");
-    // Each carries the transformed payload and, beside it, the env's.
     for emitted in &emitted {
         let raw = emitted.raw_observation.as_ref().expect("a transform ran");
         assert_eq!(emitted.observation, [&[MARKER][..], raw].concat());
     }
-    // The model received exactly the transformed observations.
     let seen = model
         .seen_observations
         .lock()

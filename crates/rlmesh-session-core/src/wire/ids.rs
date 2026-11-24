@@ -51,9 +51,9 @@ impl SessionId {
         self.0
     }
 
-    /// The session a human name (`bench-3`, `default`) identifies: a UUIDv8
-    /// of the name's hash, the same in every process, so participants that
-    /// name a session meet in it without exchanging its id.
+    /// The session a human name (`bench-3`, `default`) identifies: a UUIDv8 of the
+    /// name's hash, the same in every process, so participants that name a session
+    /// meet in it without exchanging its id.
     pub fn named(name: &str) -> Self {
         let hash = blake3::hash(format!("rlmesh.session.v1:{name}").as_bytes());
         let mut bytes = [0_u8; 16];
@@ -81,7 +81,6 @@ impl FromStr for SessionId {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let uuid =
             Uuid::parse_str(s).map_err(|err| IdError::new("session id", s, err.to_string()))?;
-        // v7: a fresh session; v8: a named one ([`SessionId::named`]).
         if !matches!(uuid.get_version_num(), 7 | 8) {
             return Err(IdError::new(
                 "session id",
@@ -96,9 +95,6 @@ impl FromStr for SessionId {
 /// The longest id that fits one key chunk.
 pub const MAX_ID_LEN: usize = 128;
 
-/// Checks that `value` can be one Zenoh key-expression chunk: 1 to
-/// [`MAX_ID_LEN`] bytes of `[A-Za-z0-9._-]`. That keeps ids free of `/`,
-/// wildcards and the `@`/`$` verbatim markers.
 fn validate_key_chunk(kind: &'static str, value: &str) -> Result<(), IdError> {
     let ok = !value.is_empty()
         && value.len() <= MAX_ID_LEN
@@ -133,14 +129,10 @@ impl ParticipantId {
         &self.0
     }
 
-    /// An id slot a bounded decoder fills next ([`Self::assign`]): empty,
-    /// so not a valid id until then, and nothing allocated.
     pub(crate) const fn unset() -> Self {
         Self(String::new())
     }
 
-    /// Makes this id `id`, keeping its buffer: nothing is allocated when
-    /// it already is `id`, or when the buffer is long enough.
     pub(crate) fn assign(&mut self, id: &[u8]) -> Result<(), Unread> {
         if self.0.as_bytes() == id {
             return Ok(());
@@ -208,9 +200,8 @@ impl FromStr for TenantId {
     }
 }
 
-/// A stream, by its in-session id. The host assigns it when it normalises a
-/// declaration and never reuses it within the session, so an id names one
-/// immutable schema for the session's life. Zero is "none".
+/// A stream, by its in-session id. The host assigns it and never reuses it within the
+/// session, so an id names one immutable schema for the session's life. Zero is "none".
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChannelId(pub u32);
 
@@ -244,7 +235,6 @@ impl fmt::Display for Epoch {
 
 /// A lease token: unique and increasing within a session, so a preemption
 /// always issues a token the old holder has never seen (a fencing token).
-/// Zero is "none".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LeaseToken(pub u64);
 

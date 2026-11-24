@@ -1,4 +1,3 @@
-// X-12: explicit per-operation cancellation through the C and C++ remote clients.
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -71,7 +70,7 @@ struct Factory : EnvFactory<Factory> {
   int builds = 0;
   MadeEnv make(const Kwargs&) {
     ++builds;
-    if (fire) fire->cancel();  // Deterministic admission-to-watcher test hook.
+    if (fire) fire->cancel();
     if (fail) throw ValueError("make failed");
     return Env(Script{});
   }
@@ -96,7 +95,6 @@ void remote_calls() {
   CHECK(rlmesh_ext_remote_env_step(remote.raw(), action.raw(), refused.raw(), &out, &reward, &t,
                                    &tr, &info) == RLMESH_ERR_RUNTIME);
   token.cancel();
-  // Remote cancellation returns while the server's callback remains blocked.
   CHECK(call.wait_for(2s) == std::future_status::ready);
   call.get();
   gate.release();
@@ -117,7 +115,6 @@ void remote_calls() {
   } catch (const RuntimeError&) {
   }
   server.shutdown();
-  // A refused closed call leaves the firing pending for another handle.
   EnvServer next(Env(Script{}), EnvServerOptions{}.with_address(":0/env"));
   next.start();
   RemoteEnv fresh(RemoteEnvOptions{}.with_address(next.address()));
@@ -153,7 +150,6 @@ void vector_calls() {
   ext::CancelToken token;
   auto actions =
       std::get<0>(ext::reset(remote, token, VectorSeed(std::vector<int64_t>{1, 2}), InfoDict{}));
-  // Capacity refusal touches no outputs and consumes no firing.
   token.cancel();
   RLMeshValue *out = const_cast<RLMeshValue*>(actions.raw()), *info = out;
   double reward = 42;
@@ -221,7 +217,6 @@ void immediate_completion() {
   }
 }
 void shared_server_token() {
-  // X-13 deferred test: one firing reaches the server and an X-12 call.
   ext::CancelToken token;
   Factory factory;
   auto server = ext::start(factory, ":0/env", EnvFactoryServeOptions{}.with_cancel(token));
@@ -239,7 +234,6 @@ void shared_server_token() {
   gate.release();
   call.get();
   cancelled([&] { server.wait(2s); });
-  // Both have released their subscription; the next idle firing is pending.
   token.cancel();
   cancelled([&] { ext::reset(remote, token); });
   ext::reset(remote, token);

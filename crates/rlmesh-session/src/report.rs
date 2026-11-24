@@ -1,15 +1,11 @@
 //! Observer telemetry: what a participant publishes so an observer
 //! (the cockpit) can show the counters only the measuring side knows.
 //!
-//! Every [`REPORT_PERIOD`] a participant that publishes streams or runs a
-//! controller sends one [`ParticipantReport`] on `p/{participant}/report`,
-//! sealed under its `k_up` for the host, data class, best effort: its publishers' published and coalesced counts,
-//! and, once a [`Controller`](crate::Controller) is bound, its run counters
-//! ([`run_counters`]). A participant with neither (a pure observer, the
-//! host) sends nothing. The host relays the newest report of each participant
-//! in its signed `host/health`, which is what observers read. The counters
-//! are cumulative, so a dropped report
-//! loses nothing, and nothing in the session acts on them.
+//! Every [`REPORT_PERIOD`] a participant that publishes streams or runs a controller sends one
+//! [`ParticipantReport`] on `p/{participant}/report`, best effort: its publishers' counts and,
+//! once a [`Controller`](crate::Controller) is bound, its [`run_counters`]. The host relays the
+//! newest report of each participant in its signed `host/health`. The counters are
+//! cumulative, so a dropped report loses nothing, and nothing in the session acts on them.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -38,13 +34,10 @@ pub fn run_counters(stats: &RunStats, pending: Option<Duration>) -> RunCounters 
         starts: stats.starts,
         completions: stats.completions,
         busy_skips: stats.skipped(SkipReason::Busy),
-        // The wire has no counter of its own for a gone publisher: its
-        // starts wait for the input, as `waiting_for`.
         waiting_for: stats.skipped(SkipReason::Waiting) + stats.skipped(SkipReason::PublisherGone),
         stale_input: stats.skipped(SkipReason::StaleInput),
         window_gap: stats.skipped(SkipReason::WindowGap),
         decode: stats.skipped(SkipReason::Decode),
-        // Nor for a parked controller's: it holds no lease.
         no_lease: stats.skipped(SkipReason::NoLease) + stats.skipped(SkipReason::Parked),
         chunks_sent: stats.chunks_sent,
         pending_ns: ns(pending),
@@ -54,10 +47,8 @@ pub fn run_counters(stats: &RunStats, pending: Option<Duration>) -> RunCounters 
     }
 }
 
-/// Seals a report on a key for the host (`None`: not sealed).
 pub(crate) type SealReport = Box<dyn Fn(&str, &ParticipantReport) -> Option<Vec<u8>> + Send>;
 
-/// What the report loop reads from its participant.
 pub(crate) struct ReportInputs {
     pub(crate) transport: Transport,
     pub(crate) key: String,
@@ -65,13 +56,9 @@ pub(crate) struct ReportInputs {
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) epoch: Arc<AtomicU64>,
     pub(crate) run: Arc<Mutex<Option<RunSource>>>,
-    /// Seals a report under the participant's `k_up` for the host; `None`
-    /// before the participant has attached.
     pub(crate) seal: SealReport,
 }
 
-/// Sends a report every [`REPORT_PERIOD`] while there is something to
-/// report. `streams` lists this participant's publishers' counters.
 pub(crate) async fn report_loop(
     inputs: ReportInputs,
     streams: impl Fn() -> Vec<PublisherCounters> + Send,

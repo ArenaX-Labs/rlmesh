@@ -1,14 +1,4 @@
-"""The declared construction-parameter primitive: ``Param`` and ``ParamSpec``.
-
-A factory/model declares the *parameters that mint it* -- the introspectable,
-validatable surface a managed dashboard presents, validates before paying GPU
-cost, and sweeps. Construction (this) is orthogonal to adaptation
-(:mod:`rlmesh.adapters`): params describe how to *build* an env/model; adapters
-map the obs/action contract of an already-built one.
-
-The leaf is named ``Param`` (not ``Field``): :mod:`rlmesh.adapters` already
-exports ``Field`` as a contiguous obs-leaf slice, a different concept.
-"""
+"""The declared construction-parameter primitive: ``Param`` and ``ParamSpec``."""
 
 from __future__ import annotations
 
@@ -107,9 +97,7 @@ class ParamSpec:
                     f"ParamSpec declares parameter {param.name!r} more than once"
                 )
             seen.add(param.name)
-        # Variadic ``*params`` reads at the call site like a literal list of
-        # knobs; a frozen dataclass forbids normal assignment, so set via the
-        # base ``__setattr__``.
+        # A frozen dataclass forbids normal assignment; set through the base ``__setattr__``.
         object.__setattr__(self, "params", tuple(params))
         object.__setattr__(self, "extra", extra)
 

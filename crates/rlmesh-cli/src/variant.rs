@@ -1,11 +1,5 @@
 //! The compute-variant blocks of the `dev.rlmesh.package` label.
 //!
-//! One model or environment version can ship several images (a PyTorch CUDA
-//! build, a ROCm build, a JAX build) and several runtime profiles of one image
-//! (osmesa or EGL rendering). The label structure is:
-//! an OCI image index is a version, its non-attestation children are variants,
-//! and each child declares itself in its `dev.rlmesh.package` label:
-//!
 //! ```json
 //! {
 //!   "schemaVersion": 1,
@@ -21,21 +15,6 @@
 //!   ]
 //! }
 //! ```
-//!
-//! Each block is optional; a `variant` block needs a `key`. `facets` are
-//! `framework` (a lowercase token), `accel` (`cpu`, `cuda`, `rocm`), and
-//! `render` (`osmesa`, `egl`, `none`). `requires` keys are the fixed set
-//! [`REQUIRE_KEYS`]: `accel.vendor` is `nvidia` or `amd`; `accel.compute`,
-//! `accel.cuda`, and `accel.driver` are comma-joined version clauses
-//! (`>=8.0,<10.0`, a bare version meaning a minimum); `accel.gfx` is a list of
-//! AMD targets; `accel.vram` is the minimum VRAM per GPU as a quantity string
-//! (`"16Gi"`, [`parse_quantity`]); every key but `accel.vendor` needs
-//! `accel.vendor`. A profile's `requires` and `facets` override the variant's
-//! key by key. An image without a variant block gets its requires inferred
-//! from its CUDA/ROCm markers ([`infer`](fn@infer)).
-//!
-//! Like [`crate::image_check`], the parsing rules, row keys and report
-//! message prefixes (`variant:`, `profiles:`, `rows:`) are a contract.
 
 mod constraint;
 mod declaration;
@@ -69,10 +48,10 @@ use requires::{accel_vendor, requires_vendor, vendor_problems};
 /// The row key of an undeclared image.
 pub const DEFAULT_VARIANT_KEY: &str = "default";
 
-/// The requires and facets the metadata records for the image's base row:
-/// the declared requires when the variant block has them; else, when the
-/// declared `facets.accel` names a stack the markers do not show, only the
-/// vendor that stack implies; else the inferred ones.
+/// The requires and facets the metadata records for the image's base row: the
+/// declared requires when the variant block has them; else, when the declared
+/// `facets.accel` names a stack the markers do not show, only the vendor that
+/// stack implies; else the inferred ones.
 pub fn effective(
     blocks: &ComputeBlocks,
     inferred: &Inferred,
@@ -102,10 +81,10 @@ pub fn selectable(os: &str, architecture: &str) -> bool {
     os == "linux" && architecture == "amd64"
 }
 
-/// The key derived for an image with no variant block: `default` when
-/// it is the only undeclared image on its platform (always, for a single
-/// image), else named for its stack (`cuda12`, `rocm6`, `cpu`); a platform the
-/// fleet cannot select is appended (`default-arm64v8`).
+/// The key derived for an image with no variant block: `default` when it is the
+/// only undeclared image on its platform (always, for a single image), else
+/// named for its stack (`cuda12`, `rocm6`, `cpu`); a platform the fleet cannot
+/// select is appended (`default-arm64v8`).
 pub fn synth_key(
     inferred: &Inferred,
     os: &str,
@@ -142,9 +121,7 @@ pub fn package_object(config: &ImageConfig) -> Option<Map<String, Value>> {
 
 /// Check an image's compute variant: invalid `variant` and `profiles`
 /// declarations are failures; mismatches with CUDA/ROCm markers and the
-/// describe envelope are warnings. Derive row keys for a single image. An image without
-/// a variant block
-/// reports what is inferred for it.
+/// describe envelope are warnings.
 pub fn check_variant(config: &ImageConfig) -> CheckReport {
     let package = package_object(config).unwrap_or_default();
     let (blocks, mut report) = parse_compute_blocks(&package);
@@ -161,7 +138,6 @@ pub fn check_variant(config: &ImageConfig) -> CheckReport {
                 profile.key
             ));
         }
-        // Profiles override key by key; the merged map must still hold together.
         if profile.requires.is_empty() {
             continue;
         }
@@ -266,7 +242,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The label docs/compute-variants.md documents.
     fn documented() -> Value {
         json!({
             "schemaVersion": 1,
@@ -332,7 +307,6 @@ mod tests {
             "variant: none declared; inferred from no CUDA or ROCm markers: facets accel=cpu; no \
              requires (a CPU image)"
         );
-        // A declared variant without requires gets the inferred ones.
         let report = check_variant(&image(
             &["ROCM_VERSION=6.2.1"],
             Some(
@@ -344,7 +318,6 @@ mod tests {
             "variant: rocm6 (facets accel=rocm, framework=torch; requires accel.vendor=amd); \
              requires inferred from ROCM_VERSION=6.2.1"
         );
-        // Profiles without a variant block are rows named for the profile.
         let mut config = image(
             &[],
             Some(
@@ -353,7 +326,6 @@ mod tests {
         );
         let report = check_variant(&config);
         assert_eq!(report.passed[1], "rows: osmesa, egl (default)");
-        // A platform the fleet cannot select is named for it and excluded.
         config.architecture = "arm64".to_owned();
         config.labels.clear();
         assert_eq!(
@@ -384,7 +356,6 @@ mod tests {
         assert_eq!(report.not_checked.len(), 1, "{report:#?}");
         assert!(report.not_checked[0].contains("resources are validated against the ceilings"));
 
-        // Resources are noted whether or not the profile overrides requires.
         let package = json!({
             "schemaVersion": 1,
             "variant": {"key": "cpu"},

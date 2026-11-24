@@ -35,38 +35,26 @@ pub struct CoreConnect<'a> {
     pub request_timeout: Option<Duration>,
 }
 
-/// How long a dial bounded by `connect_timeout` waits for the session: the
-/// whole bound, as the caller asked, less a margin, so a join that runs out
-/// says why (ports that did not answer, a host not up) before the bare
-/// bound expires.
 fn join_bound(connect_timeout: Duration) -> Duration {
     connect_timeout.saturating_sub((connect_timeout / 10).min(Duration::from_millis(250)))
 }
 
 /// The any-arity remote env client both [`RemoteEnv`] and
 /// [`RemoteVectorEnv`] wrap, and the Python extension drives directly
-/// (binding plumbing, exempt from semver).
 pub struct EnvClientCore {
     inner: Link,
     env_contract: spaces::EnvContract,
     observation_space: Arc<spaces::SpaceSpec>,
     action_space: Arc<spaces::SpaceSpec>,
     num_envs: usize,
-    /// The env's negotiation offer captured at handshake.
     session_offer: rlmesh_proto::SessionOffer,
-    /// This connection's container id (UUIDv7), minted at connect.
     env_id: String,
-    /// Per-lane current episode ids; this client is the id authority on the
-    /// direct path.
     episode_ids: Vec<String>,
-    /// The edition this leg negotiated, or the last pin.
     selected_workflow_edition: String,
     request_timeout: Option<Duration>,
     closed: bool,
     warned_shadowed_info_key: bool,
-    /// Whether `info` carries the runtime-reserved keys.
     runtime_info: bool,
-    /// The client class errors name (`RemoteEnv`, `RemoteVectorEnv`).
     name: &'static str,
 }
 
@@ -88,8 +76,6 @@ impl EnvClientCore {
 
     /// Dial `address` and handshake. A dial failure is the ConnectionError
     /// class (a join that ran out of time too, saying why, as with no
-    /// bound), a refused handshake the ProtocolException class, an expired
-    /// `connect_timeout` the TimeoutError class.
     pub async fn connect_with(address: &str, options: CoreConnect<'_>) -> Result<Self> {
         let parsed = ConnectAddress::env(address)?;
         let address = parsed.as_str();
@@ -162,8 +148,6 @@ impl EnvClientCore {
         })
     }
 
-    /// A client over a v2-native robot's Gym view: one lane, its spaces
-    /// keyed by part path, the edition this build runs for `declared`.
     fn of_view(view: crate::lockstep::GymView, address: String, declared: Option<&str>) -> Self {
         let (observation_space, action_space) = view.spaces();
         let session_offer = rlmesh_proto::SessionOffer::this_build(declared);
@@ -225,8 +209,6 @@ impl EnvClientCore {
         self.inner.address()
     }
 
-    /// The address as errors and logs show it: an invite's key, a
-    /// credential, left out.
     fn shown_address(&self) -> String {
         rlmesh_session::address::redact(self.address())
     }
@@ -290,7 +272,6 @@ impl EnvClientCore {
 
     /// Pin the env to the session edition a model leg settled on (the
     /// three-way floor), replacing the handshake selection as the first Join
-    /// message.
     pub fn pin_workflow_edition(&mut self, edition: &str) {
         self.selected_workflow_edition = edition.trim().to_string();
         match &mut self.inner {
@@ -335,8 +316,6 @@ impl EnvClientCore {
         Ok(())
     }
 
-    /// Set a runtime-reserved info key unless the env reported its own; the
-    /// first collision per client is logged.
     fn insert_runtime_info(&mut self, info: &mut MetaMap, key: &'static str, value: MetaValue) {
         if !self.runtime_info {
             return;
@@ -366,8 +345,6 @@ impl EnvClientCore {
         )
     }
 
-    /// The bound for one call: the request's own `timeout_ms` when set,
-    /// else the client's request timeout.
     fn call_timeout(&self, timeout_ms: i64) -> Option<Duration> {
         match u64::try_from(timeout_ms) {
             Ok(ms) if ms > 0 => Some(Duration::from_millis(ms)),
@@ -377,7 +354,6 @@ impl EnvClientCore {
 
     /// Reset lanes (`env_indices` empty: all of them) and return the wire
     /// result; `info` carries `episode_ids`. A nonzero `timeout_ms` bounds
-    /// this call instead of the client's request timeout.
     pub async fn reset(&mut self, req: VectorResetRequest) -> Result<VectorResetResult> {
         self.check_open()?;
         let timeout = self.call_timeout(req.timeout_ms);
@@ -405,8 +381,6 @@ impl EnvClientCore {
         env_indices: Vec<u32>,
         timeout: Option<Duration>,
     ) -> Result<VectorResetResult> {
-        // Mint authoritative episode ids for the lanes this reset starts and
-        // push them down (the env adopts them; it never mints).
         let pushed_ids: Vec<String> = if env_indices.is_empty() {
             let ids: Vec<String> = (0..self.num_envs).map(|_| crate::mint_id()).collect();
             self.episode_ids = ids.clone();
@@ -445,8 +419,6 @@ impl EnvClientCore {
         let timeout = self.call_timeout(req.timeout_ms);
         validate_action_count(&req.actions, self.num_envs)
             .map_err(|error| Error::Environment(EnvironmentError::from_wire(error)))?;
-        // Push the authoritative per-lane ids (the env adopts a rolled id on a
-        // NEXT_STEP autoreset).
         let pushed_ids = self.episode_ids.clone();
         let inner = &mut self.inner;
         let VectorStepResult {
@@ -472,8 +444,6 @@ impl EnvClientCore {
         let mut info = info.unwrap_or_default();
         let ids = self.episode_ids_value();
         self.insert_runtime_info(&mut info, "episode_ids", ids);
-        // A single env reports 1 on the step that ends its episode; a vector
-        // env the count of lanes whose episode ended.
         let completed = if self.num_envs == 1 {
             usize::from(terminated[0] || truncated[0]).max(completed_episodes.len())
         } else {
@@ -485,8 +455,6 @@ impl EnvClientCore {
             MetaValue::Int(i64::try_from(completed).unwrap_or(i64::MAX)),
         );
 
-        // Surface the ids as of this step (the terminal obs of a completing
-        // lane still belongs to the episode that just ended).
         let result = VectorStepResult {
             observations,
             rewards,
@@ -496,10 +464,6 @@ impl EnvClientCore {
             episode_ids: self.episode_ids.clone(),
             completed_episodes,
         };
-        // Under NEXT_STEP the env autoresets each completed lane next step and
-        // adopts the fresh id pushed then, and under SAME_STEP the lane's next
-        // step is already the new episode's, so roll it now. Under DISABLED
-        // the lane stays done until an explicit reset re-mints.
         if self.env_contract.autoreset_mode != spaces::types::AutoresetMode::Disabled {
             for completed in &result.completed_episodes {
                 if let Some(slot) = self.episode_ids.get_mut(completed.env_index as usize) {
@@ -522,8 +486,6 @@ impl EnvClientCore {
 
     /// Close this client's session (idempotent). Bounded by the request
     /// timeout, else a 5 s grace; on expiry or a lost connection it detaches
-    /// locally and succeeds. Other errors are returned, and the client is
-    /// closed either way.
     pub async fn close(&mut self) -> Result<()> {
         if self.closed {
             return Ok(());
@@ -545,8 +507,6 @@ impl EnvClientCore {
         Ok(())
     }
 
-    /// Reset as [`reset`](Self::reset) and decode to shared values: one
-    /// value per lane and the info.
     pub(crate) async fn reset_values(
         &mut self,
         seeds: Vec<i64>,
@@ -570,7 +530,6 @@ impl EnvClientCore {
         ))
     }
 
-    /// Step as [`step`](Self::step) with one shared value per lane.
     #[allow(clippy::type_complexity)]
     pub(crate) async fn step_values(
         &mut self,
@@ -600,7 +559,6 @@ impl EnvClientCore {
         ))
     }
 
-    /// Render lane `env_index` decoded to a uint8 frame.
     pub(crate) async fn render_value(&mut self, env_index: u64) -> Result<Option<Value>> {
         match self.render(env_index).await? {
             Some(png) => decode_render_png(&png).map(Some),
@@ -609,9 +567,6 @@ impl EnvClientCore {
     }
 }
 
-/// Decode a wire PNG frame to `(shape, raw uint8 bytes)`: `[H, W]`, `[H, W,
-/// 3]` or `[H, W, 4]`, other formats as RGBA. An undecodable frame is the
-/// ProtocolException class.
 pub(crate) fn decode_render_frame(png: &[u8]) -> Result<(Vec<usize>, Vec<u8>)> {
     use image::{DynamicImage, ImageFormat};
 
@@ -642,8 +597,6 @@ pub(crate) fn decode_render_png(png: &[u8]) -> Result<Value> {
     )?))
 }
 
-/// Resolve the client's own declaration (Core's chain: the call, then the
-/// process and project surfaces) and dial with `options`.
 pub(super) async fn connect_core(options: RemoteEnvOptions) -> Result<EnvClientCore> {
     let address = normalize_connect_address(options.address.as_deref())?;
     let declared = crate::editions::resolve_native(crate::editions::EditionSources {
@@ -662,7 +615,6 @@ pub(super) async fn connect_core(options: RemoteEnvOptions) -> Result<EnvClientC
     .await
 }
 
-/// Fail `future` with the cancellation class when `token` fires.
 pub(super) async fn cancellable<T>(
     subscriptions: Vec<crate::ext::CancelSubscription>,
     future: impl std::future::Future<Output = Result<T>>,
@@ -677,8 +629,6 @@ pub(super) async fn cancellable<T>(
     _watch.finish(result)
 }
 
-/// Close an unclosed core at scope exit: bounded on this thread outside a
-/// runtime, on a detached library task inside one.
 pub(super) fn teardown(mut core: Box<EnvClientCore>) {
     if core.is_closed() {
         return;
@@ -703,7 +653,6 @@ mod tests {
     fn remote_watch_keeps_a_firing_between_admission_and_first_poll() {
         let token = crate::ext::CancelToken::new();
         let subscriptions = vec![token.subscribe()];
-        // Deterministic hook at the exact handoff used by io_subscribed.
         token.cancel();
         let result = block_on_library(cancellable(subscriptions, async {
             panic!("a fired admission must refuse before any I/O");

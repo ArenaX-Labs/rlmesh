@@ -46,8 +46,6 @@ impl Encoded {
         out
     }
 
-    /// `head`, then `payload` as `bytes` field `field` (its own segment),
-    /// then `tail`.
     fn around(mut head: Vec<u8>, field: u32, payload: &Bytes, tail: Vec<u8>) -> Self {
         let mut segments = Vec::with_capacity(3);
         if !payload.is_empty() {

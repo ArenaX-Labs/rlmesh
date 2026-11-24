@@ -27,26 +27,17 @@ from ._sources import (
     run_docker,
 )
 
-#: Default seconds a sandbox waits for its container to start serving. The
-#: server only joins its session after the env factory's ``make()`` (or the
-#: model's ``load()``) runs, so a heavy env (large sim/asset load -- e.g. a
-#: LIBERO task suite takes ~12s) needs headroom. Overridable per construction
-#: via ``SandboxEnv(..., connect_timeout_seconds=...)``.
+#: Seconds to wait for a container to start serving; the server joins only after the env ``make()`` or model ``load()`` returns, which can be slow.
 SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 30.0
 
-#: The variable a container's session host takes its keys from
-#: (``rlmesh_session::address::HOST_IDENTITY_VAR``).
+#: Env var a container's session host reads its keys from.
 HOST_IDENTITY_VAR = "RLMESH_HOST_IDENTITY"
 
-#: The longest one readiness attempt waits, so an image that will never
-#: answer is told apart between attempts.
 _READY_ATTEMPT_SECONDS = 1.0
-#: Held from picking a container's free ports until ``docker run`` binds
-#: them, so sandboxes started from several threads never pick the same ones.
+#: Held from picking free ports until ``docker run`` binds them.
 _PORTS_LOCK = threading.Lock()
 
-#: An HTTP/2 client preface and an empty SETTINGS frame: what a v1 (gRPC)
-#: server answers with a SETTINGS frame of its own.
+#: HTTP/2 preface plus an empty SETTINGS frame; a v1 (gRPC) server answers with SETTINGS.
 _H2_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" + bytes([0, 0, 0, 4, 0, 0, 0, 0, 0])
 _H2_SETTINGS = 0x04
 
@@ -89,11 +80,9 @@ def normalize_user(user: str | int | None) -> str | None:
 class SandboxBuild:
     """Build-from-source infrastructure for a sandbox image.
 
-    Configures how the image is *built* from a ``gym://``/``hf://`` source (base
-    image, extra packages, the rlmesh pin, ...). Meaningless for a prebuilt image
-    (run, not built) -- those fields are ignored with a warning. Pair with
-    :class:`SandboxRuntime` for ``docker run`` settings. Env/model construction
-    params stay in the sandbox's ``**params`` (the ``make``/``load`` binding).
+    Configures the build from a ``gym://``/``hf://`` source (base image, extra
+    packages, the rlmesh pin, ...). Ignored with a warning for a prebuilt image.
+    Pair with :class:`SandboxRuntime` for ``docker run`` settings.
     """
 
     base_image: str | None = None
@@ -109,9 +98,8 @@ class SandboxBuild:
 class SandboxRuntime:
     """Container run-time settings for a sandbox -- ``docker run`` flags.
 
-    Applies whenever the container is *run* (prebuilt images and build-then-run),
-    unlike :class:`SandboxBuild` which only configures the from-source build. The
-    host-resource knobs sim envs/models need:
+    Applies whenever the container is run. Host-resource knobs for sim
+    envs/models:
 
     - ``gpus``: ``docker run --gpus`` (``"all"`` / a count / ``"device=0,1"``) --
       legacy GPU injection (CUDA compute only). NOTE: this does *not* inject the
@@ -125,8 +113,7 @@ class SandboxRuntime:
       (typically ``os.getuid()``); the container runs ``--cap-drop ALL``, so
       even root inside it obeys the mount's permission bits.
 
-    Build-from-source attaches none of these (it has no ``docker run`` step); set
-    them only for a prebuilt image source.
+    Set these only for a prebuilt image source.
     """
 
     gpus: str | int | None = None
@@ -141,7 +128,6 @@ class SandboxInfo:
 
     requested_source: str
     resolved_source: str
-    #: Carries the sandbox's key: the repr shows it redacted.
     address: str
     container_id: str
 
@@ -161,8 +147,6 @@ class _SandboxStartInfo(TypedDict):
     container_id: str
 
 
-# Only these are retried while the container boots: a refused/unavailable
-# connection or a connect timeout.
 _TRANSIENT_DIAL_ERRORS = (ConnectionError, TimeoutError, OSError)
 
 
@@ -209,13 +193,9 @@ def wait_serving(
 ) -> None:
     """Wait up to ``timeout`` seconds for the container to serve, or raise.
 
-    ``ready(attempt_timeout)`` connects to what it serves, raising a dial
-    error until it answers. An image built with rlmesh 0.1 (it answers the
-    v1 wire) is refused naming it. Whatever an attempt raised, a container
-    that exited is the cause: the error leads with its exit code and its
-    last log lines (``the env container exited with code 1 during
-    startup``), with the dial it cut short left out. An inspect failure is
-    reported as such instead of being misread as an exit.
+    ``ready(attempt_timeout)`` connects to what it serves, raising a dial error
+    until it answers. An image built with rlmesh 0.1 is refused naming it. If the
+    container exited, the error leads with its exit code and last log lines.
     """
     deadline = time.monotonic() + timeout
     short_id = sandbox.container_id[:12]
@@ -309,7 +289,6 @@ class ContainerState:
     """A container's run state, as ``docker inspect`` reports it."""
 
     running: bool
-    #: Its exit code once it stopped (``None`` while it runs).
     exit_code: int | None
 
 
@@ -346,7 +325,6 @@ def container_stopped(container_id: str) -> bool:
     return state is not None and not state.running
 
 
-#: The most log lines an error quotes from a container.
 CONTAINER_LOG_TAIL = 40
 
 
@@ -380,30 +358,26 @@ def with_container_logs(exc: BaseException, container_id: str, role: str) -> Non
     add_note: Callable[[str], None] | None = getattr(exc, "add_note", None)
     if len(args) == 1 and isinstance(args[0], str):
         exc.args = (f"{args[0]}\n{text}",)
-    elif add_note is not None:  # Python 3.11+
+    elif add_note is not None:
         add_note(text)
 
 
 class SandboxLifecycle:
     """Container-lifecycle mixin for Docker-backed env sessions.
 
-    Combined with a ``Remote*EnvBase`` (which provides the reset/step/contract surface
-    and the client this session attaches to its container): a sandbox env *is* a remote
-    env that also owns an isolated container. Closing it detaches the client and stops
-    the container. The concrete subclass supplies :meth:`_detach` (its remote base's
-    ``close``) and starts the container in ``__init__`` before attaching ``self``.
+    Combined with a ``Remote*EnvBase``; closing detaches the client and stops the
+    container. The subclass supplies :meth:`_detach` (its remote base's ``close``)
+    and starts the container in ``__init__`` before attaching ``self``.
     """
 
     _source: str
     _closed: bool
     _connect_timeout: float
     sandbox: SandboxInfo
-    # Lent to a run or binding, which holds the env's lease until it ends.
     _on_loan: bool = False
 
     if TYPE_CHECKING:
-        # Supplied by the ``Remote*EnvBase`` mixed in (declared here so :meth:`_attach`
-        # can dial through it); no runtime body, so the real one is not shadowed.
+
         def _initialize(
             self,
             address: str | None = None,
@@ -421,11 +395,9 @@ class SandboxLifecycle:
     def _lent(self) -> Iterator[str]:
         """Lend the container to a run on its address, then attach again.
 
-        A run drives the env on a lease of its own, so this handle lets go of
-        its lease (and episode) for the run and takes it back after, unless
-        the run closed the sandbox. A second loan is refused before it lets
-        go of anything: its attach would wait out the first's lease, then stop
-        the container under it.
+        This handle lets go of its lease (and episode) for the run and takes it
+        back after, unless the run closed the sandbox. A second loan is refused
+        before it lets go of anything.
         """
         if self._on_loan:
             raise RuntimeError(
@@ -461,8 +433,6 @@ class SandboxLifecycle:
             )
         except BaseException:
             try:
-                # Killed: a container that never served has nothing to drain,
-                # and a stop would wait out Docker's grace period first.
                 _sandbox_stop_env(container_id=sandbox.container_id, kill=True)
             except BaseException:
                 pass
@@ -486,11 +456,9 @@ class SandboxLifecycle:
         remote_error: BaseException | None = None
         try:
             self._detach()
-        except BaseException as exc:  # best effort: still stop the container
+        except BaseException as exc:
             remote_error = exc
-        # Only mark the session closed once the container is actually stopped. If
-        # stopping fails (e.g. a transient Docker daemon error) leave ``_closed``
-        # False so close()/__exit__/__del__ can retry instead of leaking the container.
+        # Mark closed only after the stop succeeds, so a failed stop can be retried.
         if sandbox is not None:
             _sandbox_stop_env(container_id=sandbox.container_id)
         self._closed = True
@@ -524,17 +492,13 @@ def start_sandbox_container(
 ) -> SandboxInfo:
     """Resolve the source, then build-from-source or run a prebuilt image.
 
-    The shared ``__init__`` prelude for the sandbox env sessions. A ``gym://``/
-    ``hf://`` (or bare gym id) source is built from source via the native sandbox
-    builder; a ``docker://``/``image://`` or bare image-shaped source is run
-    directly as a prebuilt rlmesh-serving image, with the binding injected as
-    ``RLMESH_MAKE_KWARGS`` (no build, no rlmesh pin).
+    A ``gym://``/``hf://`` (or bare gym id) source is built from source; a
+    ``docker://``/``image://`` or bare image-shaped source runs as a prebuilt
+    image, with the binding injected as ``RLMESH_MAKE_KWARGS``.
 
-    :class:`SandboxBuild` configures the from-source build; :class:`SandboxRuntime`
-    (``gpus`` / ``devices`` / ``volumes``) configures ``docker run`` and applies to
-    the prebuilt path only -- the native build-from-source path has no ``docker run``
-    step and rejects a set runtime flag. ``render_size`` is the model's camera
-    size, which a prebuilt image binds on its env's declared camera dial.
+    :class:`SandboxRuntime` applies to the prebuilt path only; the build path
+    rejects a set runtime flag. ``render_size`` is the model's camera size, bound
+    on a prebuilt image's camera dial.
     """
     build = build or SandboxBuild()
     run = runtime or SandboxRuntime()
@@ -624,17 +588,11 @@ def start_prebuilt_container(
     ``RLMESH_ADDRESS`` and serving in it as ``RLMESH_NAME`` (``name``); the
     binding and eval shape are injected as environment variables
     (``RLMESH_MAKE_KWARGS`` etc.), and the session's ports are published on
-    consecutive loopback ports, which its participants dial. No build and no
-    rlmesh pin -- the image is whatever the publisher baked.
+    consecutive loopback ports.
 
-    ``num_envs`` / ``vectorization_mode`` are the vectorized-env eval shape: when
-    left ``None`` (the model path -- a model is never vectorized) the corresponding
-    ``RLMESH_NUM_ENVS`` / ``RLMESH_VECTORIZATION_MODE`` env vars are not injected, so
-    the container serves in its default (single, model) mode.
-
-    A missing image is pulled here, announced on stderr, rather than invisibly
-    inside ``docker run`` -- a multi-GB pull with no progress line reads as a
-    hang.
+    ``num_envs`` / ``vectorization_mode`` are the vectorized-env eval shape; when
+    ``None`` the matching env vars are not injected. A missing image is pulled
+    here, announced on stderr.
     """
     if shutil.which("docker") is None:
         raise RuntimeError(
@@ -647,14 +605,10 @@ def start_prebuilt_container(
         if not pulled:
             detail = f":\n{pull_stderr}" if pull_stderr else ""
             raise RuntimeError(f"could not pull prebuilt image {image!r}{detail}")
-    # The container hosts its session under keys made here, so its address
-    # carries their key (the workload spec); the secret reaches
-    # docker through its environment, never argv.
+    # The secret reaches docker through its environment, never argv.
     identity, key = _sandbox_host_identity()
     with _PORTS_LOCK:
         host_port = _sandbox_session_port()
-        # The container hosts its session on the host's own port number, so a
-        # session address means the same inside it and out.
         env_vars = {
             "RLMESH_ADDRESS": f"0.0.0.0:{host_port}",
             "RLMESH_NAME": name,
@@ -709,16 +663,11 @@ def prebuilt_run_cmd(
 ) -> list[str]:
     """Build the ``docker run`` argv for a prebuilt sandbox container (pure).
 
-    The one place container hardening lives (``--cap-drop ALL``,
-    ``--security-opt no-new-privileges``, owner labels for orphan reaping), shared
-    by the env and model prebuilt paths so the flags never drift apart. The
-    session's one port publishes on loopback from ``host_port`` to the same
-    number inside. The image
-    is always last and env vars precede it, so callers/tests can rely on argv shape.
-    ``devices`` -> ``--device`` (incl. CDI refs like ``nvidia.com/gpu=all``),
-    ``volumes`` -> ``-v`` mounts, and ``user`` -> ``--user``, all before the env
-    vars. ``pass_env`` names variables passed from docker's own environment
-    (``-e NAME``), so a secret stays out of argv.
+    Container hardening lives here (``--cap-drop ALL``, ``--security-opt
+    no-new-privileges``, owner labels for orphan reaping). The session's port
+    publishes on loopback from ``host_port`` to the same number inside. The image
+    is always last and env vars precede it. ``pass_env`` names variables passed
+    from docker's own environment (``-e NAME``), so a secret stays out of argv.
     """
     cmd = [
         "docker",
@@ -798,11 +747,8 @@ def _asks_for_build(options: SandboxBuild) -> bool:
 def _warn_ignored_build_options(options: SandboxBuild) -> None:
     """Reject or warn on build-only options set on a run-prebuilt (not built) source.
 
-    ``trust_remote_code`` / ``allow_unpinned_hf`` are security grants: silently
-    ignoring one would leave the caller believing a trust decision took effect,
-    so setting either on a prebuilt source is a hard error. The remaining build
-    knobs merely cannot apply (the image is already built) and keep their
-    documented warning behavior.
+    ``trust_remote_code`` / ``allow_unpinned_hf`` are security grants, so setting
+    either on a prebuilt source is a hard error; other build knobs only warn.
     """
     granted = [
         name
@@ -917,11 +863,9 @@ def reject_single_env_vector_option(params: Mapping[str, object]) -> None:
 def reject_sandbox_option_params(params: Mapping[str, object]) -> None:
     """Reject construction params that collide with a sandbox build/runtime field.
 
-    These names (``base_image``, ``packages``, ``gpus``, ``devices``, ``volumes``,
-    ...) configure how the container is built or run, not the env/model. Letting
-    them fall into ``**params`` (the make/load binding) would silently drop a
-    setting and forward it as a bogus construction kwarg, so fail loud and point at
-    ``build=``/``runtime=``. Derived from the dataclasses so the two never drift.
+    These names configure how the container is built or run, not the env/model;
+    falling into ``**params`` would silently drop the setting, so fail and point
+    at ``build=``/``runtime=``.
     """
     reserved = {f.name for f in fields(SandboxBuild)} | {
         f.name for f in fields(SandboxRuntime)

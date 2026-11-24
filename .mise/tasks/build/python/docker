@@ -20,8 +20,6 @@ esac
 alias=linux-x86
 [ "$arch" = aarch64 ] && alias=linux-arm
 
-# Skip check runs before any cargo work so no-op invocations stay cheap.
-# Assumes the pyproject version string appears verbatim in wheel filenames.
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' python/rlmesh/pyproject.toml | head -1)
 dist=python/rlmesh/dist
 if [ "${usage_force:-false}" != true ] \
@@ -35,6 +33,4 @@ mise run setup:python:release
 rustup target add "${arch}-unknown-linux-gnu"
 mise run stubs:generate
 mise run build:python:wheel "$alias"
-# --allow-partial: only this arch's pair is required here; --allow-local-platform-tags:
-# dist may also hold local-tag wheels from build:python:local.
 python scripts/check_python_wheels.py "$dist" --allow-partial --allow-local-platform-tags

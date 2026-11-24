@@ -1,20 +1,8 @@
-// RLMesh real-time session wire, generation 2.
-//
-// Every message is plain protobuf, one message per Zenoh payload; the key
-// says which message it is. Samples, batches and action chunks carry their
-// values as one raw `bytes` payload, packed in the layout the host derived
-// from the part's declaration.
-//
-// Compatibility: additive only. New fields, verbs and enum values; never
-// renumber or retype. A feature added in a protocol minor is a feature
-// string (Attach.supports/requires, AuthorityState.supports,
-// PartSpec.requires). Field numbers reserved for messages not built yet
-// (episodes) are left unused.
 syntax = "proto3";
 
 package rlmesh.session.v2;
 
-// What a participant does in a session. One participant may hold several.
+// What a participant does in a session.
 enum Role {
   ROLE_UNSPECIFIED = 0;
   // Publishes a robot's parts and consumes their commands (real, sim or twin).
@@ -66,26 +54,24 @@ message ParticipantInfo {
   // The workflow edition it declares (empty: none) and every one it runs.
   string workflow_edition = 9;
   repeated string workflow_editions = 10;
-  // Its heartbeats arrive. A robot whose heartbeats lapsed stays in the
-  // roster, absent, while its parts remain.
+  // Its heartbeats arrive.
   bool present = 12;
   // The device its handshake authenticated (`local` in an embedded host).
   string device = 11;
   // Why it is absent (REASON_ROBOT_LOST).
   Reason left = 13;
-  // The process attached under this id: rises with every handshake that
-  // takes effect, so a process that sees a newer one knows it was replaced.
+  // The process attached under this id: rises with every handshake that takes effect, so a
+  // process that sees a newer one knows it was replaced.
   uint32 generation = 14;
 }
 
-// A time-bounded grant of command authority over one commandable part,
-// bound to one binding.
+// A time-bounded grant of command authority over one commandable part, bound to one binding.
 message Lease {
   uint32 channel = 1;
   string holder = 2;
   PriorityClass priority = 3;
-  // Unique and increasing per session: a preemption or a rebinding issues a
-  // new one, which fences the old holder's in-flight chunks.
+  // Unique and increasing per session: a preemption or a rebinding issues a new one, which
+  // fences the old holder's in-flight chunks.
   uint64 token = 4;
   uint64 ttl_ns = 5;
   // Host session clock.
@@ -134,8 +120,8 @@ message StreamContract {
   bool max_age_explicit = 6;
 }
 
-// The action grid a binding declared for one commanded part: a chunk with
-// dt_ns = 0 takes this dt.
+// The action grid a binding declared for one commanded part: a chunk with dt_ns = 0 takes
+// this dt.
 message ActionGrid {
   uint32 channel = 1;
   uint64 dt_ns = 2;
@@ -152,9 +138,7 @@ enum PlanKind {
   PLAN_KIND_LATEST = 3;
 }
 
-// A stream's publication plan, derived by the host from every admitted
-// contract on it. A stream with no demand publishes every sample within its
-// send ceiling.
+// A stream's publication plan, derived by the host from every admitted contract on it.
 message Demand {
   uint32 channel = 1;
   // Bumps whenever the plan changes; from 1.
@@ -184,8 +168,8 @@ message BindingRecord {
   repeated ActionGrid grids = 8;
 }
 
-// Why a mode changed, the edge or the host went SAFE, or a lease ended
-// (one enum for all three, so the cockpit and the browser never infer).
+// Why a mode changed, the edge or the host went SAFE, or a lease ended (one enum for all
+// three, so the cockpit and the browser never infer).
 enum ReasonCode {
   REASON_CODE_UNSPECIFIED = 0;
   // Mode changes.
@@ -200,7 +184,7 @@ enum ReasonCode {
   // An e-stop signal latched at the edge.
   REASON_CODE_ESTOP_SIGNAL = 7;
   REASON_CODE_ESTOP_CLEARED = 8;
-  // SAFE causes (host or edge). The lease holder's heartbeats lapsed.
+  // SAFE causes (host or edge).
   REASON_CODE_HOLDER_LOST = 10;
   // The holder was silent past its lease's ttl.
   REASON_CODE_HEARTBEAT_LAPSE = 11;
@@ -228,8 +212,8 @@ enum ReasonCode {
   REASON_CODE_REVOKED = 29;
   // The owner changed the device's entry.
   REASON_CODE_ACCESS_CHANGED = 30;
-  // A scene's run ended (a stop) or failed: its mode change, its lease
-  // endings and its closing.
+  // A scene's run ended (a stop) or failed: its mode change, its lease endings and its
+  // closing.
   REASON_CODE_SCENE_ENDED = 31;
   REASON_CODE_SCENE_FAILED = 32;
 }
@@ -253,8 +237,8 @@ message LeaseEnd {
   Reason reason = 2;
   // The preempting or rebound lease.
   Lease by = 3;
-  // A release that handed the parts back (lease.handback): the participant
-  // the released lease had preempted, who takes them again. Empty: none.
+  // A release that handed the parts back (lease.handback): the participant the released lease
+  // had preempted, who takes them again.
   string to = 4;
 }
 
@@ -287,19 +271,18 @@ message AuthorityState {
   // Session time per tick (virtual and lockstep modes).
   uint64 tick_ns = 14;
   repeated BindingRecord bindings = 16;
-  // Robot -> its declaration fingerprint (8 bytes): BLAKE3 over the
-  // canonical form of its normalised map.
+  // Robot -> its declaration fingerprint (8 bytes): BLAKE3 over the canonical form of its
+  // normalised map.
   map<string, bytes> contract = 17;
   // The publication plan of every stream some binding has a contract on.
   repeated Demand demands = 18;
-  // Why the mode is what it is (also set when a stopped mode records a later
-  // cause without changing).
+  // Why the mode is what it is (also set when a stopped mode records a later cause without
+  // changing).
   Reason mode_reason = 19;
   // The latest lease endings, oldest first (a bounded ring).
   repeated LeaseEnd ended = 20;
   LastStop last_stop = 21;
-  // Where each placed robot's parts appear in the scene's view, with its
-  // static pose.
+  // Where each placed robot's parts appear in the scene's view, with its static pose.
   repeated Place places = 22;
   // The scene this session runs, when a daemon started it.
   SceneInfo scene = 23;
@@ -314,9 +297,8 @@ message HeldRobot {
   Reason reason = 2;
 }
 
-// One robot's place in a scene's view: its parts under `from` appear at
-// `at`, and `pose` is the pose of its frame `frame` in the scene frame
-// `world` (REP-103, z up).
+// One robot's place in a scene's view: its parts under `from` appear at `at`, and `pose` is
+// the pose of its frame `frame` in the scene frame `world` (REP-103, z up).
 message Place {
   string robot = 1;
   string at = 2;
@@ -344,9 +326,8 @@ message SceneInfo {
   int64 rejoin_until_ns = 5;
 }
 
-// One robot's slice of the authority state: what its
-// edge reads, on `host/view/{robot}` (Signed kind 22), for a robot that
-// asked for it in `Attach.supports` ("view.device").
+// One robot's slice of the authority state: what its edge reads, on `host/view/{robot}`
+// (Signed kind 22), for a robot that asked for it in `Attach.supports` ("view.device").
 message DeviceView {
   // Whose view; equals the key's {robot}.
   string robot = 1;
@@ -376,14 +357,13 @@ message DeviceView {
   repeated Member members = 16;
   // Set once the run is ending: detach and return to the lobby.
   Reason closing = 17;
-  // A robot attached with "link.datagram" to a host that offered the
-  // datagram path: the routes of its realtime parts over it (unset: none,
-  // every part rides the session).
+  // A robot attached with "link.datagram" to a host that offered the datagram path: the routes
+  // of its realtime parts over it (unset: none, every part rides the session).
   DatagramRoutes datagram = 18;
 }
 
-// One robot's routes on the host's datagram path: each datagram names its
-// route instead of a key expression.
+// One robot's routes on the host's datagram path: each datagram names its route instead of a
+// key expression.
 message DatagramRoutes {
   // The route its probes name.
   uint32 probe = 1;
@@ -392,8 +372,7 @@ message DatagramRoutes {
 
 message DatagramRoute {
   uint32 route = 1;
-  // Down: the commandable part whose chunks it carries. Up: the stream
-  // (a part's samples or its _applied entries) it carries.
+  // Down: the commandable part whose chunks it carries.
   uint32 channel = 2;
   // Board to host.
   bool up = 3;
@@ -411,8 +390,7 @@ message Member {
   uint32 generation = 2;
 }
 
-// One NTP-style exchange: t1 and t4 in the participant's clock, t2 and t3 in
-// the host's.
+// One NTP-style exchange: t1 and t4 in the participant's clock, t2 and t3 in the host's.
 message TimingSample {
   uint64 seq = 1;
   int64 t1_ns = 2;
@@ -456,8 +434,7 @@ message Heartbeat {
   repeated ClockRefusal clock_refused = 13;
   // Edges: how each commanded part's chunks arrived since attach.
   repeated ChunkTiming chunk_timing = 14;
-  // Edges: chunks accepted since attach (`last_chunk_accepted` is the
-  // newest one's seq).
+  // Edges: chunks accepted since attach (`last_chunk_accepted` is the newest one's seq).
   uint64 chunks_accepted = 15;
   // A board on the datagram path: its end's counters this attach.
   DatagramStats datagram = 16;
@@ -471,8 +448,8 @@ message ChunkTiming {
   uint64 accepted = 3;
   // Gaps in the seqs of accepted chunks under one lease token.
   uint32 lost = 4;
-  // Accepted chunks by lateness on arrival against their first slot, in
-  // milliseconds: [0, 1), [1, 2), [2, 4), ... [32, 64), [64, inf).
+  // Accepted chunks by lateness on arrival against their first slot, in milliseconds: [0, 1),
+  // [1, 2), [2, 4), ...
   repeated uint32 late_ms = 5;
   // The latest any accepted chunk arrived.
   uint32 late_max_us = 6;
@@ -480,10 +457,10 @@ message ChunkTiming {
   uint32 gap_max_us = 7;
 }
 
-// One end of a robot's datagram path: what it sent, and what it received
-// by the other end's statistics sequence.
+// One end of a robot's datagram path: what it sent, and what it received by the other end's
+// statistics sequence.
 message DatagramStats {
-  // The path carries this robot's realtime parts now.
+  // The path carries this robot's realtime parts.
   bool active = 1;
   uint64 sent = 2;
   uint64 received = 3;
@@ -543,8 +520,8 @@ message ClockRefusal {
   uint64 bound_ns = 4;
 }
 
-// One participant's link and edge as the host sees them (in HostHealth):
-// what its heartbeats and reports, sealed to the host, said.
+// One participant's link and edge as the host sees them (in HostHealth): what its heartbeats
+// and reports, sealed to the host, said.
 message LinkHealth {
   string participant = 1;
   // Heartbeats received.
@@ -557,8 +534,7 @@ message LinkHealth {
   uint64 heartbeat_gap_max_ns = 5;
   // Since the last heartbeat.
   uint64 last_heartbeat_age_ns = 6;
-  // The clock mapping, when there is one: session = participant + offset,
-  // within error.
+  // The clock mapping, when there is one: session = participant + offset, within error.
   bool mapped = 7;
   int64 offset_ns = 8;
   uint64 offset_error_ns = 9;
@@ -574,20 +550,18 @@ message LinkHealth {
   repeated ChannelSeq last_seq_seen = 16;
   // Edges: one per edge whose newest clock judgement refused a chunk.
   repeated ClockRefusal clock_refused = 17;
-  // Edges: how each commanded part's chunks arrived, and how many it
-  // accepted (its heartbeat).
+  // Edges: how each commanded part's chunks arrived, and how many it accepted (its heartbeat).
   repeated ChunkTiming chunk_timing = 18;
   uint64 chunks_accepted = 19;
   // Robots: the path their realtime parts ride.
   DataPath data_path = 20;
-  // Robots on the datagram path: the board's counters (its heartbeat) and
-  // the host's for it.
+  // Robots on the datagram path: the board's counters (its heartbeat) and the host's for it.
   DatagramStats datagram_board = 21;
   DatagramStats datagram_host = 22;
 }
 
-// Host -> observers on host/health, signed, about once a second: why a
-// robot is or isn't moving, for the cockpit and recordings.
+// Host -> observers on host/health, signed, about once a second: why a robot is or isn't
+// moving, for the cockpit and recordings.
 message HostHealth {
   uint64 epoch = 1;
   // Host clock at publish.
@@ -604,10 +578,8 @@ message HeartbeatEcho {
   uint64 epoch = 5;
 }
 
-// Observer telemetry: what only the measuring side knows, published
-// on p/{participant}/report, data class, a few times per second. Counters
-// are cumulative since the participant attached; observers derive rates
-// from their deltas on the sender's clock (sent_ns). Nothing acts on them.
+// Observer telemetry: what only the measuring side knows, published on
+// p/{participant}/report, data class, a few times per second.
 message ParticipantReport {
   string participant = 1;
   uint64 epoch = 2;
@@ -648,8 +620,6 @@ message RunCounters {
   bool drifting = 13;
 }
 
-// Parts.
-
 enum ChannelPriority {
   CHANNEL_PRIORITY_UNSPECIFIED = 0;
   CHANNEL_PRIORITY_CONTROL = 1;
@@ -663,11 +633,10 @@ enum MergePolicy {
   MERGE_POLICY_REPLACE = 1;
 }
 
-// One field of a sample or an action: a dense little-endian row-major
-// tensor.
+// One field of a sample or an action: a dense little-endian row-major tensor.
 message FieldSpec {
   string name = 1;
-  // v1 DType codes (rlmesh-spaces); utf8 = 32.
+  // DType codes (rlmesh-spaces); utf8 = 32.
   uint32 dtype = 2;
   repeated uint32 shape = 3;
   string unit = 4;
@@ -675,8 +644,7 @@ message FieldSpec {
   string rotation = 5;
 }
 
-// Bounds on one command field: (low, high) broadcast or per element, or a
-// norm bound.
+// Bounds on one command field: (low, high) broadcast or per element, or a norm bound.
 message FieldLimit {
   string field = 1;
   repeated double low = 2;
@@ -698,14 +666,13 @@ message Command {
   string reference = 8;
   string group = 9;
   bool binary = 10;
-  // During Hold, may the edge repeat the last dispatched target? Set for
-  // position-type modes; otherwise it runs the safe behaviour.
+  // During Hold, may the edge repeat the last dispatched target? Set for position-type modes;
+  // otherwise it runs the safe behaviour.
   bool hold_last = 11;
-  // While the commanding lease is held, keep applying the last target with
-  // no age expiry and no wait. Only on a mode that holds its target.
+  // While the commanding lease is held, keep applying the last target with no age expiry and
+  // no wait.
   bool latch = 12;
-  // The largest error, on either end's clock mapping, the edge takes chunks
-  // under.
+  // The largest error, on either end's clock mapping, the edge takes chunks under.
   uint64 max_clock_error_ns = 13;
 }
 
@@ -740,27 +707,23 @@ message PartSpec {
   double control_hz = 19;
 }
 
-// Control verbs.
-
 message Attach {
   string name = 1;
   repeated Role roles = 2;
   PriorityClass priority = 3;
   // The participant's protocol minor.
   uint32 protocol_minor = 4;
-  // Features this participant implements. A robot on the lockstep clock
-  // lists "clock.lockstep" (it advances one step per `l/{robot}` request);
-  // one that lists nothing runs on the wall clock.
+  // Features this participant implements.
   repeated string supports = 5;
-  // Features it cannot run without; the host refuses the attach
-  // (CTL_STATUS_INCOMPATIBLE) when it lacks one.
+  // Features it cannot run without; the host refuses the attach (CTL_STATUS_INCOMPATIBLE) when
+  // it lacks one.
   repeated string requires = 6;
-  // The workflow edition it declares (empty: none) and every one it runs,
-  // which the roster shows the driver that negotiates a run's edition.
+  // The workflow edition it declares (empty: none) and every one it runs, which the roster
+  // shows the driver that negotiates a run's edition.
   string workflow_edition = 7;
   repeated string workflow_editions = 8;
-  // An embodiment's e-stop latch carried from its previous session: the
-  // session starts in ESTOP.
+  // An embodiment's e-stop latch carried from its previous session: the session starts in
+  // ESTOP.
   LocalEstop estop = 9;
 }
 
@@ -772,8 +735,7 @@ message LocalEstop {
 message Detach {}
 
 message Arm {
-  // Empty: arm the session. A robot's name: clear that robot's hold, in a
-  // session already armed.
+  // Empty: arm the session.
   string robot = 1;
 }
 
@@ -785,11 +747,10 @@ message DeclareParts {
   uint32 spec_version = 1;
   // The authored map, as JSON.
   string robot_json = 2;
-  // The part paths this robot process can seal (default none): what its
-  // runtime can do, so it stays out of the map and its fingerprint.
+  // The part paths this robot process can seal (default none): what its runtime can do, so it
+  // stays out of the map and its fingerprint.
   repeated string seal = 3;
-  // A tethered board's id (8 bytes); empty for none. The
-  // host refuses a declare whose board isn't the one the robot's pin names.
+  // A tethered board's id (8 bytes); empty for none.
   bytes board_id = 4;
 }
 
@@ -822,17 +783,15 @@ message GrantLease {
 message ReleaseLease {
   repeated uint32 channels = 1;
   uint64 token = 2;
-  // Hands the parts back to this participant: the one the released lease
-  // preempted, which resumes them (lease.handback). Refused when it is not
-  // that participant, lacks the feature, or the robot is held. Empty: a
-  // plain release.
+  // Hands the parts back to this participant: the one the released lease preempted, which
+  // resumes them (lease.handback).
   string to = 3;
 }
 
 message Estop {
   string reason = 1;
-  // REASON_ESTOP_LOCAL or REASON_ESTOP_SIGNAL when an edge reports its own
-  // latch; anything else is REASON_ESTOP_REMOTE.
+  // REASON_ESTOP_LOCAL or REASON_ESTOP_SIGNAL when an edge reports its own latch; anything
+  // else is REASON_ESTOP_REMOTE.
   ReasonCode code = 2;
   // REASON_ESTOP_SIGNAL: the participant whose signal the edge latched.
   string origin = 3;
@@ -840,9 +799,9 @@ message Estop {
   int64 at_ns = 4;
 }
 
-// A member's e-stop, published on estop/{participant} (control class,
-// reliable, express) and sealed (kind 13, integrity only) under its
-// generation's k_estop: every robot edge latches it directly, host or not.
+// A member's e-stop, published on estop/{participant} (control class, reliable, express) and
+// sealed (kind 13, integrity only) under its generation's k_estop: every robot edge latches
+// it directly, host or not.
 message EstopSignal {
   string reason = 1;
   // The sender's clock.
@@ -851,8 +810,8 @@ message EstopSignal {
 
 message Clear {}
 
-// An embodiment fell back on its own account (its edge, or a device
-// watchdog): ACTIVE, ARMED and DISARMED go SAFE; SAFE and ESTOP record why.
+// An embodiment fell back on its own account (its edge, or a device watchdog): ACTIVE, ARMED
+// and DISARMED go SAFE; SAFE and ESTOP record why.
 message EnterSafe {
   string reason = 1;
   ReasonCode code = 2;
@@ -889,14 +848,14 @@ message Decided {
   repeated ChunkRef chunks = 2;
 }
 
-// A control verb, the payload of a query on `ctl`, sealed under the
-// sender's `k_up` (kind 1).
+// A control verb, the payload of a query on `ctl`, sealed under the sender's `k_up` (kind
+// 1).
 message CtlRequest {
   string participant = 1;
   // The epoch the verb was issued against; zero skips the check.
   uint64 epoch = 2;
-  // Rising per participant generation from 1; a retry keeps it, and the
-  // host answers it from its reply cache instead of applying it twice.
+  // Rising per participant generation from 1; a retry keeps it, and the host answers it from
+  // its reply cache instead of applying it twice.
   uint64 request_id = 3;
   oneof verb {
     Attach attach = 10;
@@ -937,29 +896,27 @@ enum CtlStatus {
   CTL_STATUS_STALE_EPOCH = 7;
   CTL_STATUS_STALE_TOKEN = 8;
   CTL_STATUS_LEASE_BUSY = 9;
-  // 10 was PATH_CONFLICT before v0.2 froze: paths are scoped per robot, so
-  // no declaration can conflict with another owner's. Never reuse it.
-  // No such (commandable) part.
+  // 10 was PATH_CONFLICT before v0.2 froze: paths are scoped per robot, so no declaration can
+  // conflict with another owner's.
   CTL_STATUS_UNKNOWN_PATH = 11;
   CTL_STATUS_UNSUPPORTED = 12;
   // The sender requires a feature (or protocol) the session lacks.
   CTL_STATUS_INCOMPATIBLE = 13;
-  // A member of the part's command group is held by an equal or higher
-  // class (or by the requester, without releasing it).
+  // A member of the part's command group is held by an equal or higher class (or by the
+  // requester, without releasing it).
   CTL_STATUS_GROUP_BUSY = 14;
   // A lease on a part outside the requester's binding.
   CTL_STATUS_NOT_BOUND = 15;
-  // A lease requested before every stream of the binding has installed a
-  // plan that includes its contract.
+  // A lease requested before every stream of the binding has installed a plan that includes
+  // its contract.
   CTL_STATUS_NOT_READY = 16;
-  // No valid handshake: the sender's keys are unknown, superseded or
-  // failed to authenticate the message.
+  // No valid handshake: the sender's keys are unknown, superseded or failed to authenticate
+  // the message.
   CTL_STATUS_UNAUTHENTICATED = 17;
-  // The sender's device may not do this (a participant id bound to
-  // another device).
+  // The sender's device may not do this (a participant id bound to another device).
   CTL_STATUS_NOT_AUTHORIZED = 18;
-  // A request id below the host's reply window: never applied, and its
-  // first outcome is unknown.
+  // A request id below the host's reply window: never applied, and its first outcome is
+  // unknown.
   CTL_STATUS_EXPIRED = 19;
   // A robot claimed by another run.
   CTL_STATUS_ROBOT_BUSY = 20;
@@ -976,21 +933,20 @@ message CtlReply {
   repeated Lease leases = 4;
   // The request this answers (sealed replies, kind 2 under `k_down`).
   uint64 request_id = 5;
-  // Keys for the caller: a lease holder's from the grant that minted its
-  // token, or every key issued to its generation (`GetKeys`).
+  // Keys for the caller: a lease holder's from the grant that minted its token, or every key
+  // issued to its generation (`GetKeys`).
   repeated Key keys = 6;
   // A `LobbyWait`'s order.
   Assignment assignment = 7;
   // A run's state (`RunScene`, `SceneStatus`, `StopScene`, `ArmScene`).
   RunState run = 8;
-  // A robot that asked for its device view (`Attach.supports` has
-  // "view.device") gets its view here and no `state`, so a board decodes
-  // every reply without the authority state's decoder.
+  // A robot that asked for its device view (`Attach.supports` has "view.device") gets its view
+  // here and no `state`, so a board decodes every reply without the authority state's decoder.
   DeviceView view = 9;
 }
 
-// The level of a key's configured kinds (chunks, samples, applied entries,
-// lockstep): integrity only, or encrypted.
+// The level of a key's configured kinds (chunks, samples, applied entries, lockstep):
+// integrity only, or encrypted.
 enum Security {
   SECURITY_UNSPECIFIED = 0;
   SECURITY_MAC = 1;
@@ -1010,7 +966,7 @@ enum KeyPurpose {
   KEY_PURPOSE_ESTOP = 5;
 }
 
-// A key the host drew, with its scope. Authority state never carries one.
+// A key the host drew, with its scope.
 message Key {
   uint32 key_id = 1;
   KeyPurpose purpose = 2;
@@ -1019,8 +975,7 @@ message Key {
   string robot = 4;
   repeated uint32 channels = 5;
   uint64 token = 6;
-  // Rises per slot (purpose, robot, channels) of a rotating key; 0 for a
-  // fixed one.
+  // Rises per slot (purpose, robot, channels) of a rotating key; 0 for a fixed one.
   uint32 version = 7;
   bytes key = 8;
   // The recipient sends under it.
@@ -1030,9 +985,8 @@ message Key {
   uint32 generation = 11;
 }
 
-// Host -> one participant on `p/{participant}/keys` (kind 6 under its
-// `k_down`): keys to install and keys to drop (with every older version of
-// their slot). Retried until acknowledged.
+// Host -> one participant on `p/{participant}/keys` (kind 6 under its `k_down`): keys to
+// install and keys to drop (with every older version of their slot).
 message KeyDelivery {
   repeated Key keys = 1;
   repeated uint32 retire_through = 2;
@@ -1045,26 +999,21 @@ message KeysAck {
   repeated uint32 retired = 3;
 }
 
-// Participant -> host: every key issued to the caller's generation, in the
-// reply's `keys`.
+// Participant -> host: every key issued to the caller's generation, in the reply's `keys`.
 message GetKeys {}
 
-// Keep the host's recent recording as an incident, out of the rolling
-// purge's reach (the cockpit's Keep). Refused UNSUPPORTED by a host that
-// records nothing.
+// Keep the host's recent recording as an incident, out of the rolling purge's reach (the
+// cockpit's Keep).
 message Keep {
   // Names the incident.
   string label = 1;
 }
 
-// The handshake (`hs`, the only unsealed request): Noise IK, the
-// participant as initiator. msg 1 has an empty payload.
+// The handshake (`hs`, the only unsealed request): Noise IK, the participant as initiator.
 message HandshakeRequest {
   string participant = 1;
   bytes noise = 2;
-  // The participant's session wire revision (unset: a build from before
-  // revisions were sent). A host refuses another set revision
-  // (CTL_STATUS_INCOMPATIBLE).
+  // The participant's session wire revision (unset: a build from before revisions were sent).
   uint32 wire_revision = 3;
 }
 
@@ -1094,9 +1043,8 @@ message HandshakeAccept {
   uint32 down_key_id = 7;
   // The host relays robots' realtime parts over UDP (unset: it does not).
   DatagramOffer datagram = 8;
-  // The host's session wire revision (unset: a build from before revisions
-  // were sent, which listened on four ports). A participant refuses any
-  // revision but its own.
+  // The host's session wire revision (unset: a build from before revisions were sent, which
+  // listened on four ports).
   uint32 wire_revision = 9;
 }
 
@@ -1108,10 +1056,7 @@ message DatagramOffer {
   uint32 version = 2;
 }
 
-// Machine pairing: every packet is a query on
-// `rlmeshd/pair`. `exchange` is 16 random bytes the laptop draws per
-// attempt. After Noise XX, `sealed` carries a `Sealed` under the XX raw
-// split (laptop -> rlmeshd key 1, rlmeshd -> laptop key 2).
+// Machine pairing: every packet is a query on `rlmeshd/pair`.
 message PairRequest {
   bytes exchange = 1;
   oneof step {
@@ -1147,8 +1092,8 @@ message PairReveal {
   bytes nr = 1;
 }
 
-// Laptop -> rlmeshd (kind 19): answered with `PairResult` once the owner
-// approves or refuses on the robot.
+// Laptop -> rlmeshd (kind 19): answered with `PairResult` once the owner approves or refuses
+// on the robot.
 message PairWait {}
 
 // rlmeshd -> laptop (kind 19).
@@ -1159,8 +1104,8 @@ message PairResult {
   }
 }
 
-// What an approved machine stores: its device id, and the host's static
-// key, id and addresses (`host:port`, which every traffic class dials).
+// What an approved machine stores: its device id, and the host's static key, id and
+// addresses (`host:port`, which every traffic class dials).
 message PairInfo {
   string device = 1;
   bytes host_key = 2;
@@ -1168,12 +1113,8 @@ message PairInfo {
   repeated string addresses = 4;
 }
 
-// The lobby and scenes: verbs in the home daemon's
-// `_lobby` session, sealed like any other.
-
-// A waiting robot or satellite -> the home daemon: answered with an
-// `Assignment` once there is an order for it (a long poll; a retry keeps
-// the request id).
+// A waiting robot or satellite -> the home daemon: answered with an `Assignment` once there
+// is an order for it (a long poll; a retry keeps the request id).
 message LobbyWait {
   // The run that just failed for this participant, and why.
   string run = 1;
@@ -1188,8 +1129,8 @@ message Assignment {
   }
 }
 
-// A robot's order: join `session` at `addresses` (`host:port`) with an IK
-// handshake against `host_key`.
+// A robot's order: join `session` at `addresses` (`host:port`) with an IK handshake against
+// `host_key`.
 message Join {
   string run = 1;
   string session = 2;
@@ -1235,8 +1176,8 @@ message DeviceRecord {
   repeated string verbs = 5;
 }
 
-// A robot name's pin: the device that embodies it and, for a tethered
-// board, its board id (8 bytes; empty for none).
+// A robot name's pin: the device that embodies it and, for a tethered board, its board id (8
+// bytes; empty for none).
 message RobotPin {
   string robot = 1;
   string device = 2;
@@ -1333,8 +1274,6 @@ message VirtualTick {
   }
 }
 
-// Data.
-
 // What the edge did on one control tick (the `_applied` streams).
 enum EdgeMode {
   EDGE_MODE_UNSPECIFIED = 0;
@@ -1351,8 +1290,7 @@ message Applied {
   uint64 lease_token = 3;
   uint64 chunk_seq = 4;
   uint32 action_index = 5;
-  // Why the edge is in its mode (Safe, Estop): its own cause, or the host's
-  // mode_reason.
+  // Why the edge is in its mode (Safe, Estop): its own cause, or the host's mode_reason.
   ReasonCode reason = 6;
 }
 
@@ -1385,8 +1323,7 @@ message SeqRange {
   uint64 last = 2;
 }
 
-// History-store pages (attach, swap and gap recovery); live samples travel
-// one per Sample.
+// History-store pages (attach, swap and gap recovery); live samples travel one per Sample.
 message SampleBatch {
   uint32 channel = 1;
   uint64 epoch = 2;
@@ -1409,8 +1346,7 @@ message HistoryQuery {
   // Samples with after_seq < seq <= until_seq; until_seq 0 is unbounded.
   uint64 after_seq = 2;
   uint64 until_seq = 3;
-  // At most this many samples (the newest of the range); 0 takes the
-  // store's cap.
+  // At most this many samples (the newest of the range); 0 takes the store's cap.
   uint32 limit = 4;
   // Rising per participant generation; the host's pages echo it.
   uint64 request_id = 5;
@@ -1422,7 +1358,7 @@ message InputRange {
   uint64 seq_last = 3;
 }
 
-// On c/{robot}/{path}. Times are session time.
+// On c/{robot}/{path}.
 message ActionChunk {
   uint32 channel = 1;
   uint64 epoch = 2;
@@ -1434,8 +1370,7 @@ message ActionChunk {
   bytes binding = 5;
   repeated InputRange based_on = 6;
   int64 t0_ns = 7;
-  // Zero takes the action grid of the lease's binding (else the part's
-  // control period).
+  // Zero takes the action grid of the lease's binding (else the part's control period).
   uint64 dt_ns = 8;
   int64 replace_from_ns = 9;
   // The whole chunk is void at and after this.
@@ -1450,8 +1385,6 @@ message ActionChunk {
   string source = 15;
 }
 
-// Lockstep fast path: one request/reply per step on l/{robot}.
-
 // An N-lane slab of one part: lanes x stride.
 message PartValues {
   uint32 channel = 1;
@@ -1465,10 +1398,10 @@ message LockstepReset {
   // Aligned with lanes when present.
   repeated uint64 seeds = 3;
   string options_json = 4;
-  // Minted by the driver, as v1.
+  // Minted by the driver.
   repeated uint64 episode_ids = 5;
-  // The driver's lease token on the env's commandable parts: a reset
-  // needs the lease, like a step.
+  // The driver's lease token on the env's commandable parts: a reset needs the lease, like a
+  // step.
   uint64 lease_token = 6;
 }
 
@@ -1481,8 +1414,8 @@ message LockstepStep {
   repeated PartValues commands = 5;
 }
 
-// A lockstep request on `l/{robot}` (kind 11 under the lease's `k_cmd`):
-// the operation travels in the authenticated body.
+// A lockstep request on `l/{robot}` (kind 11 under the lease's `k_cmd`): the operation
+// travels in the authenticated body.
 message LockstepRequest {
   uint64 request_id = 1;
   oneof op {
@@ -1528,8 +1461,8 @@ message LockstepReply {
   EndpointTiming timing = 9;
 }
 
-// What an endpoint measured answering one request, in ns (v1's endpoint
-// phases): an absent field was not measured.
+// What an endpoint measured answering one request, in ns: an absent
+// field was not measured.
 message EndpointTiming {
   // Arrival to reply.
   optional uint64 total_ns = 1;
@@ -1552,9 +1485,6 @@ message EndpointTiming {
   optional uint64 lane_skew_ns = 10;
 }
 
-// Served models: one request/reply on m/{model}. A driver resolves a route
-// per env, then predicts on it; values are rlmesh-spaces leaf slabs.
-
 // Leaf slabs of N rows: one per leaf of the space, row-major.
 message Leaves {
   repeated bytes leaves = 1;
@@ -1575,8 +1505,8 @@ message ModelResolve {
   bool delivers_history = 4;
   // The workflow edition the driver pinned; empty: unpinned.
   string workflow_edition = 5;
-  // The driver reads the route's resolve advisories; a model answers them on
-  // ModelResolved only then.
+  // The driver reads the route's resolve advisories; a model answers them on ModelResolved
+  // only then.
   bool reads_advisories = 6;
 }
 
@@ -1591,8 +1521,8 @@ message ModelResolved {
   ModelHistoryNeeds history = 2;
   // The model adds options to the resets that start its episodes.
   bool reset_options = 3;
-  // What the route's resolve tolerated or applied, when the driver reads
-  // them (ModelResolve.reads_advisories).
+  // What the route's resolve tolerated or applied, when the driver reads them
+  // (ModelResolve.reads_advisories).
   repeated ModelAdvisory advisories = 4;
 }
 
@@ -1656,8 +1586,8 @@ message ModelRelease {
 }
 
 message ModelDescribe {}
-// Invites the model into the driver's session (its address), so predicts
-// stay there; Leave ends that.
+// Invites the model into the driver's session (its address), so predicts stay there; Leave
+// ends that.
 message ModelJoin {
   string session = 1;
 }

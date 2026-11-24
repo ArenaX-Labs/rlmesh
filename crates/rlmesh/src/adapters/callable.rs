@@ -73,8 +73,6 @@ pub struct CustomEncoding {
     #[serde(default)]
     /// `base -> custom`, used when the encoding tags an observation (model) state component. An in-
     /// process callable (runs locally, serializes to a `<local>` marker), or a `"module:callable"`
-    /// entrypoint string (a describe-only reference; its execution is deferred). None when action-
-    /// only.
     pub from_base: Option<EncodingArm>,
     #[serde(default)]
     /// `custom -> base`, used when the encoding tags an action component. A callable or entrypoint

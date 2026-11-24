@@ -1,36 +1,33 @@
-//! The sans-IO core of a real-time RLMesh session (protocol v2): every
-//! state machine a session host, a participant or a browser runs, with no
-//! runtime, sockets, threads, clock reads or randomness. Every time is an
-//! injected nanosecond count (`now_ns`) in a named clock domain; session
-//! time is the host's.
+//! The sans-IO core of a real-time RLMesh session (protocol v2): every state
+//! machine a session host, a participant or a browser runs, with no runtime,
+//! sockets, threads, clock reads or randomness. Every time is an injected
+//! nanosecond count (`now_ns`) in a named clock domain; session time is the
+//! host's.
 //!
 //! - [`authority`]: epoch, roster, the mode machine, parts, bindings and the
-//!   lease table (preemption, command groups, TTLs, fencing tokens); the
-//!   session host is its single writer.
-//! - [`auth`]: attaching through the handshake: credentials, the host's
-//!   identity, generations, name → device bindings and the reply cache.
-//! - [`lease`]: the holder's side of a lease: the local deadline (a
-//!   conservative lower bound of the host's expiry that never outlives
-//!   it), renewal and loss from authority snapshots, and fenced chunks.
+//!   lease table (preemption, command groups, TTLs, fencing tokens); the session
+//!   host is its single writer.
+//! - [`auth`]: attaching through the handshake: credentials, identity,
+//!   generations, name to device bindings and the reply cache.
+//! - [`lease`]: the holder's side of a lease: a local deadline that never
+//!   outlives the host's expiry, renewal, loss and fenced chunks.
 //! - [`virtual_clock`]: the virtual-mode tick barrier.
 //! - [`clock`]: NTP-style offset estimation with an error bound.
 //! - [`crypto`]: the safety layer's envelopes and handshakes (`Sealed`,
-//!   `Signed`, replay windows, the IK handshake and pairing), with the
-//!   caller's randomness.
+//!   `Signed`, replay windows, the IK handshake and pairing), with the caller's
+//!   randomness.
 //! - [`cache`]: a controller's input cache and history windows.
-//! - [`schedule`]: policy starts and slowdown reporting, and
-//!   the start grid's phase alignment.
-//! - [`spec`]: the physical-AI layer: the kind table, robot and
-//!   policy maps, binding with refuse-and-explain, conversions and delivery
-//!   contracts.
+//! - [`schedule`]: policy starts, slowdown reporting and start-grid phase
+//!   alignment.
+//! - [`spec`]: the physical-AI layer: kinds, robot and policy maps, binding and
+//!   delivery contracts.
 //! - [`stream`]: a subscriber's receive rules: epochs, seq gaps as losses,
 //!   layout checks and freshness against `max_age`.
-//! - [`wire`]: the session wire: ids, paths, the key layout, the
-//!   versioning rule, the message types and the one byte codec.
+//! - [`wire`]: ids, paths, key layout, versioning, message types and the byte
+//!   codec.
 //!
 //! `rlmesh-session` runs these over Zenoh and re-exports them under the same
-//! paths (`rlmesh_session::wire`, `rlmesh_session::spec`, ...);
-//! `rlmesh-wasm` runs them in the browser.
+//! paths; `rlmesh-wasm` runs them in the browser.
 
 #![warn(missing_docs)]
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -42,11 +39,8 @@ extern crate std;
 #[cfg(all(test, feature = "std"))]
 mod test_alloc;
 
-/// What `std`'s prelude gives every module, from `alloc` so the crate builds
-/// without `std`.
 mod prelude {
-    // Unused where `std` is still in the graph (a host target through
-    // `uuid`, or a test harness): its inherent methods win over the trait's.
+    // Unused where `std` is in the graph: its inherent methods win over the trait's.
     #[cfg(not(feature = "std"))]
     #[allow(unused_imports)]
     pub(crate) use crate::float::F64Ext;
@@ -57,10 +51,7 @@ mod prelude {
     pub(crate) use alloc::{format, vec};
 }
 
-/// Transcendental functions, from `libm` in every build. `std`'s versions
-/// call the platform's maths library, whose last-bit rounding differs from
-/// `libm`'s, and the host and a device must compute the same values
-/// (a resampled pixel, a rotation). clippy.toml bans the `f64` methods.
+// `std`'s maths calls round the last bit differently from `libm`; host and device must agree bit for bit.
 pub(crate) mod math {
     pub(crate) fn sin(x: f64) -> f64 {
         libm::sin(x)
@@ -80,8 +71,6 @@ pub(crate) mod math {
     }
 }
 
-/// The exact `f64` methods `core` lacks (correctly rounded, so `libm` and
-/// `std` agree), for builds without `std`.
 #[cfg(not(feature = "std"))]
 #[allow(dead_code)]
 mod float {

@@ -1,15 +1,3 @@
-"""End-to-end: a vectorized (num_envs>1) served model whose policy returns one
-N-stacked array action.
-
-The numpy/torch/jax bridges encode that array into a single native ``rlmesh.Tensor``
-of shape ``(N, *act_shape)`` (``from_array`` -> ``Tensor``). The model worker must
-split that native tensor into N per-lane wire values. A native ``Tensor`` is not
-Python-iterable, so the batch converter has to slice it along the lane axis rather
-than fall back to ``try_iter`` — the path the Rust unit tests can't reach because
-they never go through the real bridge. Regression for the non-iterable-PyTensor
-batch split.
-"""
-
 from __future__ import annotations
 
 from typing import Any, cast
@@ -19,13 +7,6 @@ import pytest
 
 
 class BoxVectorEnv:
-    """Two-lane vector env with Box observation/action spaces.
-
-    A Box action is what makes the policy's numpy return cross the bridge as a
-    native ``Tensor`` (a Discrete action would come back as plain Python ints and
-    never exercise the tensor-split path).
-    """
-
     def __init__(self) -> None:
         from rlmesh import spaces
 
@@ -34,8 +15,6 @@ class BoxVectorEnv:
             0.0, 1.0, shape=(2,), dtype="float32"
         )
         self.single_action_space = spaces.Box(0.0, 1.0, shape=(2,), dtype="float32")
-        # Vectorized runtime sessions require NEXT_STEP autoreset (the gymnasium
-        # vector default); without it the runtime refuses the num_envs>1 session.
         self.metadata = {"autoreset_mode": "NextStep"}
         self.seen_actions: list[Any] = []
 
@@ -53,7 +32,6 @@ class BoxVectorEnv:
     ) -> tuple[Any, list[float], list[bool], list[bool], dict[str, object]]:
         self.seen_actions.append(np.asarray(actions))
         obs = np.zeros((self.num_envs, 2), dtype=np.float32)
-        # Terminate both lanes so the single bounded episode ends after one step.
         return obs, [1.0, 1.0], [True, True], [False, False], {}
 
     def close(self) -> None:
@@ -84,8 +62,6 @@ def test_vectorized_numpy_model_splits_stacked_action() -> None:
 
     def predict(observation: Any) -> Any:
         predict_calls.append(np.asarray(observation))
-        # The natural vectorized return: ONE (N, *act_shape) array — not a list of
-        # N per-lane arrays. The bridge turns this into a single native Tensor.
         return np.full((env.num_envs, 2), 0.5, dtype=np.float32)
 
     try:
@@ -93,10 +69,8 @@ def test_vectorized_numpy_model_splits_stacked_action() -> None:
     finally:
         server.shutdown()
 
-    # The policy saw a 2-lane observation...
     assert predict_calls, "served policy predict was never called"
     assert predict_calls[0].shape == (2, 2)
-    # ...and the stacked action was split + decoded back to a 2-lane env action.
     assert env.seen_actions, "env never received the decoded action"
     np.testing.assert_allclose(
         env.seen_actions[0], np.full((2, 2), 0.5, dtype=np.float32)
@@ -121,10 +95,6 @@ def test_vectorized_spec_less_predict_receives_empty_identity_context() -> None:
         server.shutdown()
 
     assert contexts, "served policy predict was never called"
-    # A multi-lane spec-less call fuses N episodes into one forward, so the
-    # context carries the empty identity -- but the argument is always delivered,
-    # with a throwaway state slot nothing is keyed by. It still names the
-    # env's spaces: the lanes share one env.
     identity = ("episode_id", "episode_seed", "predict_index", "predict_seed", "state")
     assert all(
         {key: context[key] for key in identity}

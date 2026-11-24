@@ -1,5 +1,3 @@
-//! Served-model messages.
-
 use super::*;
 
 #[test]

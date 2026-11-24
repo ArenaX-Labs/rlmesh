@@ -1,5 +1,5 @@
-//! The host's `Signed` broadcasts: authority state, virtual ticks and
-//! device views, in clear, signed with the host's Ed25519 key.
+//! The host's `Signed` broadcasts: authority state, virtual ticks and device views, in
+//! clear, signed with the host's Ed25519 key.
 //!
 //! | Offset | Size | Field |
 //! |---|---|---|
@@ -60,7 +60,6 @@ impl SignedKind {
     }
 }
 
-/// How many kinds there are.
 const KINDS: usize = 4;
 
 /// A parsed `Signed` header.
@@ -135,15 +134,14 @@ pub enum SignedError {
     /// The signature doesn't verify.
     #[error("bad signature")]
     BadSignature,
-    /// The host signing key is not a valid Ed25519 public key, or is a
-    /// weak (small-order) one.
+    /// The host signing key is not a valid Ed25519 public key, or is a weak (small-order) one.
     #[error("invalid host signing key")]
     BadKey,
 }
 
-/// A broadcast's header and body, **unverified**: for a participant's
-/// bootstrap read of `host_instance` before its handshake, and for
-/// readers that hold no host key. Never a basis for acting.
+/// A broadcast's header and body, **unverified**: for a participant's bootstrap read of
+/// `host_instance` before its handshake, and for readers that hold no host key.
+/// Never a basis for acting.
 ///
 /// # Errors
 /// [`SignedError`] for a malformed envelope.
@@ -174,7 +172,6 @@ pub fn peek(msg: &[u8]) -> Result<Verified<'_>, SignedError> {
 pub struct SignedSender {
     key: SigningKey,
     host_instance: u64,
-    /// The next `seq`; 0 once `u64::MAX` is used.
     next: u64,
 }
 
@@ -245,9 +242,8 @@ pub struct Verified<'m> {
     pub body: &'m [u8],
 }
 
-/// A receiver's side: the host's key and instance from the handshake
-/// (`HandshakeAccept`), and the last `seq` accepted per kind. The first
-/// `seq` of a kind has no floor.
+/// A receiver's side: the host's key and instance from the handshake (`HandshakeAccept`),
+/// and the last `seq` accepted per kind.
 #[derive(Debug, Clone)]
 pub struct SignedReceiver {
     key: VerifyingKey,
@@ -278,8 +274,7 @@ impl SignedReceiver {
         self.last[kind.index()]
     }
 
-    /// Verify `msg`, received on `keyexpr`, and record its `seq`. Uses
-    /// `verify_strict` (no small-order keys, canonical signatures).
+    /// Verify `msg`, received on `keyexpr`, and record its `seq`.
     ///
     /// # Errors
     /// [`SignedError`]; nothing is recorded then.
@@ -293,9 +288,9 @@ impl SignedReceiver {
         Ok(verified)
     }
 
-    /// A verifier of this receiver's broadcasts for another task, which
-    /// keeps its own floor: the signature check is a function of the bytes
-    /// and the key, and on a board it takes longer than a control period.
+    /// A verifier of this receiver's broadcasts for another task, which keeps its own floor:
+    /// the signature check is a function of the bytes and the key, and on a board it takes
+    /// longer than a control period.
     pub fn checker(&self) -> SignedChecker {
         SignedChecker {
             key: self.key,
@@ -304,10 +299,9 @@ impl SignedReceiver {
         }
     }
 
-    /// Takes a broadcast [`SignedChecker::check`] verified, as
-    /// [`Self::verify`] would: it must come from this receiver's key and
-    /// host instance and have been received on `keyexpr`, and it is held to
-    /// this receiver's floor. No signature is checked here.
+    /// Takes a broadcast [`SignedChecker::check`] verified, as [`Self::verify`] would: it must
+    /// come from this receiver's key and host instance and have been received on `keyexpr`, and
+    /// it is held to this receiver's floor.
     ///
     /// # Errors
     /// [`SignedError`]; nothing is recorded then.
@@ -339,7 +333,6 @@ impl SignedReceiver {
     }
 }
 
-/// Checks `msg`'s instance, floor and signature, recording nothing.
 fn verify_signature<'m>(
     key: &VerifyingKey,
     expected_instance: u64,
@@ -369,6 +362,7 @@ fn verify_signature<'m>(
     let input = signing_input(&header, keyexpr, body).map_err(|_| SignedError::KeyExprTooLong)?;
     let mut sig = [0u8; SIGNATURE_LEN];
     sig.copy_from_slice(signature);
+    // `verify_strict` rejects small-order keys and non-canonical signatures.
     key.verify_strict(&input, &Signature::from_bytes(&sig))
         .map_err(|_| SignedError::BadSignature)?;
     Ok(Verified {
@@ -381,10 +375,9 @@ fn verify_signature<'m>(
     })
 }
 
-/// [`SignedReceiver`]'s signature check, apart from the receiver: a task
-/// that holds this verifies broadcasts while the receiver's own task does
-/// something else, and hands over each as a [`Checked`]. Its floor only
-/// saves checking what the receiver would refuse anyway.
+/// [`SignedReceiver`]'s signature check, apart from the receiver: a task that holds this
+/// verifies broadcasts while the receiver's own task does something else, and hands over
+/// each as a [`Checked`].
 #[derive(Debug, Clone)]
 pub struct SignedChecker {
     key: VerifyingKey,
@@ -393,8 +386,7 @@ pub struct SignedChecker {
 }
 
 impl SignedChecker {
-    /// Verifies `msg`, received on `keyexpr`, as
-    /// [`SignedReceiver::verify`] does.
+    /// Verifies `msg`, received on `keyexpr`, as [`SignedReceiver::verify`] does.
     ///
     /// # Errors
     /// [`SignedError`]; nothing is recorded then.
@@ -410,9 +402,9 @@ impl SignedChecker {
     }
 }
 
-/// A broadcast whose signature a [`SignedChecker`] verified, and the only
-/// way to give [`SignedReceiver::take`] one: its fields are private, so
-/// nothing unverified can be presented as verified.
+/// A broadcast whose signature a [`SignedChecker`] verified, and the only way to give
+/// [`SignedReceiver::take`] one: its fields are private, so nothing unverified can be
+/// presented as verified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Checked {
     key: [u8; 32],
@@ -460,7 +452,6 @@ mod tests {
             "signed for another key expression"
         );
         checker.check(STATE, msg.clone()).unwrap();
-        // A replay costs no signature check.
         assert!(matches!(
             checker.check(STATE, msg),
             Err(SignedError::Stale(_))
@@ -477,16 +468,13 @@ mod tests {
             .unwrap();
         let checked = checker.check(STATE, msg).unwrap();
 
-        // Received on another key expression.
         assert_eq!(rx.take(TICK, &checked), Err(SignedError::BadSignature));
-        // Checked under another host's key.
         let other = SignedSender::new(&[9; 32], 7);
         let mut stranger = SignedReceiver::new(&other.verifying_key(), 7).unwrap();
         assert_eq!(
             stranger.take(STATE, &checked),
             Err(SignedError::BadSignature)
         );
-        // The same key, under a newer host instance.
         let mut restarted = SignedReceiver::new(&tx.verifying_key(), 99).unwrap();
         assert!(matches!(
             restarted.take(STATE, &checked),
@@ -494,7 +482,6 @@ mod tests {
         ));
 
         rx.take(STATE, &checked).unwrap();
-        // Taken twice: the receiver's floor still holds.
         assert!(matches!(
             rx.take(STATE, &checked),
             Err(SignedError::Stale(_))
@@ -535,7 +522,6 @@ mod tests {
         let s1 = tx.sign(SignedKind::AuthorityState, STATE, b"1").unwrap();
         let t2 = tx.sign(SignedKind::VirtualTick, TICK, b"2").unwrap();
         let s3 = tx.sign(SignedKind::AuthorityState, STATE, b"3").unwrap();
-        // The first of a kind has no floor: s3 first, then s1 is older.
         assert!(rx.verify(STATE, &s3).is_ok());
         assert_eq!(rx.verify(STATE, &s1), Err(SignedError::Stale(1)));
         assert_eq!(
@@ -543,7 +529,6 @@ mod tests {
             Err(SignedError::Stale(3)),
             "a repeat"
         );
-        // Floors are per kind: tick 2 is below state 3 but still new.
         assert!(rx.verify(TICK, &t2).is_ok());
     }
 
@@ -552,7 +537,6 @@ mod tests {
         let mut tx = host();
         let mut rx = SignedReceiver::new(&tx.verifying_key(), 77).unwrap();
         let msg = tx.sign(SignedKind::AuthorityState, STATE, b"body").unwrap();
-        // seq, body and signature (version, kind and instance fail earlier).
         for at in 10..msg.len() {
             let mut bad = msg.clone();
             bad[at] ^= 1;
@@ -577,7 +561,6 @@ mod tests {
             Err(SignedError::BadSignature),
             "another key"
         );
-        // None of that moved the floor.
         assert!(rx.verify(STATE, &msg).is_ok());
     }
 
@@ -614,7 +597,6 @@ mod tests {
             .iter()
             .map(|&kind| (kind, tx.sign(kind, STATE, b"").unwrap()))
             .collect();
-        // Taken newest first: an older seq of another kind still verifies.
         for (kind, msg) in signed.iter().rev() {
             assert_eq!(rx.verify(STATE, msg).unwrap().header.kind, *kind);
             assert!(matches!(rx.verify(STATE, msg), Err(SignedError::Stale(_))));
@@ -624,14 +606,12 @@ mod tests {
 
     #[test]
     fn rejects_a_weak_or_invalid_host_key() {
-        // The identity point (small-order) and a non-point.
         let mut identity = [0u8; 32];
         identity[0] = 1;
         assert_eq!(
             SignedReceiver::new(&identity, 1).unwrap_err(),
             SignedError::BadKey
         );
-        // About half of all encodings decompress to no point: find one.
         let bad = (2u8..=255)
             .map(|y| {
                 let mut b = [0u8; 32];

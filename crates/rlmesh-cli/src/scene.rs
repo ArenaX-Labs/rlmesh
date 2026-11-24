@@ -1,22 +1,6 @@
-//! `rlmesh scene check scene.toml` (stage 1): a scene
-//! file checked offline against this machine's rlmeshd, its device table
-//! and robot pins ([`crate::devices`]), as `RunScene` will check it.
-//!
-//! On top of the file's own checks ([`rlmesh_session::scene::Scene::parse`]):
-//! - a robot's `device` assertion matches its pin, its pinned device is
-//!   still in the table, an unpinned robot is one its asserted device may
-//!   pin at first embodiment, and a run hosted away from home has every
-//!   robot pinned;
-//! - a controller's device (or the machine serving it) is `local` or in
-//!   the table, and its `max_priority` is within that device's cap, never
-//!   silently clamped;
-//! - `host` is `home` or a paired machine with the `arm` verb, which may
-//!   be a satellite.
-//!
-//! Whether the machines are attached to the lobby is known only at run.
-//!
-//! `rlmesh scene run`, `scene stop`, `scene arm` and `rlmesh lobby` are clients
-//! of the home daemon's lobby ([`crate::lobby`]).
+//! `rlmesh scene check scene.toml` (stage 1): a scene file checked offline
+//! against this machine's rlmeshd, its device table and robot pins
+//! ([`crate::devices`]), as `RunScene` will check it.
 
 use std::io::Write;
 
@@ -86,8 +70,6 @@ pub fn check(scene: &Scene, table: &Table) -> Vec<Problem> {
                     format!("pair it again, or on {home}: rlmesh devices move {name} --to DEVICE"),
                 ),
                 // TODO: a tethered robot hosted away from home also needs its
-                // board_id pinned; check it once the bridge says which robots
-                // it serves (scene step 10).
                 (Some(_), _) => {}
                 (None, _) if away => refuse(
                     &section,
@@ -166,8 +148,7 @@ pub fn check(scene: &Scene, table: &Table) -> Vec<Problem> {
     problems
 }
 
-/// `rlmesh scene`. `check`: 0 for a scene that would pass stage 1, 1 with
-/// every problem printed otherwise.
+/// `rlmesh scene`.
 pub async fn scene(args: &SceneArgs, stdout: &mut impl Write) -> Result<i32> {
     match &args.command {
         SceneCommand::Run(run_args) => run(run_args, stdout).await,
@@ -210,7 +191,6 @@ pub async fn scene(args: &SceneArgs, stdout: &mut impl Write) -> Result<i32> {
     }
 }
 
-/// How long a client waits for the home daemon.
 const HOME_TIMEOUT: Duration = Duration::from_secs(10);
 
 async fn connect(home: &HomeArgs) -> Result<LobbyClient> {
@@ -226,8 +206,6 @@ fn ended(stage: RunStage) -> bool {
     matches!(stage, RunStage::Ended | RunStage::Failed)
 }
 
-/// Prints what changed from `old` to `new`: the stage, each member's
-/// stage and error, and the run's error.
 fn print_change(stdout: &mut impl Write, old: Option<&RunState>, new: &RunState) -> Result<()> {
     if old.is_none_or(|o| o.stage != new.stage) {
         writeln!(stdout, "{}: {}", new.run, run_stage_name(new.stage))?;
@@ -264,8 +242,6 @@ fn print_change(stdout: &mut impl Write, old: Option<&RunState>, new: &RunState)
     Ok(())
 }
 
-/// Follows run `state` until it ends (Ctrl-C stops it on the first, and
-/// leaves on the second): 0 when it ended, 1 when it failed.
 async fn follow(lobby: &LobbyClient, mut state: RunState, stdout: &mut impl Write) -> Result<i32> {
     let mut stopping = false;
     let mut interrupt = std::pin::pin!(crate::host::shutdown_signal());
@@ -387,8 +363,6 @@ mod tests {
     use super::*;
     use rlmesh_session::auth::address::base32;
 
-    /// A scene with two eyes, a skull and a fixed camera, without `record` and
-    /// served member.
     const EYEBALL_RIG: &str = include_str!("../tests/fixtures/eyeball-rig.toml");
 
     fn devices(skull_board: &str) -> Table {
@@ -442,7 +416,6 @@ device = "local"
         let problems = check(&scene, &table);
         assert!(problems.is_empty(), "the rig passes: {problems:?}");
 
-        // The arm moved to this machine's pin; the tracker's laptop is gone.
         table.robots.get_mut("arm").expect("arm").device = LOCAL_DEVICE.into();
         table.devices.remove("laptop-josh");
         let refusal = Refusal {

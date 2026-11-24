@@ -1,7 +1,4 @@
-//! The stateful space handle (`RLMeshSpace`, with `RLMeshBox`, `RLMeshDiscrete`
-//! and `RLMeshDict` as typedefs of it): Python's `rlmesh.spaces` over the Rust
-//! facade's `rlmesh::spaces`, plus the spec readers that go with it.
-#![allow(unsafe_code)] // FFI: raw pointers, a C union and repr(transparent) handles.
+#![allow(unsafe_code)]
 
 use std::ffi::c_char;
 
@@ -37,8 +34,6 @@ impl RLMeshStr {
         }
     }
 
-    /// # Safety
-    /// `data` points at `len` readable bytes (or `len` is 0).
     pub(crate) unsafe fn read<'a>(self, what: &str) -> Result<&'a str, CapiError> {
         let bytes = unsafe { slice_arg(self.data.cast::<u8>(), self.len, what) }?;
         std::str::from_utf8(bytes)
@@ -46,8 +41,6 @@ impl RLMeshStr {
     }
 }
 
-/// `RLMeshBound`'s payload, read per `type_`. `b` is a byte so a caller's
-/// non-0/1 value is not an invalid Rust `bool`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub union RLMeshBoundValue {
@@ -118,12 +111,6 @@ pub struct RLMeshDiscreteOptions {
     pub _reserved: u32,
 }
 
-/// Read a sized options struct by R-19: NULL is the defaults; a
-/// `struct_size` below the first generation's size is refused; bytes past
-/// this library's `sizeof` must be zero.
-///
-/// # Safety
-/// `ptr` is NULL or points at `struct_size` readable bytes.
 unsafe fn read_options<T: crate::abi::sizing::SizedInput>(
     ptr: *const T,
     min_size: usize,
@@ -146,8 +133,6 @@ fn space_dtype(value: i32, field: &str) -> Result<rlmesh::DType, CapiError> {
     })
 }
 
-// ---- handle ownership -------------------------------------------------------
-
 fn into_space_handle(space: Space) -> *mut RLMeshSpace {
     std::boxed::Box::into_raw(std::boxed::Box::new(RLMeshSpace(space)))
 }
@@ -167,14 +152,10 @@ fn space_ref<'a>(space: *const RLMeshSpace) -> Option<&'a Space> {
     unsafe { space.cast::<Space>().as_ref() }
 }
 
-/// # Safety
-/// A non-NULL handle stays live for the returned reference's lifetime.
 unsafe fn require_space<'a>(space: *const RLMeshSpace) -> Result<&'a Space, CapiError> {
     space_ref(space).ok_or_else(|| CapiError::invalid_arg("null space"))
 }
 
-/// # Safety
-/// A non-NULL spec handle must remain live for this call.
 pub(crate) unsafe fn require_spec(spec: *const RLMeshSpaceSpec) -> Result<SpaceSpec, CapiError> {
     spec_ref(spec)
         .map(|wire| rlmesh::binding::space_spec_from_wire(wire.clone()))
@@ -195,8 +176,6 @@ fn typed<'a, T>(
         .ok_or_else(|| CapiError::type_error(format!("expected a {kind} space, got {actual}")))
 }
 
-/// SPC-20's buffer rule: `*out_len` always gets the full length; `out == NULL`
-/// with `cap == 0` is a length query; a short `cap` writes nothing.
 pub(crate) fn copy_buffer<T: Copy>(
     src: &[T],
     out: *mut T,
@@ -272,8 +251,6 @@ fn repr_bytes(out: *mut RLMeshBytes, text: String) -> Result<(), CapiError> {
     }
 }
 
-// ---- vocabularies -----------------------------------------------------------
-
 /// Python's spelling of a space kind (static storage), NULL for an unknown value.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_space_kind_str(kind: i32) -> *const c_char {
@@ -291,8 +268,6 @@ pub extern "C" fn rlmesh_bounds_kind_str(kind: i32) -> *const c_char {
         .find(|k| bounds_kind_to_c(**k) == kind)
         .map_or(std::ptr::null(), |k| static_str(k.as_str()))
 }
-
-// ---- SpaceSpec --------------------------------------------------------------
 
 /// A new owned copy of `spec` (NULL for NULL), freed with `rlmesh_space_spec_free`.
 #[unsafe(no_mangle)]
@@ -314,7 +289,7 @@ pub extern "C" fn rlmesh_space_spec_kind(spec: *const RLMeshSpaceSpec) -> i32 {
     })
 }
 
-/// The spec's shape (SPC-20 buffer rule).
+/// The spec's shape.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_space_spec_shape(
     spec: *const RLMeshSpaceSpec,
@@ -391,8 +366,6 @@ pub extern "C" fn rlmesh_spaces_space_from_spec(
     })
 }
 
-// ---- Space ------------------------------------------------------------------
-
 /// `Space(spec)`: never fails for a valid spec.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_space_new(
@@ -462,7 +435,7 @@ pub extern "C" fn rlmesh_space_dtype(space: *const RLMeshSpace) -> i32 {
     })
 }
 
-/// The space's shape (SPC-20 buffer rule).
+/// The space's shape.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_space_shape(
     space: *const RLMeshSpace,
@@ -576,8 +549,6 @@ pub extern "C" fn rlmesh_space_repr(
     })
 }
 
-// ---- Box --------------------------------------------------------------------
-
 const BOX_OPTIONS_MIN_SIZE: usize = std::mem::size_of::<RLMeshBoxOptions>();
 const DISCRETE_OPTIONS_MIN_SIZE: usize = std::mem::size_of::<RLMeshDiscreteOptions>();
 
@@ -613,7 +584,7 @@ pub unsafe extern "C" fn rlmesh_box_new(
     })
 }
 
-/// Per-element `Box` (Rust-free extra, SPC-22): `low` and `high` hold
+/// Per-element `Box`: `low` and `high` hold
 /// `bounds_len` entries, the shape's element count.
 ///
 /// # Safety
@@ -668,7 +639,7 @@ fn box_bound_entries(bound: Option<BoxBound>) -> Vec<RLMeshBound> {
     }
 }
 
-/// The lower bound's entries (SPC-20 buffer rule): 0 when unbounded, 1 when
+/// The lower bound's entries: 0 when unbounded, 1 when
 /// uniform, one per element otherwise; read `rlmesh_box_bounds_kind` for which.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_box_low(
@@ -717,8 +688,6 @@ pub extern "C" fn rlmesh_box_bounds_kind(
         }
     })
 }
-
-// ---- Discrete ---------------------------------------------------------------
 
 /// `Discrete(n, start, dtype)`.
 ///
@@ -779,8 +748,6 @@ pub extern "C" fn rlmesh_discrete_start(space: *const RLMeshSpace, out: *mut i64
         write_out(out, typed(space, Space::as_discrete, "discrete")?.start())
     })
 }
-
-// ---- Dict -------------------------------------------------------------------
 
 /// `Dict(spaces)`: copies each spec; keys sort at construction. A duplicate or
 /// empty key is `RLMESH_ERR_INVALID_ARGUMENT`.
@@ -937,8 +904,6 @@ mod tests {
         };
         use rlmesh_spaces::{DType, DictSpec, DiscreteSpec, SpaceKind, SpaceSpec};
 
-        // A remote spec may declare any key order. Dict::new sorts keys, so
-        // sampling a locally built Dict alone cannot detect the old BTreeMap bug.
         let keys = ["z", "m\0key", "a"];
         let numbers = [7, 11, 13];
         let spec = RLMeshSpaceSpec(SpaceSpec {
@@ -1004,7 +969,6 @@ mod tests {
         let high = RLMeshBound::write(Bound::Float(1.0));
         let mut out: *mut RLMeshSpace = std::ptr::null_mut();
 
-        // Below the minimum (including 0) is refused.
         let zeroed = RLMeshBoxOptions {
             struct_size: 0,
             dtype: 11,
@@ -1013,7 +977,6 @@ mod tests {
         let status = unsafe { rlmesh_box_new(low, high, shape.as_ptr(), 1, &zeroed, &mut out) };
         assert_eq!(status, RLMeshStatus::InvalidArgument);
 
-        // A larger caller struct with a nonzero tail is a TypeError.
         #[repr(C)]
         struct Newer {
             base: RLMeshBoxOptions,
@@ -1030,7 +993,6 @@ mod tests {
         let status = unsafe { rlmesh_box_new(low, high, shape.as_ptr(), 1, &newer.base, &mut out) };
         assert_eq!(status, RLMeshStatus::Type);
 
-        // A zero tail is accepted.
         let newer = Newer { extra: 0, ..newer };
         let status = unsafe { rlmesh_box_new(low, high, shape.as_ptr(), 1, &newer.base, &mut out) };
         assert_eq!(status, RLMeshStatus::Ok);

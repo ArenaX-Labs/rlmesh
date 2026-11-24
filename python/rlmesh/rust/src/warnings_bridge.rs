@@ -1,9 +1,3 @@
-//! Route the native warnings (R-23) through Python's `warnings.warn`.
-//!
-//! The engine behind `Model.run` and `Model.serve` warns through the facade's
-//! handler; in a Python process those warnings are Python warnings, filtered
-//! and shown (or raised under `-W error`) by Python's own machinery.
-
 use std::ffi::CString;
 
 use pyo3::exceptions::{PyRuntimeWarning, PyUserWarning};
@@ -28,9 +22,8 @@ fn warn(warning: &Warning) -> rlmesh::Result<()> {
         let message = CString::new(warning.message.replace('\0', " "))
             .unwrap_or_else(|_| CString::from(c"rlmesh warning"));
         let mut stacklevel = 1;
-        // A runtime thread that delivers the warning has run no Python and has
-        // no frame. CPython 3.9 and 3.10 crash in `sys._getframe` there once
-        // any audit hook is installed, so ask the C API before calling it.
+        // A thread with no Python frame crashes `sys._getframe` on CPython 3.9/3.10
+        // once an audit hook is installed, so ask the C API first.
         // SAFETY: the interpreter is attached; the borrowed result is only
         // compared with null.
         #[allow(unsafe_code)]

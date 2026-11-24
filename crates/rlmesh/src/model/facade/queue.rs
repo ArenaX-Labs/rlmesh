@@ -30,8 +30,6 @@ struct LifeState {
     next_serve: u64,
 }
 
-/// The model's lifecycle, shared with its library thread (which marks it
-/// closed once the close hook returned).
 pub(super) struct Life {
     state: Mutex<LifeState>,
     changed: Condvar,
@@ -51,7 +49,6 @@ impl Life {
         self.changed.notify_all();
     }
 
-    /// Wait until `done` holds, or `timeout` passes; whether it held.
     fn wait_until(
         &self,
         timeout: Option<Duration>,
@@ -84,14 +81,12 @@ impl Life {
     }
 }
 
-/// The model's shared internals: declarations, queue and lifecycle.
 pub(crate) struct Shared {
     pub(crate) decl: Resolved,
     queue: mpsc::Sender<Job>,
     worker: ThreadId,
     pub(super) life: Arc<Life>,
     refuse: AtomicBool,
-    /// Set while a run drives this model.
     running: Arc<AtomicBool>,
 }
 
@@ -176,7 +171,6 @@ impl Shared {
         std::thread::current().id() == self.worker
     }
 
-    /// Refuse a call from inside this model's own corner or hook.
     pub(crate) fn check_not_reentrant(&self, what: &str) -> Result<()> {
         if self.on_worker() {
             return Err(Error::Runtime(format!(
@@ -209,7 +203,6 @@ impl Shared {
         Ok(rx)
     }
 
-    /// Run `f` on the model's thread, behind every call queued before it.
     pub(crate) fn call<R: Send + 'static>(
         &self,
         f: impl FnOnce(&mut Core) -> Result<R> + Send + 'static,
@@ -230,13 +223,10 @@ impl Shared {
             .map_err(|_| Error::Internal("the model call was dropped".to_string()))?
     }
 
-    /// Claim the model's one run slot: a second run while one is in progress
-    /// fails at once with the `RuntimeError` class.
     pub(crate) fn claim_run(self: &Arc<Self>) -> Result<RunSlot> {
         RunSlot::claim(self.running.clone())
     }
 
-    /// Refuse a new run or serve once `close()` has begun.
     pub(crate) fn admit(&self) -> Result<()> {
         if self.life.lock().phase != Phase::Open {
             return Err(closed_error());
@@ -260,8 +250,6 @@ impl Shared {
         self.life.changed.notify_all();
     }
 
-    /// `close()`: stop every serve, wait for queued calls, fire the hook
-    /// once. A second or concurrent close waits for the first and succeeds.
     pub(crate) fn close(&self, timeout: Option<Duration>) -> Result<()> {
         self.check_not_reentrant("close()")?;
         let triggers: Vec<ShutdownTrigger> = {
@@ -269,9 +257,6 @@ impl Shared {
             match state.phase {
                 Phase::Closed => return Ok(()),
                 Phase::Closing => {
-                    // Another close is running (a user close stopping this
-                    // serve, or a detached Drop close): it owns the hook and
-                    // its errors, so wait for it and succeed.
                     drop(state);
                     self.life
                         .wait_until(None, |state| state.phase == Phase::Closed);

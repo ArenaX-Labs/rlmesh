@@ -1,11 +1,5 @@
 //! `rlmesh doctor` and `rlmesh bench`: checks and benchmarks against a served
 //! env or model on one machine.
-//!
-//! Reports use the `probe-report.json` shape ([`ProbeReport`]). A model is
-//! reached through the binder ([`crate::bind`]) against a scripted stand-in
-//! env; an env is driven through a binding with the probe's actions.
-//!
-//! Hidden binding plumbing (R-25), used by the CLI.
 
 #![allow(missing_docs)]
 
@@ -74,7 +68,6 @@ pub fn failed_handshake(subject: ProbeSubject, detail: &str) -> ProbeReport {
     probe.report(ProbeEnv::default(), ProbePeer::default())
 }
 
-/// The checks a probe records, in order, and what it has observed so far.
 struct Probe {
     subject: ProbeSubject,
     names: &'static [&'static str],
@@ -108,7 +101,6 @@ impl Probe {
         self.checks.push(check);
     }
 
-    /// Skips every check not yet recorded, naming why.
     fn skip_remaining(&mut self, reason: &str) {
         for name in self.names {
             if !self.checks.iter().any(|check| check.name == *name) {
@@ -134,7 +126,6 @@ impl Probe {
     }
 }
 
-/// The peer block of a report, read off a describe envelope's `runtime`.
 fn peer_from_describe(describe: Option<&serde_json::Value>) -> ProbePeer {
     let runtime = describe.and_then(|envelope| envelope.get("runtime"));
     let text = |key: &str| {
@@ -175,9 +166,6 @@ pub fn model_answers(address: &str, timeout: Duration) -> Result<(), String> {
     })
 }
 
-/// Bind the random baseline to the env at `address`, retrying a connect that
-/// fails while the env is still coming up (its session host can answer before
-/// its `make()` returns) until `timeout` has passed.
 fn bind_env(address: &str, timeout: Duration) -> crate::Result<crate::Binding<'static>> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -193,7 +181,6 @@ fn bind_env(address: &str, timeout: Duration) -> crate::Result<crate::Binding<'s
     }
 }
 
-/// `sorted[p]`, nearest rank; 0 for an empty slice.
 fn percentile(sorted: &[f64], p: f64) -> f64 {
     let Some(last) = sorted.len().checked_sub(1) else {
         return 0.0;

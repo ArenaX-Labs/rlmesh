@@ -1,5 +1,3 @@
-//! Lockstep messages.
-
 use super::*;
 
 #[test]

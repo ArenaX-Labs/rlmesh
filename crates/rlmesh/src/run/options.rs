@@ -6,13 +6,9 @@ use std::time::Duration;
 use super::RunHooks;
 use crate::{Error, Result};
 
-/// The execution-horizon ceiling.
 pub(crate) const MAX_EXECUTION_HORIZON: u32 = 1024;
 
 /// Options for [`run`](crate::run) and [`Model::run`](crate::Model::run).
-///
-/// Build with `..Default::default()`. Adding an options field is a minor
-/// change by project policy.
 #[derive(Default)]
 pub struct RunOptions<'h> {
     /// The exact number of episodes: one by default, `seeds.len()` when only
@@ -72,8 +68,6 @@ impl fmt::Debug for RunOptions<'_> {
 }
 
 /// Options for [`bind`](crate::bind) and [`Model::bind`](crate::Model::bind).
-///
-/// Build with `..Default::default()`.
 #[derive(Default)]
 pub struct BindOptions<'h> {
     /// Close a local env (or shut a served one down) with the binding.
@@ -88,7 +82,7 @@ pub struct BindOptions<'h> {
     /// their [`RunContext`](super::RunContext), an episode reset over
     /// before it ended counts as truncated, and `on_run_end` fires at close.
     pub hooks: Option<&'h mut dyn RunHooks>,
-    /// Live viewer; the native loop refuses a set view (RUN-4).
+    /// Live viewer; the native loop refuses a set view.
     pub view: Option<crate::View>,
 }
 
@@ -103,7 +97,6 @@ impl fmt::Debug for BindOptions<'_> {
     }
 }
 
-/// Resolve the episode count from the explicit budget and seeds.
 pub(crate) fn episode_budget(episodes: Option<u64>, seeds: Option<&[i64]>) -> Result<u64> {
     match (episodes, seeds) {
         (None, Some(seeds)) => Ok(seeds.len() as u64),
@@ -152,18 +145,15 @@ pub fn resolve_execution_horizon(
     Ok(horizon)
 }
 
-/// `execution_horizon` in 1..=1024 and at most a declared native chunk.
 pub(crate) fn check_horizon(horizon: u32, native_chunk: Option<u32>) -> Result<()> {
     resolve_execution_horizon(Some(horizon.into()), None, None, native_chunk).map(|_| ())
 }
 
-/// The per-episode caps, as the runtime takes them.
 pub(crate) struct Caps {
     pub(crate) max_episode_steps: Option<i64>,
     pub(crate) max_episode_seconds: Option<f64>,
 }
 
-/// `max_episode_steps` in 1..=i64::MAX and a positive `max_episode`.
 pub(crate) fn check_caps(
     max_episode_steps: Option<u64>,
     max_episode: Option<Duration>,
@@ -195,7 +185,6 @@ pub(crate) fn check_caps(
     })
 }
 
-/// `prefetch_lead` within the runtime's `u32` bound.
 pub(crate) fn check_prefetch(prefetch_lead: u64) -> Result<u32> {
     u32::try_from(prefetch_lead).map_err(|_| {
         Error::invalid_argument(format!(

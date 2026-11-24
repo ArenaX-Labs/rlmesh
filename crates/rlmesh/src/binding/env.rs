@@ -16,13 +16,13 @@ pub use crate::env::types::{
 pub use crate::env::wire::{WireEnvAdapter, WireLaneAdapter};
 pub use rlmesh_proto::{EndpointPhases, lane_skew_ns};
 
-/// The any-arity remote env client both shared clients wrap (RMT-14), how
-/// it dials, and its edition cell (RMT-20).
+/// The any-arity remote env client both shared clients wrap, how it dials, and
+/// its edition cell.
 pub use crate::env::client::{CoreConnect, EditionCell, EnvClientCore};
 
 /// Wait without flattening a stopped server's serve error into a misuse error.
 /// `None` means timeout; `Some(result)` means stopped, even when `result` is an
-/// error. C writes its stopped output before propagating that serve result.
+/// error.
 pub fn env_server_wait(
     server: &crate::EnvServer,
     timeout: Option<std::time::Duration>,
@@ -48,8 +48,8 @@ pub fn normalize_connect_address(address: Option<&str>) -> crate::Result<String>
     crate::env::client::normalize_connect_address(address)
 }
 
-/// A client timeout in seconds (RMT-4): `None` and zero are no timeout;
-/// negative or non-finite is the ValueError class naming `field`.
+/// A client timeout in seconds: `None` and zero are no timeout; negative or
+/// non-finite is the ValueError class naming `field`.
 pub fn client_timeout_from_secs(
     value: Option<f64>,
     field: &str,
@@ -57,8 +57,8 @@ pub fn client_timeout_from_secs(
     crate::env::client::timeout_from_secs(value, field)
 }
 
-/// Decode a wire PNG render frame to `(shape, raw uint8)` (RMT-16); an
-/// undecodable frame is the ProtocolException class.
+/// Decode a wire PNG render frame to `(shape, raw uint8)`; an undecodable frame
+/// is the ProtocolException class.
 pub fn decode_render_frame(png: &[u8]) -> crate::Result<(Vec<usize>, Vec<u8>)> {
     crate::env::client::decode_render_frame(png)
 }

@@ -79,9 +79,8 @@ pub(super) fn view_to_pb(view: &DeviceView) -> pb::DeviceView {
     }
 }
 
-/// The most of each a board takes in one device view: more is refused
-/// unread ([`Unread::TooLarge`]). Its own parts, a lease, grid and two
-/// streams' plans per part, and a clock per lease holder.
+/// The most of each a board takes in one device view: more is refused unread
+/// ([`Unread::TooLarge`]).
 pub const MAX_VIEW_PARTS: usize = 32;
 /// The most leases in one view (one per part).
 pub const MAX_VIEW_LEASES: usize = MAX_VIEW_PARTS;
@@ -115,23 +114,19 @@ pub fn decode_view(buf: &[u8]) -> Result<DeviceView, WireError> {
 }
 
 /// Decodes one robot's device view into `into`, reusing what it holds: its
-/// vectors' room, and each id that is the same as before. A board that
-/// decodes each view into the one it held two views ago allocates nothing
-/// while its session stays the same. Its parts are decoded only when
-/// `parts` is set (a board takes them once, from its declaration's reply);
-/// otherwise they are skipped unread and `into` holds none.
+/// vectors' room, and each id that is the same as before.
 ///
-/// Every count and length is checked against this module's caps
-/// (`MAX_VIEW_*`, and an id's 128 bytes) before anything is allocated for
-/// it, every allocation is fallible, and no error
-/// allocates: a view a board cannot take is refused, never a panic.
+/// Decoding into the view held two views ago allocates nothing while the
+/// session stays the same. Parts are decoded only when `parts` is set;
+/// otherwise they are skipped and `into` holds none. Every count and length is
+/// checked against the `MAX_VIEW_*` caps before allocating, every allocation is
+/// fallible, and a view that cannot be taken is refused, never a panic.
 ///
 /// # Errors
 /// [`WireError::Unread`]: malformed, over a cap, or more than the heap can
 /// give now; a part spec's own errors when `parts` is set. `into` is then
 /// unspecified: decode into a spare, and keep the view held.
 pub fn decode_view_into(buf: &[u8], into: &mut DeviceView, parts: bool) -> Result<(), WireError> {
-    // Each repeated field's count first, so each vector is sized once.
     let mut counts = [0usize; 6];
     let mut fields = Fields::new(buf, VIEW);
     while let Some((tag, _)) = fields.next_field()? {
@@ -240,7 +235,6 @@ pub fn decode_view_into(buf: &[u8], into: &mut DeviceView, parts: bool) -> Resul
             17 => {
                 let reason = into.closing.get_or_insert_with(Reason::default);
                 if !closing {
-                    // Cleared in place: its text buffers stay.
                     reason.code = ReasonCode::default();
                     reason.by.clear();
                     reason.detail.clear();
@@ -290,7 +284,6 @@ fn unread(why: Unread) -> WireError {
     WireError::unread(VIEW, why)
 }
 
-/// Room in `v` for `n`, at most `max`, without allocating past it.
 fn room<T>(v: &mut Vec<T>, n: usize, max: usize, what: &'static str) -> Result<(), WireError> {
     if n > max {
         return Err(unread(Unread::TooLarge(what)));
@@ -302,8 +295,6 @@ fn room<T>(v: &mut Vec<T>, n: usize, max: usize, what: &'static str) -> Result<(
     Ok(())
 }
 
-/// The next element of `v` to decode into: the one held there, or a blank
-/// one in the room [`room`] made.
 fn next<'v, T>(
     v: &'v mut Vec<T>,
     at: &mut usize,

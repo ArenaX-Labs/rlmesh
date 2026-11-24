@@ -1,6 +1,3 @@
-// C++17 consumer of the same two-step script as the other three runners.
-// Always evaluate checks and calls, including release consumers built with
-// NDEBUG.
 #define REQUIRE(...)                                                           \
   do {                                                                         \
     if (!(__VA_ARGS__))                                                        \
@@ -15,9 +12,6 @@
 #include <sstream>
 #include <thread>
 #include <type_traits>
-// Observe the real ABI boundary, then forward to the linked library. Recorder
-// stores both missing and empty config as {}, so a roundtrip alone cannot catch
-// a wrapper accidentally converting an absent optional into an empty dict.
 namespace {
 bool observe_recorder_config = false;
 std::vector<bool> add_configs, capture_configs;
@@ -98,7 +92,6 @@ struct Counter {
       s->cancel->cancel();
       s->held = true;
     }
-    // A cancelled episode never ends, so the run's cancel lands in it.
     return {s->steps, 1.0, s->steps >= 2 && !s->held, false, {}};
   }
   void close() { ++s->env_closes; }
@@ -199,8 +192,6 @@ void current_error() {
   }
 }
 
-// The current exception's record, with every `value` (a port) in its text
-// masked.
 void current_error_masked(const std::string &value, const std::string &mask) {
   std::ostringstream captured;
   auto *previous = std::cout.rdbuf(captured.rdbuf());
@@ -212,7 +203,6 @@ void current_error_masked(const std::string &value, const std::string &mask) {
     text.replace(at, value.size(), mask);
   std::cout << text;
 }
-// A run refuses an https:// env endpoint (v1) before any dial.
 void https_env(Model &model) {
   try {
     model.run("https://127.0.0.1:1");
@@ -221,8 +211,6 @@ void https_env(Model &model) {
     current_error_masked(":1", ":PORT");
   }
 }
-// An env served at a bare ":0" (short for ":0/env"), run at its bare
-// host:port#key.
 void bare_env(Model &model, const std::shared_ptr<Script> &state) {
   EnvServer server(Counter{state}, EnvServerOptions{}.with_address(":0"));
   server.start();
@@ -246,8 +234,6 @@ void bare_port_env(Model &model) {
     current_error();
   }
 }
-// A model served as the participant "policy" of a session this process
-// hosts, reached by its address and driving a local env.
 void served_model(Env &env, Model &model,
                   const std::shared_ptr<Script> &state) {
   EnvServer host(Counter{std::make_shared<Script>()},

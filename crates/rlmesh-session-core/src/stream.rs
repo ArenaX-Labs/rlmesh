@@ -1,10 +1,6 @@
 //! One stream's receive rules, sans-IO: which samples a subscriber accepts
 //! (epoch, seq order, gaps as losses), whether a sample fits its declared
 //! stream, and when a value is stale against the stream's `max_age`.
-//!
-//! `rlmesh-session`'s `SampleSubscriber` applies these to every sample it
-//! receives; the browser binding applies the same ones in wasm. Missing
-//! samples are explicit: a gap in `seq` is a loss, never a silent freeze.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -40,11 +36,10 @@ pub struct SampleStats {
 }
 
 impl SampleStats {
-    /// Counts one decoded sample of the stream and says whether to keep it:
-    /// one from an epoch older than the subscriber's view (`view_epoch`) is
-    /// dropped (`stale_epoch`), one at or below the newest seq is dropped
-    /// (`out_of_order`), and a jump past the next seq counts the skipped
-    /// seqs as `lost`.
+    /// Counts one decoded sample of the stream and says whether to keep it: one
+    /// from an epoch older than the subscriber's view (`view_epoch`) is dropped
+    /// (`stale_epoch`), one at or below the newest seq is dropped (`out_of_order`),
+    /// and a jump past the next seq counts the skipped seqs as `lost`.
     pub fn accept(
         &mut self,
         seq: u64,
@@ -72,9 +67,8 @@ impl SampleStats {
     }
 }
 
-/// Whether `sample` fits `spec`: the key's stream, and the payload against
-/// the declared layout (O(fields), before any view of the value). An applied
-/// tick that dispatched nothing carries no payload.
+/// Whether `sample` fits `spec`: the key's stream, and the payload against the
+/// declared layout (O(fields), before any view of the value).
 pub fn check_sample(spec: &StreamSpec, sample: &Sample) -> Result<(), String> {
     if sample.channel != spec.channel {
         return Err(format!("{} on {}'s key", sample.channel, spec.channel));

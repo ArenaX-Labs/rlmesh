@@ -24,16 +24,14 @@ pub enum Backend {
 
 /// A synchronous, directly-fed viewer.
 ///
-/// The Session loop is the caller's own loop, so feeding inline is fine: each
-/// [`feed_frame`](Viewer::feed_frame) normalizes to RGB and draws to every active
-/// backend (throttled to `fps`). The caller reads
+/// Each [`feed_frame`](Viewer::feed_frame) runs on the caller's thread: it normalizes to RGB and
+/// draws to every active backend, throttled to `fps`. Read
 /// [`selected_source`](Viewer::selected_source) to know which camera to feed.
 pub struct Viewer {
     shared: Arc<HttpShared>,
     format: FrameFormat,
     frame_interval: Duration,
     last_render: Mutex<Option<Instant>>,
-    /// Smoothed actual draw rate (frames per second), shown on the HUD.
     fps: Mutex<f64>,
     terminal: Option<Terminal>,
     server: Option<Arc<Server>>,
@@ -118,7 +116,6 @@ impl Viewer {
     }
 
     /// Feed one HWC uint8 frame for the selected source. Throttled to `fps`:
-    /// normalize + draw (and dropping when ahead of cadence) happens here.
     pub fn feed_frame(&self, buf: &[u8], width: u32, height: u32, channels: u32) {
         {
             let mut last = http::lock(&self.last_render);
@@ -169,6 +166,5 @@ impl Drop for Viewer {
         if let Some(server) = &self.server {
             server.unblock();
         }
-        // The terminal backend restores the screen via its own Drop.
     }
 }

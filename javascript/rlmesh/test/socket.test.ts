@@ -18,7 +18,6 @@ test('token rides as a subprotocol next to rlmesh.v2', () => {
   assert.deepEqual(protocolsFor('abc'), ['rlmesh.v2', 'rlmesh.token.abc']);
 });
 
-/** A fake WebSocket the test drives by hand, plus manual timers and clock. */
 function harness(failFirst: number) {
   const sockets: FakeWS[] = [];
   let created = 0;
@@ -94,19 +93,17 @@ test('reconnects with backoff, reports open/reconnect/close, resets after a stab
   assert.equal(h.sockets.at(-1)!.binaryType, 'arraybuffer');
   assert.deepEqual(h.sockets.at(-1)!.protocols, ['rlmesh.v2']);
   assert.ok(sock.send(new Uint8Array(1)));
-  // An open shorter than stableMs keeps the backoff growing (accept-then-drop servers).
   h.sockets.at(-1)!.serverClose();
   assert.equal(log.at(-1), 'close a2 400ms');
   assert.equal(sock.send(new Uint8Array(1)), false, 'send while down is dropped');
   h.timers.shift()!.fn();
   await tick();
   assert.equal(log.at(-1), 'reopen');
-  // A stable open resets it.
   h.clock.advance(5000);
   h.sockets.at(-1)!.serverClose();
   assert.equal(log.at(-1), 'close a0 100ms');
   sock.close();
-  h.timers.shift()!.fn(); // a pending retry after close() does nothing
+  h.timers.shift()!.fn();
   await tick();
   assert.equal(log.at(-1), 'close a0 100ms');
 });

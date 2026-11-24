@@ -1,16 +1,3 @@
-//! End-to-end loopback harness: serve a trivial environment, then run a compiled
-//! C/C++ model binary (`<bin> <session-address> 3`) against it. A binary, not a
-//! `cargo test`, so the C/C++ toolchain stays out of `cargo test --workspace`.
-//!
-//! Usage: `e2e_harness <model-binary> [expected-stdout-substring]`. The optional
-//! second argument is asserted against the child's stdout, so a smoke that
-//! prints its run report is checked for the real numbers, not just its exit code.
-//!
-//! Every episode takes two steps, so the model's second predict under one
-//! episode id carries `predict_index == 1`; for each seed the env was reset
-//! with, the harness also asserts the smoke printed that predict's derived seed
-//! (`predict 1 seed <rlmesh::predict_seed(seed, 1)>`) — the `RLMeshPredictContext`
-//! fields really crossed the ABI at the offsets the header declares.
 #![allow(clippy::print_stderr)]
 
 use std::process::{Command, ExitCode};
@@ -19,13 +6,8 @@ use std::sync::{Arc, Mutex};
 use rlmesh::spaces::{Box, BoxOptions, Space};
 use rlmesh::{DType, EnvServer, EnvServerOptions, InfoDict, Tensor, Value};
 
-/// Steps per episode: reset → obs 0, then one step per further predict, the
-/// last of which terminates.
 const STEPS_PER_EPISODE: u8 = 2;
 
-/// A minimal single environment: a uint8 `Box[1]` obs/action,
-/// [`STEPS_PER_EPISODE`] steps per episode (reset → 0, step k → k, terminated
-/// on the last). Records the seed of every reset it was given.
 struct SmokeEnv {
     steps: u8,
     reset_seeds: Arc<Mutex<Vec<Option<i64>>>>,
@@ -84,8 +66,6 @@ impl rlmesh::Env for SmokeEnv {
     }
 }
 
-/// Episodes the model binary is asked to run (more than one, so episode
-/// teardown and the run report carry real numbers).
 const EPISODES: &str = "3";
 
 fn main() -> ExitCode {
@@ -95,8 +75,6 @@ fn main() -> ExitCode {
     };
     let expect = std::env::args().nth(2);
     let reset_seeds = Arc::new(Mutex::new(Vec::new()));
-    // The server is serving before the model joins its session (port 0 →
-    // OS-assigned), so no readiness sleep is needed.
     let env = SmokeEnv {
         steps: 0,
         reset_seeds: Arc::clone(&reset_seeds),
@@ -140,9 +118,6 @@ fn main() -> ExitCode {
         eprintln!("model stdout did not contain {expect:?}");
         return ExitCode::FAILURE;
     }
-    // Every seeded episode had a second predict; the smoke must have logged it
-    // with the seed core derives for ordinal 1 (both smokes print
-    // `predict <index> seed <predict_seed>` per row).
     let seeds: Vec<i64> = reset_seeds
         .lock()
         .expect("reset seed log")

@@ -8,9 +8,6 @@ use crate::data::{EnvError, EnvErrorCode};
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Classifies an [`EnvironmentError`] reported by an environment.
-///
-/// The text form ([`ErrorCode::as_str`], `Display`) is the wire code of the
-/// `EnvironmentException`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorCode {
@@ -55,9 +52,6 @@ impl ErrorCode {
 }
 
 /// Classifies a [`ModelError`] reported by a model.
-///
-/// The text form ([`ModelErrorCode::as_str`], `Display`) is the wire code of
-/// the `ModelException`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ModelErrorCode {
@@ -110,11 +104,8 @@ pub struct EnvironmentError {
     pub class: Option<String>,
 }
 
-/// A failure reported by a model (`ModelException`).
-///
-/// This is distinct from the transport/internal variants: it represents the
-/// model *declining* a request (e.g. an invalid observation), so the runtime
-/// can report and retry it appropriately.
+/// A failure reported by a model (`ModelException`): the model declined a request (an
+/// invalid observation, say), as distinct from a transport or internal fault.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelError {
     /// Machine-readable classification of the failure.
@@ -154,10 +145,9 @@ impl std::error::Error for ModelError {}
 
 /// The exact class of an [`Error`], using RLMesh's error-class vocabulary.
 ///
-/// Rust cannot nest enum variants, so a subclass without a variant of its
-/// own (`RecoverableEnvironmentException`, `AdapterResolutionError`) shares
-/// its parent's [`Error`] variant; [`Error::class`] still reports the exact
-/// class, and [`ErrorClass::is_subclass_of`] tests class inheritance.
+/// A subclass without a variant of its own (`RecoverableEnvironmentException`,
+/// `AdapterResolutionError`) shares its parent's [`Error`] variant; [`Error::class`] still
+/// reports the exact class, and [`ErrorClass::is_subclass_of`] tests inheritance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorClass {
@@ -269,10 +259,9 @@ impl fmt::Display for ErrorClass {
 
 /// The error type for every fallible operation in this crate.
 ///
-/// Each variant identifies an error class (see [`ErrorClass`]); a subclass
-/// with no variant of its own uses its parent's, and [`Error::class`]
-/// reports the exact class. `Display` formats the message.
-/// [`Error::is_recoverable`] reports whether the session remains usable.
+/// Each variant identifies an error class (see [`ErrorClass`]); [`Error::class`] reports the
+/// exact class and `Display` formats the message. [`Error::is_recoverable`] reports whether the
+/// session remains usable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
@@ -310,12 +299,8 @@ pub enum Error {
 
 impl Error {
     /// Construct a non-recoverable model failure (`ModelException`, code
-    /// `Internal`).
-    ///
-    /// Use this from a [`crate::binding::model::ModelHandler::predict`]
-    /// implementation to signal that the model declined the request (e.g. a
-    /// malformed observation), rather than misreporting it as an
-    /// internal/transport fault.
+    /// `Internal`). Use it from a model's `predict` to signal that the model
+    /// declined the request, rather than reporting an internal fault.
     pub fn model(message: impl Into<String>) -> Self {
         Self::Model(ModelError {
             code: ModelErrorCode::Internal,
@@ -373,15 +358,11 @@ impl Error {
         })
     }
 
-    /// An address that could not be parsed: a `ValueError` whose text is
-    /// `invalid address: message`.
     #[cfg(test)]
     pub(crate) fn invalid_address(message: impl fmt::Display) -> Self {
         Self::invalid_argument(format!("invalid address: {message}"))
     }
 
-    /// A server-side failure (bind failed, ...): an `RLMeshException` whose
-    /// text uses `server error: message`.
     pub(crate) fn server(message: impl fmt::Display) -> Self {
         Self::Internal(format!("server error: {message}"))
     }
@@ -410,9 +391,8 @@ impl Error {
         }
     }
 
-    /// Whether the session remains usable: the Environment or Model error's
-    /// own flag, and false for every other class. Whether to retry a call is
-    /// [`ErrorExt::is_transient`](crate::ext::ErrorExt::is_transient).
+    /// Whether the session remains usable: the Environment or Model error's own flag, and
+    /// false for every other class.
     pub fn is_recoverable(&self) -> bool {
         match self {
             Self::Attached(attached) => attached.error.is_recoverable(),
@@ -422,8 +402,6 @@ impl Error {
         }
     }
 
-    /// Whether retrying the same call can succeed; the public question is
-    /// [`ErrorExt::is_transient`](crate::ext::ErrorExt::is_transient).
     pub(crate) fn is_transient(&self) -> bool {
         match self {
             Self::Attached(attached) => attached.error.is_transient(),
@@ -431,14 +409,11 @@ impl Error {
         }
     }
 
-    /// Map a wire-level protocol failure onto [`Error::Protocol`].
     #[cfg(test)]
     pub(crate) fn from_protocol(value: crate::data::ProtocolError) -> Self {
         Self::Protocol(value.to_string())
     }
 
-    /// An adapter-apply failure is the model declining a malformed
-    /// observation/action, not a transport fault: surface it as a model error.
     pub(crate) fn from_apply(value: rlmesh_adapters::v1::ApplyError) -> Self {
         value
             .source
@@ -449,12 +424,7 @@ impl Error {
     }
 }
 
-/// A client's dial failure, the one formatter for env and model clients:
-/// `could not connect to {peer} at '{address}'; {hint} ({cause})`, or
-/// `could not connect to {peer} at '{address}': {cause}` when the server
-/// rejected the key (serving is not in doubt then). Other classes pass through.
 pub(crate) fn dial_failure(err: Error, peer: &str, address: &str, hint: &str) -> Error {
-    // An invite's key is a credential: errors show the address without it.
     let address = rlmesh_session::address::redact(address);
     match err {
         Error::Connection(cause) => Error::Connection(format!(
@@ -464,9 +434,6 @@ pub(crate) fn dial_failure(err: Error, peer: &str, address: &str, hint: &str) ->
     }
 }
 
-/// Combine a primary result (carrying a value `T`) with a close-hook result. If
-/// both fail, fold them into one [`Error::Internal`] prefixed with `ctx`
-/// ("<ctx>: <a>; close hook failed: <b>").
 pub(crate) fn join_results<T>(a: Result<T>, b: Result<()>, ctx: &str) -> Result<T> {
     match (a, b) {
         (Ok(value), Ok(())) => Ok(value),
@@ -535,7 +502,6 @@ fn map_env_error_code(code: EnvErrorCode) -> ErrorCode {
 }
 
 impl EnvironmentError {
-    /// Map a wire environment error onto the facade's detail fields.
     pub(crate) fn from_wire(value: EnvError) -> Self {
         Self {
             code: map_env_error_code(value.code),
@@ -635,7 +601,6 @@ mod tests {
     #[test]
     fn is_subclass_of_follows_python_mro() {
         use ErrorClass as C;
-        // Reflexive, as issubclass.
         for class in C::ALL {
             assert!(class.is_subclass_of(class), "{class}");
         }
@@ -647,7 +612,6 @@ mod tests {
         assert!(C::AdapterResolutionError.is_subclass_of(C::ValueError));
         assert!(C::ConnectionError.is_subclass_of(C::OSError));
         assert!(C::TimeoutError.is_subclass_of(C::OSError));
-        // The builtins are not under RLMeshException.
         for class in [
             C::ValueError,
             C::TypeError,

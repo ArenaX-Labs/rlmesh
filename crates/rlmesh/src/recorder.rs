@@ -5,8 +5,7 @@ mod export;
 mod records;
 #[cfg(test)]
 mod tests;
-/// The video writer behind capture (R-25 binding plumbing: the
-/// recorder and the Python binding drive it).
+/// The video writer behind capture; hidden and semver-exempt.
 #[doc(hidden)]
 pub mod video;
 use crate::{Error, Metadata, Result, RunContext, RunHooks, RunResult, TelemetryRow, Value};
@@ -103,9 +102,7 @@ pub struct RecorderCaptureOptions {
     pub video_info_keys: Vec<String>,
     /// Include the episodes in reward and success aggregates.
     pub included_in_metrics: bool,
-    /// Binding plumbing for Python's Experimental `Recorder.record` (R-25):
-    /// write the per-episode artifact tree this spec selects (episode
-    /// records, trajectories, sampled videos) instead of `cameras` media.
+    /// Write the per-episode artifact tree this spec selects instead of `cameras` media.
     #[doc(hidden)]
     pub record: Option<RecordSpec>,
 }
@@ -151,11 +148,8 @@ pub struct RecorderExportOptions {
 }
 struct State {
     workloads: Vec<WorkloadRecord>,
-    /// Each workload's telemetry rows, one batch per recorded run.
     telemetry: Vec<Vec<TelemetryRow>>,
-    /// Each workload's artifact tree: its bundle prefix and writer.
     trees: Vec<Option<(String, ArtifactTap)>>,
-    /// The machine's stamp, taken with the first artifact tree.
     stamp: Option<AttemptStamp>,
     staging: Option<tempfile::TempDir>,
     assets: Vec<(PathBuf, String)>,
@@ -166,8 +160,8 @@ struct State {
 }
 impl Drop for State {
     fn drop(&mut self) {
-        // A live capture retains State. The last owner's cleanup must not do
-        // recursive filesystem I/O on an async executor's thread (R-17).
+        // The last owner's cleanup must not do recursive filesystem I/O on an
+        // async executor's thread.
         if crate::run::drive::in_async_context()
             && let Some(dir) = self.staging.take()
         {
@@ -230,7 +224,6 @@ impl State {
         self.trees.push(None);
         ordinal
     }
-    /// Export a file a writer staged at `source` as `rel`, once.
     fn adopt(&mut self, source: PathBuf, rel: String) {
         if self.used.insert(rel.clone()) {
             self.assets.push((source, rel));
@@ -292,7 +285,6 @@ fn document(id: &str, state: &State, recorded_at: Option<String>) -> Metadata {
     )
     .collect()
 }
-/// A serde record as a bundle value.
 fn json_value(record: &impl serde::Serialize) -> Value {
     fn value(json: serde_json::Value) -> Value {
         match json {
@@ -336,10 +328,9 @@ fn telemetry(rows: &[TelemetryRow]) -> Value {
 }
 /// Accumulate workloads and export a portable result bundle.
 ///
-/// Capture hooks retain shared state independently of this handle. Returned
-/// workload values are snapshots; a hook can accumulate several runs.
-/// Explicit `close` removes staged assets; dropping a handle leaves live
-/// capture hooks valid and the last owner removes staging.
+/// Capture hooks keep shared state independently of this handle, and a hook can accumulate
+/// several runs; returned workload values are snapshots. [`close`](Self::close) removes staged
+/// assets; dropping a handle leaves live hooks valid, and the last owner removes staging.
 pub struct Recorder {
     id: String,
     state: Arc<Mutex<State>>,
@@ -422,7 +413,6 @@ impl Recorder {
         mut options: RecorderCaptureOptions,
     ) -> Result<Box<dyn RunHooks>> {
         let mut state = lock(&self.state);
-        // A tree stages from the start; a closed recorder refuses it here.
         let root = match options.record {
             Some(_) => Some(
                 state
@@ -439,8 +429,6 @@ impl Recorder {
         );
         let tap = match options.record.take().zip(root) {
             Some((record, root)) => {
-                // The attempt tree, ordered by: workload
-                // `c0001` is the first, and a local run is its one attempt.
                 let workload = format!("c{:04}", index + 1);
                 let tap: ArtifactTap = Arc::new(Mutex::new(EpisodeArtifacts::new(
                     root,
@@ -458,7 +446,6 @@ impl Recorder {
                 if state.stamp.is_none() {
                     state.stamp = Some(artifacts::collect_stamp());
                 }
-                // The tree records the videos; cameras= media stays off.
                 options.cameras = Some(Vec::new());
                 Some(tap)
             }

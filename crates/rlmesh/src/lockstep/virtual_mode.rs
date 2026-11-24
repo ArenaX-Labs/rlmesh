@@ -1,30 +1,19 @@
 //! The virtual clock's run loop: the embodiment's and the
 //! controller's side of the host's tick barrier.
 //!
-//! The host runs the barrier (`rlmesh_session::virtual_clock`); this
-//! module is what participants do around it:
+//! - [`robot_tick`] (steps 1, 4, 5): after publishing tick k's samples, the embodiment sends
+//!   `Ready{k, watermarks}` and waits for `Step{k}`, whose chunks its edge judges before it
+//!   applies what is due and advances physics by `tick_ns`.
+//! - [`VirtualController::decide`] (steps 2-3): on `TickState{k}`, a due controller
+//!   (`k mod round(1 / (replan_hz × tick_s)) = 0`) decides from its inputs at the watermarks and
+//!   sends its chunks and `Decided{k}`.
+//! - [`LatencyModel`]: the inference cost d, a pure function of `(seed, controller, k)`, so every
+//!   party and a replay compute the same schedule. The controller starts its chunk at
+//!   `(k + d) × tick_ns`; the robot runs its previous actions meanwhile.
+//! - [`Faults`]: seeded channel faults (drop, freeze, delay) keyed by `(seed, channel, seq)`.
 //!
-//! - [`robot_tick`] (steps 1, 4, 5): after publishing tick k's samples, the
-//!   embodiment sends `Ready{k, watermarks}` and waits for `Step{k}`, whose
-//!   chunks its edge judges before it applies what is due and advances
-//!   physics by `tick_ns`.
-//! - [`VirtualController::decide`] (steps 2-3): on `TickState{k}`, a due
-//!   controller (the host's rule: `k mod round(1 / (replan_hz × tick_s)) =
-//!   0`) decides from its inputs at the watermarks, sends its chunks and
-//!   `Decided{k}`.
-//! - [`LatencyModel`]: the inference cost d, a constant or a seeded draw,
-//!   a pure function of `(seed, controller, k)`, so every party (and a
-//!   replay) computes the same schedule. The host's barrier holds Step{k}
-//!   until Decided{k} arrives (latency 0 at the host), and the controller
-//!   starts its chunk at `(k + d) × tick_ns`: the decision takes effect at
-//!   tick k + d, the robot runs its previous actions meanwhile, and real
-//!   computation is never raced.
-//! - [`Faults`]: seeded channel faults (drop, freeze, delay) keyed by
-//!   `(seed, channel, seq)`, handed to the decision as faulted inputs; the input cache
-//!   decides what a stale input does (`hold` or skip).
-//!
-//! A barrier that does not move within its timeout ends the episode
-//! `interrupted: TIMEOUT` ([`Interrupted::Timeout`]); the host goes SAFE.
+//! A barrier that does not move within its timeout ends the episode ([`Interrupted::Timeout`]);
+//! the host goes SAFE.
 
 use std::time::Duration;
 
@@ -38,11 +27,8 @@ pub enum Interrupted {
     /// A barrier did not move within its timeout.
     #[error("interrupted: TIMEOUT (no tick {phase} for tick {tick} within {waited:?})")]
     Timeout {
-        /// The tick it waited on.
         tick: u64,
-        /// What it waited for.
         phase: &'static str,
-        /// How long.
         waited: Duration,
     },
     /// The session.
@@ -52,9 +38,8 @@ pub enum Interrupted {
 
 /// Steps 1, 4 and 5 for an embodiment: `Ready{k}`, then the `Step{k}`
 /// listing the chunks to judge, in the epoch the host accepted the `Ready`
-/// in (a step of tick k from an earlier epoch is never taken). A `Step`
-/// that does not come within `timeout` (the barrier timeout) ends the
-/// episode.
+/// in. A `Step` that does not come within `timeout` (the barrier timeout) ends
+/// the episode.
 pub async fn robot_tick(
     participant: &Participant,
     ticks: &mut TickStream,
@@ -63,8 +48,6 @@ pub async fn robot_tick(
     timeout: Duration,
 ) -> Result<Step, Interrupted> {
     participant.ready(k, watermarks).await?;
-    // The host checks `Ready` against its epoch, and its reply updates the
-    // view: this is the epoch the step belongs to.
     let epoch = participant.authority_view().epoch();
     let tick = ticks
         .wait_for(
@@ -92,17 +75,9 @@ pub enum LatencyModel {
     /// Always `d`.
     Constant(u64),
     /// Uniform on `min..=max`, drawn from `(seed, controller, k)`.
-    Uniform {
-        /// The seed.
-        seed: u64,
-        /// Fewest ticks.
-        min: u64,
-        /// Most ticks.
-        max: u64,
-    },
+    Uniform { seed: u64, min: u64, max: u64 },
 }
 
-/// A mixing hash (splitmix64): the draws are pure functions of their keys.
 fn mix(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -201,7 +176,6 @@ pub struct VirtualController {
 impl VirtualController {
     /// Waits for the next `TickState`; when this controller is due, calls
     /// `decide` (which sends the chunks and returns their refs) and sends
-    /// `Decided{k}`. Returns the tick observed and whether it decided.
     pub async fn decide(
         &self,
         participant: &Participant,

@@ -12,7 +12,6 @@ namespace RLMesh.Unity.Verification
     {
         public static void Build()
         {
-            // A generated minimal scene avoids stale serialized component GUIDs.
             var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             new GameObject("RLMesh smoke").AddComponent<SmokeBootstrap>();
             const string scenePath = "Assets/Smoke.unity";

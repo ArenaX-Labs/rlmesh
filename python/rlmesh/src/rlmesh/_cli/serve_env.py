@@ -50,13 +50,6 @@ class ServeArgs:
 def write_ready_fd(fd: int, address: str) -> None:
     """Write the bound server address to ``fd`` and close it.
 
-    This is the machine-readable readiness signal: supervisors pass a writable
-    file descriptor via ``--ready-fd`` and block reading it until a single line
-    (the resolved bind address, e.g. ``127.0.0.1:54321/env``) arrives and the
-    descriptor is closed. The write happens only after the listener is bound, so
-    a successful read means the server is accepting connections. Closing the
-    descriptor signals end-of-file so the reader unblocks deterministically.
-
     Errors are surfaced to the caller (a bad descriptor is a supervisor
     misconfiguration worth failing loudly on) rather than swallowed.
     """
@@ -167,28 +160,18 @@ def serve_from_args(args: ServeArgs) -> int:
             )
 
         served_num_envs = _served_num_envs(env, fallback=args.num_envs)
-        # The served env declares an edition on every handshake: --workflow-edition
-        # if given, else the process / class / project declaration.
         options = serve_options_declaring(
             option=args.workflow_edition,
-            # The entrypoint's factory is gone by now (it returned the env), so
-            # only an env class that declares the edition on itself is visible
-            # here; RLMESH_WORKFLOW_EDITION / [tool.rlmesh] / --workflow-edition
-            # cover the rest.
             declared=getattr(type(env), "workflow_edition", None),
             origin=type(env),
         )
-        # EnvServer auto-detects the vectorized shape from the env, so there is one
-        # construction path for both scalar and vector envs.
         server = EnvServer(env, args.address, options=options)
 
         if args.entrypoint is not None:
             print(f"✓ Environment entrypoint: {args.entrypoint}")
         else:
             print(f"✓ Environment: {args.env}")
-        # The keyed address is the invite for whoever runs this at a
-        # terminal; a process its launcher started under a host identity
-        # already gave the launcher the key, and its stdout is a log.
+        # The keyed address is an invite for an interactive terminal; a launched process's stdout is a log.
         shown = (
             redact_address(server.address)
             if os.environ.get("RLMESH_HOST_IDENTITY")
@@ -286,10 +269,6 @@ def serve_args_from_namespace(args: argparse.Namespace) -> ServeArgs:
 
 
 def _env_count(value: str) -> int:
-    """Parse ``--num-envs``: an int >= 1, rejected in the parser otherwise.
-
-    Without this, 0 or a negative slips through and silently serves one env.
-    """
     try:
         parsed = int(value)
     except ValueError as exc:

@@ -1,4 +1,3 @@
-//! C adapter records and vocabulary conversion.
 #![allow(unsafe_code)]
 use super::*;
 pub(crate) fn enum_image_layout(v: i32) -> Result<a::ImageLayout, CapiError> {

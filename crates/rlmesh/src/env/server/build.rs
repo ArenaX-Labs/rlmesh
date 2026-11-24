@@ -54,7 +54,6 @@ impl EnvServer {
         Self::build(Served::Vector(Box::new(env)), options, None, true)
     }
 
-    /// A factory serve's server: the edition was resolved by the caller.
     pub(crate) fn lanes_resolved(
         envs: Vec<Box<dyn Env + Send>>,
         options: EnvServerOptions,
@@ -71,8 +70,6 @@ impl EnvServer {
         Self::build(Served::Vector(env), options, Some(publish), true)
     }
 
-    /// Override publication identity for an in-repo non-Rust binding, before
-    /// starting the server. The facade still builds and validates the envelope.
     pub(crate) fn binding_host(
         &self,
         component: &'static str,
@@ -99,7 +96,6 @@ impl EnvServer {
         Ok(())
     }
 
-    /// Print the serving line once the env answers, timed from `started`.
     pub(crate) fn print_when_ready(&self, started: std::time::Instant) {
         if let State::Ready(resources) = &mut *lock(&self.shared.state)
             && let Some(announce) = resources.announce.as_mut()
@@ -114,13 +110,6 @@ impl EnvServer {
             .ok_or_else(|| Error::Runtime("server has no binding description".into()))
     }
 
-    /// The loopback server a run or session stands up in front of a local
-    /// env: in a session of its own, publishing nothing, never closing the
-    /// env (its caller does) and taking the caller's resolved edition. The
-    /// run's driver, in this process, calls the env directly either way.
-    /// Driving the served model at `beside`, the session is on that model's
-    /// host, which the model reaches in its own process; else on this
-    /// process's shared loopback host.
     pub(crate) fn loopback(
         env: crate::run::LoopbackEnv,
         edition: Option<String>,
@@ -130,8 +119,6 @@ impl EnvServer {
             address: Some(format!(
                 "{}/env",
                 match beside {
-                    // The model's address, already checked: only resolving
-                    // its host name can fail, which a retry may get past.
                     Some(model) => crate::lockstep::run_session_beside(model)
                         .map_err(|err| Error::Connection(err.to_string()))?,
                     None => crate::lockstep::local_run_session()
@@ -140,7 +127,6 @@ impl EnvServer {
             )),
             options: Some(ServeOptions {
                 workflow_edition: edition,
-                // A session server has nothing to drain.
                 ..Default::default()
             }),
             close_env_on_shutdown: false,
@@ -153,23 +139,18 @@ impl EnvServer {
         Self::build(served, options, None, false)
     }
 
-    /// `factory`: a factory serve's publication, whose edition the caller
-    /// resolved. `announce`: whether the env is served for others to reach
-    /// (not a run's own loopback), so it says when it answers.
     fn build(
         served: Served,
         options: EnvServerOptions,
         factory: Option<Publish>,
         announce: bool,
     ) -> Result<EnvServer> {
-        // Step 1: at least one lane (the traits guarantee the spaces).
         let mut served = match served {
             Served::Lanes(lanes) if lanes.is_empty() => {
                 return Err(Error::invalid_argument(
                     "EnvServer needs at least one environment",
                 ));
             }
-            // Step 2: a one-lane vector env is a scalar lane; 0 is refused.
             Served::Vector(env) if env.num_envs() == 1 => {
                 Served::Lanes(vec![Box::new(SingleLaneEnv::new(env)?)])
             }
@@ -182,9 +163,6 @@ impl EnvServer {
             other => other,
         };
 
-        // Step 3: tags, merged into each scalar env's metadata and validated
-        // against its spaces; without tags, published tags are re-validated.
-        // Steps 4 and 7: the expected branch and each lane's contract.
         let contract = match &mut served {
             Served::Lanes(lanes) => {
                 if let Some(tags) = &options.tags {
@@ -221,8 +199,6 @@ impl EnvServer {
             }
             Served::Vector(env) => {
                 let contract = match &options.tags {
-                    // Deferred validation: tags describe one lane, the vector's
-                    // spaces are its single spaces.
                     Some(tags) => {
                         let mut metadata = env.metadata().unwrap_or_default();
                         tags.stamp(&mut metadata)?;
@@ -244,21 +220,17 @@ impl EnvServer {
             }
         };
 
-        // Step 5: the address.
         let address = normalize_bind_address(&options)?;
         let announce = announce.then(|| crate::binding::Announce::from_env(&address));
         let serve = options.options.clone().unwrap_or_default();
         serve.validate()?;
 
-        // Step 6: the edition. An explicit options value is the call's own.
         let edition = crate::editions::resolve_native(EditionSources {
             call: serve.workflow_edition.as_deref(),
             option: None,
             declared: None,
         })?;
 
-        // Retain the full factory envelope for binding server introspection.
-        // Rebuilding it from the contract would lose branches and variants.
         let binding_description = match factory.as_ref() {
             Some(publish) => publish.envelope.as_ref().ok().cloned(),
             None if options.ext.as_ref().is_some_and(|ext| ext.publish_describe) => {
@@ -274,7 +246,6 @@ impl EnvServer {
             None => None,
         };
 
-        // Step 9: bind.
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("rlmesh-env-server")
@@ -315,8 +286,6 @@ impl EnvServer {
     }
 }
 
-/// Step 4: `RLMESH_EXPECTED_ENV_BRANCH`, when set and non-empty, must equal the
-/// env's published branch.
 fn check_expected_branch(metadata: Option<&crate::Metadata>) -> Result<()> {
     let Ok(expected) = std::env::var("RLMESH_EXPECTED_ENV_BRANCH") else {
         return Ok(());

@@ -42,8 +42,6 @@ class ModelCalls:
         self._serves: dict[int, Callable[[], None]] = {}
         self._next_serve = 0
 
-    # -- calls ---------------------------------------------------------------
-
     def in_call(self) -> bool:
         """Whether the current thread is inside one of this model's calls."""
         return self._owner == threading.get_ident()
@@ -116,8 +114,6 @@ class ModelCalls:
         through_gate.__wrapped__ = corner  # type: ignore[attr-defined]
         return through_gate
 
-    # -- serves --------------------------------------------------------------
-
     def register_serve(self, stop: Callable[[], None]) -> int:
         """Record a running serve that ``close()`` stops; refused once closing."""
         self.check_open("serve()")
@@ -134,8 +130,6 @@ class ModelCalls:
         with self._state:
             self._serves.pop(token, None)
             self._state.notify_all()
-
-    # -- close ---------------------------------------------------------------
 
     def closing_here(self) -> bool:
         """Whether this thread is running the model's close (an inner ``super().close()``)."""

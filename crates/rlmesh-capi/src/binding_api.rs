@@ -1,5 +1,3 @@
-//! Owning C shell around the facade's borrowed binding: a model bound to one
-//! env and stepped by hand, as Python's `Model.bind`.
 #![allow(unsafe_code)]
 use crate::abi::{
     sizing,
@@ -130,7 +128,6 @@ impl Drop for Backing {
         }
     }
 }
-/// The hooks a binding borrows, freed after the binding drops.
 struct HooksBox(*mut crate::run_hooks::BoundHooks);
 // SAFETY: BoundHooks is Send; only the binding (under its lock) touches it.
 unsafe impl Send for HooksBox {}
@@ -142,7 +139,6 @@ impl Drop for HooksBox {
 struct State {
     binding: Option<rlmesh::Binding<'static>>,
     backing: Backing,
-    /// Dropped after `binding` (whose close fires `on_run_end`).
     _hooks: Option<HooksBox>,
 }
 impl Drop for State {
@@ -182,8 +178,6 @@ fn with_state<R>(
         .as_mut()
         .expect("a live C binding owns its facade"))
 }
-/// A binding's render source that never keeps its env alive: it upgrades
-/// the binding's state only for one render.
 pub(crate) struct BindingRender(Weak<Mutex<State>>);
 impl BindingRender {
     pub(crate) fn call(&self) -> rlmesh::Result<rlmesh::Value> {

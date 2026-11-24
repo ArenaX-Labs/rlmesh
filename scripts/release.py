@@ -43,7 +43,6 @@ from bump_version import pep440
 ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = ROOT / "CHANGELOG.md"
 SEMVER = re.compile(r"^\d+\.\d+\.\d+(-(?:alpha|beta|rc)\.\d+)?$")
-# crates.io publish order: dependencies before dependents.
 CRATE_ORDER = [
     "rlmesh-spaces",
     "rlmesh-proto",
@@ -113,18 +112,17 @@ def preflight(version: str) -> None:
         sys.exit(
             "CHANGELOG.md still has <!-- DRAFT --> markers; curate them before releasing"
         )
-    changelog_section(version)  # fails if the version section is missing/empty
+    changelog_section(version)
     require_changelog_date(version)
     print("preflight ok")
 
 
 def check_wheels(version: str) -> None:
+    # Fail before the irreversible `cargo publish` if the wheels for this version
+    # are not built; match the filename version segment exactly ("0.1.0" is a
+    # substring of "0.1.0rc6").
     wheel_version = pep440(version)
     dist = ROOT / "python/rlmesh/dist"
-    # Fail before the irreversible `cargo publish` if the wheels for THIS version
-    # aren't built: an empty/stale dist would otherwise let crates.io publish while
-    # the PyPI upload has nothing (or the wrong version) to ship. Exact-match the
-    # filename version segment: "0.1.0" is a substring of "0.1.0rc6".
     if not [p for p in dist.glob("*.whl") if p.name.split("-")[1] == wheel_version]:
         found = sorted(p.name for p in dist.glob("*.whl"))
         sys.exit(
@@ -154,7 +152,6 @@ def crate_published(crate: str, version: str) -> bool:
     """Ask the crates.io sparse index whether crate@version exists (a local
     `cargo info` would resolve the workspace member and always say yes).
     """
-    # Index path scheme for names of 4+ chars; every CRATE_ORDER name qualifies.
     url = f"https://index.crates.io/{crate[:2]}/{crate[2:4]}/{crate}"
     try:
         with urllib.request.urlopen(url) as response:
@@ -250,8 +247,6 @@ def distribution_uploads(
             fetch_published(checksum.name).read_text(encoding="utf-8").split()[0]
         )
         if published != _sha256(tarball):
-            # Nobody can have fetched a tarball that was never published, so the
-            # orphan checksum is safe to delete.
             sys.exit(
                 f"{checksum.name} on the release does not describe this build's "
                 f"{tarball.name}: delete that asset and re-run, so both come from one build"
@@ -269,7 +264,6 @@ def github_release(version: str) -> None:
         ).returncode
         == 0
     ):
-        # Re-run after a partial failure: attach only what is missing.
         present = set(
             out(
                 "gh", "release", "view", tag, "--json", "assets", "-q", ".assets[].name"
@@ -423,13 +417,11 @@ def _selfcheck_distribution_uploads() -> None:
 
         name, checksum = tarball.name, f"{tarball.name}.sha256"
         assert distribution_uploads(tarball, {name, checksum}, fetch) == []
-        # Tarball published, checksum lost: the checksum describes the published bytes.
         (uploaded,) = distribution_uploads(tarball, {name}, fetch)
         assert (
             uploaded.read_text().split()[0]
             == hashlib.sha256(b"published bytes").hexdigest()
         )
-        # Checksum published for other bytes: refuse rather than pair it with a rebuild.
         try:
             distribution_uploads(tarball, {checksum}, fetch)
         except SystemExit:
@@ -478,7 +470,7 @@ def main() -> None:
     run("mise", "run", "release:check")
 
     if "--dry-run" in flags:
-        run("git", "checkout", "--", ".")  # dry-run must leave the tree as it found it
+        run("git", "checkout", "--", ".")
         print("dry run: build verified; no commit, tag, or publish made")
         return
 

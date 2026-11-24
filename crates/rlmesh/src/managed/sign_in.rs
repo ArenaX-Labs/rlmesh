@@ -13,10 +13,6 @@ struct PlatformInfo {
     auth: AuthConfig,
 }
 
-/// The platform /v1/info auth block, RFC 8414 vocabulary. Only the fields the
-/// CLI drives the device flow with; everything else in the document is
-/// ignored. The CLI never falls back to a built-in provider: a platform that
-/// does not advertise its endpoints cannot be signed in to.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthConfig {
@@ -87,8 +83,6 @@ fn sign_in_endpoints(info: PlatformInfo, platform_url: &str) -> Result<SignInEnd
 #[derive(Deserialize)]
 pub struct TokenResponse {
     access_token: String,
-    // A missing refresh token degrades the login to Incomplete instead of
-    // failing after the user already approved in the browser.
     #[serde(default)]
     refresh_token: String,
 }
@@ -108,8 +102,6 @@ struct RefreshTokenRequest<'a> {
     client_id: &'a str,
     grant_type: &'static str,
     refresh_token: &'a str,
-    /// The identity provider switches the session's active organization
-    /// when set: the platform's documented extension to the refresh grant.
     #[serde(skip_serializing_if = "Option::is_none")]
     organization_id: Option<&'a str>,
 }
@@ -148,10 +140,6 @@ impl TokenDenial {
     }
 }
 
-/// Discovers the platform's sign-in endpoints for a refresh and enforces
-/// the pin the profile took at sign-in: the stored refresh token only ever
-/// goes to the host that issued it. A profile without a pin predates
-/// pinning and has to sign in once more.
 pub(crate) async fn discover_sign_in_endpoints(
     client: &reqwest::Client,
     profile: &ResolvedProfile,
@@ -173,9 +161,6 @@ pub(crate) async fn discover_sign_in_endpoints(
     Ok(endpoints)
 }
 
-/// The RFC 6749 `refresh_token` grant against the platform's advertised
-/// token endpoint. `organization_id` is the platform's documented extension
-/// that re-issues the session against another organization.
 pub(crate) async fn exchange_refresh_token(
     client: &reqwest::Client,
     auth_config: &SignInEndpoints,
@@ -237,7 +222,6 @@ mod tests {
         );
         assert_eq!(endpoints.token_endpoint, "https://id.example.com/token");
 
-        // No built-in provider: a platform without the fields is refused.
         let legacy: PlatformInfo =
             serde_json::from_str(r#"{"auth":{"cli":{"clientId":"client_cli"}}}"#).unwrap();
         let error = sign_in_endpoints(legacy, "https://platform.example.com").unwrap_err();
@@ -248,7 +232,6 @@ mod tests {
             "{error}"
         );
 
-        // Plaintext endpoints are refused even when advertised.
         let plain: PlatformInfo = serde_json::from_str(
             r#"{"auth":{
                 "cli":{"clientId":"client_cli"},

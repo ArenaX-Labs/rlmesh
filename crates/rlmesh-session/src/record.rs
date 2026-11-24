@@ -1,10 +1,7 @@
 //! MCAP recording of a real-time RLMesh session.
 //!
-//! A [`Recorder`] is an observer participant: it subscribes to every stream
-//! of every robot (parts and their `_applied` streams), to every commandable
-//! part's action chunks and to the host's signed authority snapshots and
-//! health messages, and writes
-//! each envelope unchanged into an MCAP file:
+//! A [`Recorder`] is an observer participant that writes each envelope unchanged into an MCAP
+//! file:
 //!
 //! | Topic | Schema | One message per |
 //! |---|---|---|
@@ -15,27 +12,16 @@
 //! | `/_session/bindings` | `rlmesh.session.v2.BindingRecord` | new or changed binding |
 //! | `/_session/health` | `rlmesh.session.v2.HostHealth` | host health message (about 1 Hz) |
 //!
-//! Schemas are the `rlmesh.session.v2` protobuf descriptors. A new MCAP
-//! channel opens for every session channel id. `publish_time` is the
-//! capture (or send) time mapped to session time, `log_time` session time
-//! at the recorder, and the MCAP sequence the low 32 bits of the envelope's
-//! seq (the full u64 stays in the envelope).
+//! A new MCAP channel opens for every session channel id. `publish_time` is the capture (or
+//! send) time in session time, `log_time` session time at the recorder, and the MCAP sequence
+//! the low 32 bits of the envelope's seq. Streams are recorded at the rate the session
+//! publishes them; `_applied` and chunks are recorded in full.
 //!
-//! The recorder records what the session publishes: it declares no delivery
-//! contract, so a stream a policy reads at `latest@R` is recorded at R, while
-//! `_applied` and chunks are recorded in full.
-//!
-//! Always-on capture ([`Recorder::start_rolling`]) also keeps incidents:
-//! an e-stop, safe mode, a lease preemption or a burst of missed edge
-//! deadlines links the session's recent segments, and the ones written
-//! for a while after, into `incidents/{session}/{unix_ms}-{label}/`, where
-//! the rolling purge does not reach them. [`keep`] does the same on
-//! request (the cockpit's Keep).
-//!
-//! [`read`] decodes a recording back into its messages in log-time order
-//! (the cockpit's replay). [`summarize`] checks one: message counts per
-//! topic, time ordering, envelopes that do not decode, and the lease
-//! timeline.
+//! Always-on capture ([`Recorder::start_rolling`]) keeps incidents: an e-stop, safe mode, a
+//! lease preemption or a burst of missed edge deadlines links the recent segments, and those
+//! written for a while after, into `incidents/{session}/{unix_ms}-{label}/`, out of reach of
+//! the rolling purge. [`keep`] does the same on request. [`read`] decodes a recording in
+//! log-time order; [`summarize`] checks one.
 
 mod capture;
 mod reader;

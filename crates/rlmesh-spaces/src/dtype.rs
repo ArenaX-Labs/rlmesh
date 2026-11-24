@@ -1,9 +1,7 @@
 /// Element data type for tensor values exchanged across the wire.
 ///
-/// Discriminants are kept byte-identical to the `rlmesh.spaces.v1.DType` proto
-/// enum. The equality is enforced at compile time by a cross-check in
-/// `rlmesh` (`data::spaces`); `rlmesh-spaces` stays free of a
-/// `rlmesh-proto` dependency, so the assert cannot live here.
+/// Discriminants match the `rlmesh.spaces.v1.DType` proto enum, checked at compile time in
+/// `rlmesh`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(i32)]
 pub enum DType {
@@ -89,8 +87,7 @@ impl DType {
         }
     }
 
-    /// Parse a canonical dtype name. Only the 12 concrete dtypes are
-    /// recognized; `"unspecified"` and unknown names return `None`.
+    /// Parse a canonical dtype name.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "bool" => Some(DType::Bool),
@@ -109,8 +106,7 @@ impl DType {
         }
     }
 
-    /// Whether this is an integer dtype (signed or unsigned). `Bool` and the
-    /// float dtypes are not integers.
+    /// Whether this is an integer dtype (signed or unsigned).
     #[must_use]
     pub const fn is_integer(self) -> bool {
         matches!(
@@ -139,7 +135,7 @@ impl std::fmt::Display for DType {
     }
 }
 
-/// Get the byte size of a dtype. `Unspecified` has no size and returns 0.
+/// Get the byte size of a dtype.
 pub const fn dtype_size(dtype: DType) -> usize {
     match dtype {
         DType::Unspecified => 0,

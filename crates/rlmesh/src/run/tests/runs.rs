@@ -1,6 +1,3 @@
-//! Model runs end to end: hooks, options, one run at a time, cancellation,
-//! factory targets, and how results print.
-
 use super::*;
 
 #[test]
@@ -43,7 +40,6 @@ fn model_run_drives_a_borrowed_local_env_and_calls_hooks_on_this_thread() {
     );
     assert!(context.contract().unwrap().is_some());
     assert_eq!(closes.load(Ordering::SeqCst), 0, "the env is borrowed");
-    // The model and the env stay usable.
     model.run(&mut env, RunOptions::default()).unwrap();
     model
         .run(
@@ -99,9 +95,6 @@ fn a_run_dials_an_address_or_an_env_server() {
     server.shutdown().unwrap();
 }
 
-/// One model served in process answers four routes at once. The route whose
-/// env dies mid-episode fails alone; its siblings finish, and their trials
-/// and seeds are the ones a single route over the whole range would draw.
 #[test]
 fn a_failed_route_leaves_its_siblings_running_against_a_shared_served_model() {
     use crate::binding::routes::{Route, merge_results, run_routes};
@@ -166,7 +159,6 @@ fn a_failed_route_leaves_its_siblings_running_against_a_shared_served_model() {
         );
     }
 
-    // An in-process model drives one route at a time.
     let error = run_routes(&ones(), routes(None)).unwrap_err();
     assert_eq!(error.class(), ErrorClass::ValueError, "{error}");
 
@@ -232,7 +224,6 @@ fn a_hook_error_aborts_the_run_and_on_run_end_still_fires() {
     assert_eq!(error.to_string(), "hook failed");
     assert_eq!(error.class(), ErrorClass::ValueError);
     assert_eq!(log.calls.last().unwrap(), "run_end episodes=0");
-    // The model is free for the next run.
     model.run(&mut env, RunOptions::default()).unwrap();
 }
 
@@ -340,7 +331,6 @@ fn a_fired_cancel_token_fails_the_call() {
         )
         .unwrap_err();
     assert_eq!(error.class(), ErrorClass::KeyboardInterrupt);
-    // It re-armed.
     model
         .run(
             &mut env,
@@ -461,8 +451,6 @@ fn results_print_as_python_does() {
         "RunResult(episodes=1, mean_reward=1.500, total_steps=2)"
     );
     assert_eq!(result.success_rate(), None);
-    // An unknown outcome beside a reported one counts as a failure, as the
-    // report and `rlmesh eval report` count it.
     assert_eq!(crate::run::success_rate_of([Some(true), None]), Some(0.5));
     assert_eq!(crate::run::success_rate_of([]), None);
     assert_eq!(
@@ -601,7 +589,6 @@ fn run_hook_error_wins_over_cancellation_from_on_run_end() {
     );
 }
 
-/// A factory declaring `edition` on its type: `RETIRED` or this build's.
 struct Declaring<const RETIRED: bool>(Factory);
 
 impl<const RETIRED: bool> Declaring<RETIRED> {
@@ -627,8 +614,6 @@ impl<const RETIRED: bool> EnvFactory for Declaring<RETIRED> {
     }
 }
 
-/// Runs `body` with `RLMESH_WORKFLOW_EDITION` unset, so the factory's own
-/// declaration is the one that resolves.
 #[allow(unsafe_code)]
 fn undeclared_process(body: impl FnOnce()) {
     let _lock = crate::warnings::tests::HANDLER_LOCK
@@ -682,7 +667,6 @@ fn a_local_run_refuses_a_factory_declaring_an_edition_this_build_cannot_drive() 
         )
         .unwrap();
         assert_retired_refusal(results[0].as_ref().unwrap_err());
-        // Refused before the factory built anything, as serving refuses it.
         assert_eq!(factory.0.made, 0);
     });
 }
@@ -708,8 +692,6 @@ fn a_local_run_drives_a_factory_declaring_this_builds_edition() {
 
 #[test]
 fn the_call_edition_outranks_a_local_factory_declaration() {
-    // As a serve option outranks a served factory's type declaration, the
-    // run's own value outranks a local one's.
     undeclared_process(|| {
         let mut factory = Declaring::<true>::new();
         let result = ones()

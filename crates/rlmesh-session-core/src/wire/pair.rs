@@ -1,6 +1,5 @@
-//! Machine pairing's messages: what a laptop and rlmeshd
-//! exchange on [`PAIR_KEY`]. The XX messages and the sealed bodies are
-//! opaque here; [`crate::auth::pairing`] runs the exchange.
+//! Machine pairing's messages: what a laptop and rlmeshd exchange on
+//! [`PAIR_KEY`].
 
 #[allow(unused_imports)]
 use crate::prelude::*;

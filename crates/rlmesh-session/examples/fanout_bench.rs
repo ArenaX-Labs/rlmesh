@@ -5,24 +5,6 @@
 //! fanout_bench run --listeners one|four [--readers 2] [--camera-hz 30]
 //!     [--width 640] [--height 480] [--ft-hz 1000] [--warmup-s 3] [--duration-s 20]
 //! ```
-//!
-//! The host runs here; a robot, the readers and a prober are OS processes
-//! of their own, each joining with one client session per traffic class.
-//! The robot publishes a raw camera (Bulk) and a 72-byte force/torque
-//! stream (Realtime); every reader subscribes to both, so the host relays
-//! each frame once per reader. The prober holds a lease on the robot's
-//! command part and queries the host's state (a Control round trip) every
-//! 10 ms.
-//!
-//! `--listeners one` is how a host listens: one session on one port, which
-//! every class dials. `four` is the layout it replaced, kept to compare: a
-//! session per class on four consecutive ports, each class of a joiner
-//! dialing its own. `--camera-hz 0` runs without the camera.
-//!
-//! Prints one JSON object: the prober's Control round trips, heartbeat
-//! inter-arrival gaps at the host (every remote participant; the period is
-//! 50 ms), the host's heartbeat round trips, lease lapses and departures,
-//! and each reader's frame rate and latencies (ms: p50/p99/max).
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
@@ -113,7 +95,6 @@ fn tcp(ip: Ipv4Addr, port: u16) -> String {
     format!("tcp/{ip}:{port}")
 }
 
-/// A base port whose next `n - 1` ports were free a moment ago.
 fn free_base(n: u16) -> Result<SocketAddr, BoxError> {
     let ip = Ipv4Addr::LOCALHOST;
     for _ in 0..64 {
@@ -132,8 +113,6 @@ fn free_base(n: u16) -> Result<SocketAddr, BoxError> {
     Err("no free ports".into())
 }
 
-/// The host's listeners: one session on `base`, or one per class on
-/// `base..base + 3`.
 fn host_transport(listeners: &str, base: SocketAddr) -> TransportConfig {
     let ip = Ipv4Addr::LOCALHOST;
     match listeners {
@@ -148,8 +127,6 @@ fn host_transport(listeners: &str, base: SocketAddr) -> TransportConfig {
     }
 }
 
-/// A joiner's client sessions, one per class, dialing the class's port or
-/// the base.
 fn joiner_transport(listeners: &str, base: SocketAddr) -> TransportConfig {
     let ip = Ipv4Addr::LOCALHOST;
     let offset = |i: usize| if listeners == "four" { i as u16 } else { 0 };
@@ -189,7 +166,6 @@ fn robot_map(args: &Args) -> String {
     )
 }
 
-/// p50/p99/max in ms (nearest rank), and the count.
 fn percentiles(mut ns: Vec<i64>) -> Value {
     if ns.is_empty() {
         return Value::Null;
@@ -220,7 +196,6 @@ async fn main() -> Result<(), BoxError> {
     Ok(())
 }
 
-/// The session id and key the host leaves in `dir`.
 async fn session_of(dir: &Path) -> Result<(SessionId, AddressKey), BoxError> {
     loop {
         if let Ok(text) = std::fs::read_to_string(dir.join("session"))
@@ -233,7 +208,6 @@ async fn session_of(dir: &Path) -> Result<(SessionId, AddressKey), BoxError> {
     }
 }
 
-/// The measurement window the host leaves in `dir` once it is over.
 async fn window_of(dir: &Path) -> (i64, i64) {
     loop {
         if let Ok(text) = std::fs::read_to_string(dir.join("window"))
@@ -346,7 +320,6 @@ async fn run(args: &Args) -> Result<Value, BoxError> {
             }
         }
     });
-    // Heartbeat arrivals at the host, by participant.
     let keys = SessionKeys::new(&tenant, session);
     let arrivals = Arc::new(Mutex::new(BTreeMap::<String, Vec<i64>>::new()));
     let _heartbeats = transport
@@ -401,7 +374,6 @@ async fn run(args: &Args) -> Result<Value, BoxError> {
         spawn(args, "prober", "prober", base, dir.path())?,
     ));
 
-    // Everyone present, the prober's lease granted.
     let expected = args.readers + 2;
     let mut watch = host.watch();
     tokio::time::timeout(WAIT * 2, async {

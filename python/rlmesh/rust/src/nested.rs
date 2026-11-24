@@ -1,12 +1,10 @@
-//! A model that calls other models from its predict: `self.inner.predict(obs)`
-//! inside a run, bind or serve of the outer model runs the inner model's own
-//! handler on the episode being predicted, whether the inner model is local
-//! or served (`Model("host:port/name")`).
+//! A model that calls other models from its predict: `self.inner.predict(obs)` inside a run, bind
+//! or serve of the outer model runs the inner model's own handler on the episode being predicted,
+//! whether the inner model is local or served.
 //!
-//! The outer model's handler is wrapped ([`NestedHandler`]): it drops the
-//! inner models' episodes and routes with its own. The outer predict sets the
-//! episode it is answering as its thread's scope ([`scoped`]), which
-//! [`nested_predict`] reads.
+//! The outer model's handler is wrapped ([`NestedHandler`]), which drops the inner models' episodes
+//! and routes with its own. The outer predict sets the episode it answers as its thread's scope
+//! ([`scoped`]), which [`nested_predict`] reads.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -26,7 +24,6 @@ use rlmesh_spaces::{EnvContract, SpaceValue};
 use crate::spaces::{ValueBackend, py_any_to_space_value_with_backend, space_value_to_py_neutral};
 use crate::types::to_py_err;
 
-/// One inner model: its handler, its route setup, and the envs it resolved.
 struct Inner {
     handler: tokio::sync::Mutex<Box<dyn ModelHandler>>,
     setup: Option<Arc<dyn ModelRouteSetup>>,
@@ -38,7 +35,6 @@ impl Inner {
         self.resolved.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// One row's frames for `observation`, resolving its env on first use.
     async fn predict(
         &self,
         observation: ModelObservation,
@@ -81,7 +77,6 @@ impl Nested {
         Arc::new(Self { inners })
     }
 
-    /// The inners that resolved `env_id`.
     fn on_env<'a>(&'a self, env_id: &'a str) -> impl Iterator<Item = &'a Inner> {
         self.inners
             .values()
@@ -92,7 +87,6 @@ impl Nested {
 type Scope = (Arc<Nested>, EpisodeInfo, Arc<EnvContract>);
 
 thread_local! {
-    /// The episode the outer model is answering on this thread.
     static SCOPE: RefCell<Option<Scope>> = const { RefCell::new(None) };
 }
 
@@ -169,8 +163,6 @@ pub fn nested_predict(
         env_contract: Some(Arc::clone(&contract)),
         ..Default::default()
     };
-    // On the shared multi-thread runtime: a served inner model's link needs
-    // it, and this thread is the outer predict's.
     let (sent, answer) = tokio::sync::oneshot::channel::<rlmesh::Result<PredictFrames>>();
     crate::model::model_runtime().spawn(async move {
         let inner = &nested.inners[&key];
@@ -278,7 +270,6 @@ impl ModelHandler for NestedHandler {
     }
 }
 
-/// The outer model's route setup, ending each env on the inner models too.
 struct NestedSetup {
     outer: Option<Arc<dyn ModelRouteSetup>>,
     nested: Arc<Nested>,

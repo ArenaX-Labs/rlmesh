@@ -1,4 +1,3 @@
-/* ABI 5 Env/VectorEnv/EnvServer: typed values, ownership and sized options. */
 #include <math.h>
 #include <rlmesh.h>
 #include <stdio.h>
@@ -68,7 +67,6 @@ static void wait_error_outputs(const RLMeshEnvVtable* vtable, const RLMeshEnvAtt
   options.options = &serve;
   RLMeshEnvServer* server = NULL;
   CHECK(rlmesh_env_server_new(&env, 1, &options, &server) == RLMESH_OK);
-  /* Misuse leaves either caller-supplied sentinel unchanged. */
   bool stopped = false;
   CHECK(rlmesh_env_server_wait(server, NULL, &stopped) == RLMESH_ERR_RUNTIME && !stopped);
   stopped = true;
@@ -86,14 +84,13 @@ static void wait_error_outputs(const RLMeshEnvVtable* vtable, const RLMeshEnvAtt
   double timeout = 10;
   CHECK(rlmesh_env_server_wait(server, &timeout, &stopped) == RLMESH_OK && stopped);
   CHECK(state.closes == 1);
-  /* Validation errors still leave output untouched on a stopped server. */
   stopped = false;
   invalid_timeout = NAN;
   CHECK(rlmesh_env_server_wait(server, &invalid_timeout, &stopped) == RLMESH_ERR_INVALID_ARGUMENT &&
         !stopped);
   timeout = 0;
   CHECK(rlmesh_env_server_wait(server, &timeout, &stopped) == RLMESH_OK && stopped);
-  CHECK(rlmesh_env_server_shutdown(server) == RLMESH_OK); /* serve error consumed once */
+  CHECK(rlmesh_env_server_shutdown(server) == RLMESH_OK);
   rlmesh_env_server_free(server);
   rlmesh_env_free(env);
   CHECK(state.closes == 1 && state.frees == 1);
@@ -135,7 +132,6 @@ int main(void) {
   CHECK(rlmesh_env_contract_num_envs(contract) == 1);
   RLMeshBytes address = {NULL, 0, 0};
   CHECK(rlmesh_env_server_address(server, &address) == RLMESH_OK);
-  /* By default a server is the env of a session of its own. */
   CHECK(address.len > 4 && memcmp(address.data + address.len - 4, "/env", 4) == 0);
   rlmesh_bytes_free(address);
   CHECK(rlmesh_env_server_start(server) == RLMESH_OK);

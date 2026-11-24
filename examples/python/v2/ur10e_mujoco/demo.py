@@ -1,6 +1,6 @@
 """MuJoCo UR10e, a Python policy, keyboard teleop pre-emption and an MCAP recording.
 
-The v0.2 milestone demo (protocol v2), three processes over one session:
+Three processes over one session:
 
 - ``robot``: the session host, an MCAP recorder and the simulated UR10e
   (``ur10e.xml``, derived from MuJoCo Menagerie). Physics and the edge run
@@ -87,9 +87,6 @@ MAX_SPEED = 1.0  # rad/s, policy and operator alike
 LOAD = {"v": parts.array(np.float32, 6)}
 
 
-# --- maps: UR10e simulation, policy and operator -----------------------------
-
-
 def robot_map(args: argparse.Namespace) -> dict[str, Any]:
     robot: dict[str, Any] = {
         "arm": parts.joints(
@@ -105,7 +102,7 @@ def robot_map(args: argparse.Namespace) -> dict[str, Any]:
         "wrist/ft": parts.wrench(frame="tool0", hz=CONTROL_HZ),
         "task": parts.text(),
     }
-    for i in range(args.extra_streams):  # synthetic 1 kHz load
+    for i in range(args.extra_streams):
         robot[f"extra/s{i}"] = parts.custom("x/load", hz=CONTROL_HZ, fields=LOAD)
     if args.camera != "off":
         jpeg = args.camera == "jpeg"
@@ -124,7 +121,6 @@ def robot_map(args: argparse.Namespace) -> dict[str, Any]:
 def policy_inputs(args: argparse.Namespace) -> dict[str, Any]:
     reads: dict[str, Any] = {"q": inputs.joints("arm", fields=["pos"], names=UR_JOINTS)}
     if args.policy == "force":
-        # At 100 Hz: the newest 10 ms of the wrench, every sample.
         reads["ft"] = inputs.wrench("wrist/ft", frame="tool0", history=FT_WINDOW)
         for i in range(args.extra_streams):
             reads[f"x{i}"] = inputs.custom(
@@ -138,7 +134,6 @@ def policy_inputs(args: argparse.Namespace) -> dict[str, Any]:
 def operator_map(args: argparse.Namespace) -> dict[str, Any]:
     q = inputs.joints("arm", fields=["pos"], names=UR_JOINTS)
     if args.operator == "haptic":
-        # 1 kHz, the wrench every sample, one-action chunks, 5 ms life.
         return {
             "hz": CONTROL_HZ,
             "inputs": {
@@ -166,13 +161,11 @@ def arm_action(*, chunk: int, ttl_ms: float | None = None) -> dict[str, Any]:
 
 
 def ramp(start: np.ndarray, target: np.ndarray, n: int, dt: float) -> np.ndarray:
-    """``n`` actions from ``start`` toward ``target`` at most MAX_SPEED rad/s."""
     step = MAX_SPEED * dt * np.arange(1, n + 1)[:, None]
     return start + np.clip(target - start, -step, step)
 
 
 def cpu_share(before: resource.struct_rusage, wall0: float) -> dict[str, float]:
-    """CPU seconds (user + system) of this process since ``before``, and the share of one core."""
     after = resource.getrusage(resource.RUSAGE_SELF)
     cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
     wall = time.monotonic() - wall0
@@ -195,14 +188,8 @@ def percentiles(ns: list[int]) -> dict[str, float] | None:
     return {"n": len(ordered), "p50": at(0.5), "p99": at(0.99), "max": at(1.0)}
 
 
-# --- robot ---------------------------------------------------------------------
-
-
 class Sim:
-    """The UR10e in MuJoCo, published as ``ROBOT``, its edge ticked every 1 ms."""
-
     def __init__(self, args: argparse.Namespace, session: realtime.Host | str) -> None:
-        # MuJoCo is the demo's optional dependency (`uv sync --group mujoco`).
         mujoco: Any = importlib.import_module("mujoco")
         self.mj = mujoco
         self.args = args
@@ -289,9 +276,9 @@ class Sim:
             if due is not None:
                 mode, token = due.mode, due.lease_token
                 if isinstance(due.value, np.ndarray):
-                    data.ctrl[:] = due.value  # the edge's validated, clamped target
+                    data.ctrl[:] = due.value
                 elif due.safe is not None:
-                    data.ctrl[:] = data.qpos[self.qadr]  # "stop": hold where it is
+                    data.ctrl[:] = data.qpos[self.qadr]
                 if (
                     mode == "driving"
                     and due.received_ns is not None
@@ -323,8 +310,6 @@ class Sim:
     def camera(self) -> None:
         mj, model = self.mj, self.model
         renderer = mj.Renderer(model, self.args.height, self.args.width)
-        # A wrist camera needs no shadows, reflections or sky: a fifth of
-        # the render time in software GL.
         for flag in ("mjRND_SHADOW", "mjRND_REFLECTION", "mjRND_SKYBOX"):
             renderer.scene.flags[getattr(mj.mjtRndFlag, flag)] = 0
         scratch = mj.MjData(model)
@@ -357,11 +342,7 @@ class Sim:
         return edge
 
 
-# --- report --------------------------------------------------------------------
-
-
 def holders(recording: dict[str, Any]) -> tuple[dict[int, str], list[dict[str, Any]]]:
-    """Lease token -> holder for the arm, and the arm's lease timeline, from the recording."""
     timeline = [
         lease for lease in recording["leases"] if lease["part"] == f"{ROBOT}/arm"
     ]
@@ -386,11 +367,7 @@ def report(
     period = {"policy": 1e9 / args.replan_hz, "operator": 1e9 / operator_hz}
     dt_ns = 1e9 / CONTROL_HZ
 
-    # Chunk ages per holder (receipt at the edge minus the capture of the arm
-    # sample the chunk was computed from), split at the chunk's t0.
     ages: dict[str, dict[str, list[int]]] = {}
-    # When chunks were computed from a sample older than half a replan
-    # period (seconds into the run): where the phase alignment slipped.
     stale: dict[str, list[float]] = {}
     first_ns = sim.ticks[0][0] if sim.ticks else 0
     for (token, _), (capture, receipt, slot, index) in sim.chunks.items():
@@ -407,9 +384,6 @@ def report(
 
     ticks = sim.ticks
     holder_of = [by_token.get(t[3]) if t[3] is not None else None for t in ticks]
-    # The policy window: ticks while the policy holds the arm's lease (from
-    # the recorded authority timeline; one clock on one host), after one
-    # second of warmup, until its last driven tick.
     changes = [(lease["log_ns"], lease["holder"]) for lease in timeline]
     stamps = [c[0] for c in changes]
 
@@ -439,7 +413,6 @@ def report(
         modes[t[2]] = modes.get(t[2], 0) + 1
     driving_in_window = modes.get("driving", 0)
 
-    # Takeover and hand-back, as the robot saw them.
     transitions: list[dict[str, Any]] = []
     for i in range(1, len(ticks)):
         before, now = holder_of[i - 1], holder_of[i]
@@ -499,8 +472,6 @@ def report(
             "ticks": len(window),
             "mode_ticks": modes,
             "hold_ticks": modes.get("hold", 0),
-            # Safe ticks before the policy's last driven tick (the run's end
-            # releases the lease: hold, then the safe behaviour, unlatched).
             "safe_ticks_before_end": sum(
                 1 for t in ticks[: last + 1] if t[2] == "safe"
             ),
@@ -538,7 +509,6 @@ def report(
 
 
 def checks(args: argparse.Namespace, out: dict[str, Any]) -> dict[str, bool]:
-    """The demo's done-when, as booleans (``latency`` is measured, not enforced)."""
     summary = out["recording"]["summary"]
     topics = summary["topics"]
     wanted = [
@@ -590,7 +560,6 @@ def checks(args: argparse.Namespace, out: dict[str, Any]) -> dict[str, bool]:
 
 
 def read_independently(path: Path) -> dict[str, int] | None:
-    """Message counts per topic with the ``mcap`` package, if installed."""
     try:
         make_reader: Any = importlib.import_module("mcap.reader").make_reader
     except ImportError:
@@ -651,7 +620,6 @@ def run_robot(args: argparse.Namespace) -> int:
                     "operator", args, host.address, tmp / "operator.json"
                 )
             limit = args.seconds + 60
-            # Interactive: the run ends when the operator quits.
             order = (
                 ["operator", "policy"] if args.keys == "interactive" else list(procs)
             )
@@ -662,7 +630,6 @@ def run_robot(args: argparse.Namespace) -> int:
                 except subprocess.TimeoutExpired:
                     proc.kill()
                 if name == "operator" and args.keys == "interactive":
-                    # The operator quit: stop the policy too.
                     procs["policy"].send_signal(signal.SIGINT)
                 path = tmp / f"{name}.json"
                 children[name] = (
@@ -748,14 +715,10 @@ def emit(args: argparse.Namespace, out: dict[str, Any]) -> None:
         print(text)
 
 
-# --- policy --------------------------------------------------------------------
-
-
 def run_policy(args: argparse.Namespace) -> int:
     chunk, dt = args.chunk, 1.0 / CONTROL_HZ
     brightness: list[float] = []
     origin: list[float] = []
-    # Per start, the age of the newest sample in each window input.
     window_ages: dict[str, list[int]] = {}
 
     def predict(obs: realtime.Observation) -> dict[str, Any]:
@@ -765,7 +728,6 @@ def run_policy(args: argparse.Namespace) -> int:
         now = obs.meta.time_ns / 1e9
         if not origin:
             origin.append(now)
-        # The reach: sweep the pan and the first wrist joint around home.
         t = now - origin[0] + np.arange(chunk) * dt
         target = np.repeat(HOME[None], chunk, axis=0)
         target[:, 0] += 0.5 * np.sin(2 * np.pi * 0.2 * t)
@@ -788,8 +750,6 @@ def run_policy(args: argparse.Namespace) -> int:
         print(binding, file=sys.stderr, flush=True)
         cpu0, wall0 = resource.getrusage(resource.RUSAGE_SELF), time.monotonic()
         try:
-            # Parked while the operator holds the arm (and after it lets go
-            # plainly or its process dies); the operator's hand-back resumes it.
             stats = policy.run(predict, duration=args.seconds)
         except KeyboardInterrupt:
             stats = policy.stats()
@@ -808,9 +768,6 @@ def run_policy(args: argparse.Namespace) -> int:
         }
     emit(args, out)
     return 0
-
-
-# --- operator ------------------------------------------------------------------
 
 
 def default_script(seconds: float) -> str:
@@ -890,8 +847,6 @@ def run_operator(args: argparse.Namespace) -> int:
         feeder.start()
         rate = realtime.Rate(hz)
         active, joint = False, 0
-        # The jog target and the last commanded pose, set from the measured
-        # pose on the first start after a takeover (`fresh`).
         target, cmd, fresh = HOME.copy(), HOME.copy(), True
         end = start + args.seconds
         while time.monotonic() < end:

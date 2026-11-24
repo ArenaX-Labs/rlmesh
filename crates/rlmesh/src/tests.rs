@@ -1,7 +1,6 @@
 use crate::data::{EnvError, EnvErrorCode};
 use crate::*;
 
-/// Session address used by env tests.
 pub(crate) const ENV_ADDRESS: &str = ":0/env";
 
 pub(crate) fn env_serve_options() -> ServeOptions {
@@ -49,22 +48,18 @@ fn facade_error_mapping_hides_core_error_types() {
 
 #[test]
 fn curated_spaces_facade_separates_the_two_request_families() {
-    // The crate-root request types are the scalar env family.
     let env_layer = crate::binding::env::ResetRequest {
         seed: Some(7),
         ..Default::default()
     };
     assert_eq!(env_layer.seed, Some(7));
 
-    // The vector env request family is explicit.
     let vector_env = crate::binding::env::VectorResetRequest {
         seeds: vec![1, 2, 3],
         ..Default::default()
     };
     assert_eq!(vector_env.seeds.len(), 3);
 
-    // The two families are genuinely distinct types reachable through curated
-    // (non-glob) paths.
     fn assert_distinct<A: 'static, B: 'static>() {
         assert_ne!(
             std::any::TypeId::of::<A>(),
@@ -82,8 +77,6 @@ fn describe_and_reset_keys_match_python() {
     assert_eq!(crate::ENV_RESET_OPTIONS_KEY, "rlmesh.env.v1.reset_options");
 }
 
-/// The cargo features the crate docs list (`//! - `name`` under
-/// `# Features`), and the ones the manifest declares (`default` aside).
 #[test]
 fn the_crate_docs_list_exactly_the_manifest_features() {
     let mut documented: Vec<&str> = include_str!("lib.rs")

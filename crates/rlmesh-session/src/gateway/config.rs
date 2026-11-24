@@ -1,25 +1,19 @@
 //! The gateway's command line and the configuration it resolves to.
 //!
-//! Every socket needs a token ([`security`]). This machine's page token
-//! comes from `RLMESH_GATEWAY_TOKEN` or `--token-file`, never from a
-//! command-line value (argv is world-readable); paired browser tokens from
-//! `--browsers` (`rlmesh pair HOST --browser` writes it). The gateway
-//! refuses to start with neither. A non-loopback `--bind` refuses to start
-//! without TLS (a token would cross the network in the clear) unless
-//! `--insecure-http` says so. `--allow-origin '*'` allows any origin;
-//! without it, only the origins this gateway serves its own page from.
-//! Browsers attach at `model` at most unless `--max-priority` raises it.
+//! Every socket needs a token ([`security`]). This machine's page token comes from
+//! `RLMESH_GATEWAY_TOKEN` or `--token-file`, never from argv (which is world-readable); paired
+//! browser tokens from `--browsers` (written by `rlmesh pair HOST --browser`). The gateway
+//! refuses to start with neither. A non-loopback `--bind` refuses to start without TLS unless
+//! `--insecure-http` says so. Without `--allow-origin` only the origins this gateway serves its
+//! own page from are allowed (`'*'` allows any). Browsers attach at `model` at most unless
+//! `--max-priority` raises it.
 //!
-//! The session is the address its host prints
-//! (`127.0.0.1:7447/<session>#<key>`), or its parts: `--connect` with
-//! `--session` or `--session-file`, either `<session>#<key>` or the bare
-//! session of a host on this machine that left its key for this user (or
-//! that this machine paired with). The key is a credential, so, as the page
-//! token, it never comes from argv: an address with its key comes from
-//! `RLMESH_GATEWAY_ADDRESS` or `--address-file`, a session with its key
-//! from `--session-file`; `--address` and `--session` refuse a `#`. The
-//! gateway's own participant attaches with that key; it joins the host as a
-//! client, as every participant does.
+//! The session is the address its host prints (`127.0.0.1:7447/<session>#<key>`), or `--connect`
+//! with `--session` or `--session-file`, either `<session>#<key>` or the bare session of a host on
+//! this machine that left its key for this user (or that this machine paired with). The key is a
+//! credential, so it never comes from argv either: an address with its key comes from
+//! `RLMESH_GATEWAY_ADDRESS` or `--address-file`, a session with its key from `--session-file`;
+//! `--address` and `--session` refuse a `#`.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -107,8 +101,6 @@ pub struct Args {
     pub tls_key: Option<PathBuf>,
 }
 
-// `--address` and `--session` are refused with a key, but `Debug` may run
-// before that: it leaves any key out.
 impl std::fmt::Debug for Args {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let redact = |text: &Option<String>| text.as_deref().map(crate::address::redact);
@@ -138,7 +130,6 @@ impl std::fmt::Debug for Args {
 /// The variable a keyed session address comes from (or `--address-file`).
 pub const ADDRESS_VAR: &str = "RLMESH_GATEWAY_ADDRESS";
 
-/// The refusal of a key on the command line, naming where it goes instead.
 fn key_on_argv(flag: &str, instead: &str) -> String {
     format!(
         "{flag} carries the session's key (`#…`), and the command line is world-readable: \
@@ -270,7 +261,6 @@ impl Config {
         };
         let address = match whole {
             Some((from, text)) => SessionAddress {
-                // The platform's tenant is configuration, not address.
                 tenant: TenantId::new(args.tenant.clone()).map_err(|e| e.to_string())?,
                 ..text
                     .parse::<SessionAddress>()
@@ -300,7 +290,6 @@ impl Config {
                     None => (session, None),
                 };
                 SessionAddress {
-                    // The platform's tenant is configuration, not address.
                     tenant: TenantId::new(args.tenant).map_err(|e| e.to_string())?,
                     key,
                     ..SessionAddress::new(base, &session).map_err(|e| e.to_string())?
@@ -430,7 +419,6 @@ mod tests {
                 assert!(err.contains(name), "{err}");
             }
         }
-        // From the environment or a file it is taken.
         let keyed = format!("10.0.0.5:7447/{SESSION}#{key}");
         let bare = parse("rlmesh-gateway --browsers /x".into());
         let c = Config::from_args_and_env(bare.clone(), Some(TOKEN.into()), Some(keyed.clone()))
@@ -452,7 +440,6 @@ mod tests {
             c.address.key.as_ref().map(ToString::to_string),
             Some(key.clone())
         );
-        // A malformed one is refused without repeating it.
         let err = Config::from_args_and_env(
             bare,
             Some(TOKEN.into()),

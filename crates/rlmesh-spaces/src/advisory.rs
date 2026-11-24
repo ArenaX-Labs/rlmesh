@@ -1,12 +1,10 @@
 //! Non-fatal adapter advisories with a severity tier.
 //!
-//! Advisories surface degradations the adapter tolerated instead of failing
-//! on: the consumer (an authoring warning, a serve-time log, an eval harness)
-//! decides what to do with them. The severity split exists so a harness can
-//! hard-fail on the dangerous tier without policing every note: `Caution`
-//! marks the adapter *substituting or fabricating* model-visible data (a
-//! role-rebound camera, a zero-filled frame), `Info` marks benign hints and
-//! lossy-but-requested steps (layout nudges, no-op ranges, crop/letterbox).
+//! Advisories report degradations the adapter tolerated instead of failing; the consumer decides
+//! what to do with them. `Caution` marks the adapter substituting or fabricating model-visible
+//! data (a role-rebound camera, a zero-filled frame), so a harness can hard-fail on it alone;
+//! `Info` marks benign hints and lossy-but-requested steps (layout nudges, no-op ranges,
+//! crop/letterbox).
 
 use std::fmt;
 

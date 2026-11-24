@@ -1,6 +1,6 @@
-//! What `rlmesh --version` and `rlmesh version` say about this build: what
-//! kind it is and so whom it can talk to, its workflow editions and its
-//! session wire revision.
+//! What `rlmesh --version` and `rlmesh version` say about this build: what kind
+//! it is and so whom it can talk to, its workflow editions and its session wire
+//! revision.
 
 use std::sync::LazyLock;
 
@@ -18,8 +18,8 @@ pub(crate) static VERSION_LINE: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// `0.2.0 (dev build of 1a2b3c4d5e6f: talks only to the same commit) ·
-/// edition 2026.10-dev.1a2b3c4d5e6f · session wire 1`.
+/// `0.2.0 (dev build of 1a2b3c4d5e6f: talks only to the same commit) · edition
+/// 2026.10-dev.1a2b3c4d5e6f · session wire 1`.
 pub(crate) fn version_line(
     version: &str,
     source: BuildSource,
@@ -50,7 +50,6 @@ pub(crate) fn build_kind(source: BuildSource, git: Option<&str>) -> String {
             None => format!("dev build of {git}: talks only to the same commit"),
         },
         (BuildSource::Git, None) => "dev build: talks only to the same commit".to_owned(),
-        // A published crate, or a checkout without git: the release's editions.
         _ => "package build".to_owned(),
     }
 }

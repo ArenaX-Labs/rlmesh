@@ -1,9 +1,3 @@
-//! Batched `SpaceValue` conversion.
-//!
-//! This module owns lane splitting and stacking policy for Python-facing vector
-//! APIs. Python clients may pre-encode obvious framework array batches for
-//! performance, but this codec remains the conformance and shape authority.
-
 use std::collections::BTreeMap;
 
 use pyo3::prelude::*;
@@ -34,12 +28,9 @@ pub(crate) fn batched_space_values_to_py_with_backend<'py>(
     })
 }
 
-// Encodes a non-composite batch; only the leaf behavior differs between the
-// backend-aware and neutral encoders.
 type BatchLeafEncoder<'py> =
     dyn Fn(Python<'py>, &[SpaceValue], &SpaceSpec) -> PyResult<Bound<'py, PyAny>>;
 
-// Shared composite (Dict/Tuple) fan-out parameterized by the leaf encoder.
 fn batched_space_values_to_py<'py>(
     py: Python<'py>,
     values: &[SpaceValue],
@@ -283,7 +274,6 @@ fn batched_leaf_neutral<'py>(
     }
 }
 
-/// Stack per-lane array payloads into one `(num_lanes, *space.shape)` tensor.
 fn batch_array_bytes<'py>(
     py: Python<'py>,
     values: &[SpaceValue],
@@ -324,9 +314,6 @@ fn batched_values_to_py<'py>(
         | Some(SpaceKind::MultiDiscrete(_)) => {
             let items = PyList::new(py, items)?;
             if backend.prefers_numpy(py)? {
-                // Propagate any np.array failure (e.g. inhomogeneous per-sample
-                // shapes from a malformed batch) instead of silently flipping
-                // the return type to a list of arrays.
                 let numpy = py.import("numpy")?;
                 return numpy.getattr("array")?.call1((items,));
             }
@@ -340,12 +327,6 @@ fn batched_items<'py>(
     value: &Bound<'py, PyAny>,
     num_envs: usize,
 ) -> PyResult<Vec<Bound<'py, PyAny>>> {
-    // A native rlmesh Tensor is what the framework bridges hand back for an
-    // N-stacked array action (numpy/torch/jax `from_array` -> `Tensor`), and it
-    // is not Python-iterable, so split it along the leading lane axis into
-    // per-lane native tensors instead of failing on `try_iter`. This keeps the
-    // vectorized path symmetric with the single-env one, which encodes a native
-    // tensor directly via `encode_native_tensor`.
     if let Some(tensor) = extract_tensor(value)? {
         let lanes = tensor.inner.unstack().map_err(|err| {
             pyo3::exceptions::PyValueError::new_err(format!(
@@ -390,9 +371,6 @@ mod tests {
     #[test]
     fn native_tensor_action_splits_into_lanes() {
         Python::attach(|py| {
-            // A vectorized Box action space; the framework bridges hand back one
-            // native (N, *shape) Tensor, which must split into N per-lane values
-            // (regression: `try_iter` on a non-iterable PyTensor used to fail).
             let space = BoxSpaceBuilder::scalar(0.0, 255.0, vec![2])
                 .dtype(DType::Uint8)
                 .build()
@@ -419,7 +397,6 @@ mod tests {
                 ]
             );
 
-            // Wrong N must hard-error, never silently mis-split the slab.
             assert!(
                 py_any_to_batched_space_values_with_backend(
                     py,
@@ -444,15 +421,11 @@ mod tests {
                 .build()
                 .unwrap();
 
-            // A malformed batch: one sample carries a differently-shaped Box
-            // payload, so stacking with np.array raises on numpy >= 1.24.
             let values = vec![
                 SpaceValue::Box(Tensor::from_slice(&[0u8; 8], &[2], DType::Float32).unwrap()),
                 SpaceValue::Box(Tensor::from_slice(&[0u8; 12], &[3], DType::Float32).unwrap()),
             ];
 
-            // Auto backend prefers numpy; the error must surface rather than
-            // silently degrading to a list of arrays.
             let result =
                 batched_space_values_to_py_with_backend(py, &values, &space, ValueBackend::Auto);
             assert!(result.is_err(), "expected np.array stacking to error");

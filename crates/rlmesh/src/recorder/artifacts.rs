@@ -1,12 +1,6 @@
 //! The per-episode artifact tree: `episodes/epNNNNNN/` with `episode.json`,
 //! `trajectory.parquet` and `video/{camera}.{stream}.mp4`, plus
 //! `telemetry/windows.jsonl`.
-//!
-//! [`EpisodeArtifacts`] is fed the runtime driver's events, so raw and
-//! transformed streams come from `raw_observation` / `raw_action` with no
-//! knowledge of the transform. [`Recorder::capture`](crate::Recorder::capture)
-//! with a `record` spec drives it on a run; a runner with its own
-//! [`RuntimeHooks`](crate::binding::RuntimeHooks) drives it directly.
 
 #![allow(missing_docs)]
 
@@ -50,7 +44,7 @@ pub use stamp::collect as collect_stamp;
 use trajectory::{StepRow, StepValue, TrajectoryWriter, step_value};
 use video::{EpisodeVideo, Video};
 
-/// The shared handle a run's hooks hand the native loop to feed (R-25).
+/// The shared handle a run's hooks hand the native loop to feed.
 pub type ArtifactTap = Arc<Mutex<EpisodeArtifacts>>;
 
 /// What an [`EpisodeArtifacts`] writes and the identity its `episode.json`
@@ -98,22 +92,15 @@ struct Episode {
     index: u32,
     env_index: i32,
     seed: Option<i64>,
-    /// `seed` reported by the env in its reset infos; wins over the runtime's.
     info_seed: Option<i64>,
     trial_index: Option<u64>,
-    /// The first observation is the reset one regardless of `is_reset`: under
-    /// NEXT_STEP autoreset the reset infos ride the first post-roll observation.
     observed: bool,
     started_at: DateTime<Utc>,
     dir: PathBuf,
     rel: String,
-    /// Present only for a selected episode of a trajectory-recording spec.
     trajectory: Option<TrajectoryWriter>,
-    /// Present only for a selected episode of a video-recording spec.
     video: Option<EpisodeVideo>,
     open: Option<StepRow>,
-    /// Steps closed so far: rows number the episode's own steps, where a
-    /// step event's `step` counts its group's first lane.
     steps: i64,
     observed_at: Option<Instant>,
     action_at: Option<Instant>,
@@ -129,8 +116,6 @@ pub struct EpisodeArtifacts {
     video: Video,
     spaces: HashMap<&'static str, (Arc<ProtoSpaceSpec>, Arc<SpaceSpec>)>,
     episodes: HashMap<String, Episode>,
-    /// `env_index` -> open episode record id: step events carry only lane
-    /// 0's record id, so lanes are resolved from their started events.
     lanes: HashMap<i32, String>,
     offset: u32,
     started: Instant,
@@ -289,7 +274,6 @@ impl EpisodeArtifacts {
             if episode.trajectory.is_some() && !wants_obs {
                 episode.open = Some(row());
             }
-            // Selection first: a sampled-out episode costs no decode or copy.
             if !wants_obs && episode.video.is_none() {
                 continue;
             }
@@ -311,7 +295,6 @@ impl EpisodeArtifacts {
                 let value = |v: &SpaceValue| step_value(v, &space, trajectory.obs_images);
                 let obs_perturbed = trajectory.obs.perturbed().then(|| value(perturbed_value));
                 let obs_raw = match (&obs_perturbed, raw.is_none()) {
-                    // No transform: the raw stream shares the perturbed pixels.
                     (Some(same), true) if trajectory.obs.raw() => Some(same.clone()),
                     _ => trajectory.obs.raw().then(|| value(raw_value)),
                 };
@@ -424,8 +407,6 @@ impl EpisodeArtifacts {
             else {
                 continue;
             };
-            // A NEXT_STEP roll is the next episode's reset, not a step of
-            // this one: the row it opened is dropped with it.
             if event.autoreset_roll.get(lane).copied().unwrap_or(false) {
                 episode.open = None;
                 continue;
@@ -457,7 +438,6 @@ impl EpisodeArtifacts {
             if writer.over_budget()
                 && let Err(err) = writer.flush()
             {
-                // Abandoned rather than written short.
                 episode.trajectory = None;
                 warn(format!(
                     "recorder: dropping the trajectory of {}: {err}",
@@ -551,8 +531,6 @@ impl EpisodeArtifacts {
     /// the final cumulative session.
     pub fn telemetry(&mut self, event: &TelemetrySnapshotEvent) -> Result<()> {
         let snapshot = &event.snapshot;
-        // Session rows carry cumulative counts; pairing them with the
-        // window's seconds would inflate derived rates.
         let (horizon, window_seconds) = match snapshot.horizon {
             Horizon::Window => ("window", self.options.telemetry_window.as_secs_f64()),
             Horizon::Session => ("session", self.started.elapsed().as_secs_f64().max(1.0)),
@@ -605,8 +583,7 @@ impl EpisodeArtifacts {
 
     /// Drop every unfinished episode of a failed session: its rows, its
     /// encoders and its directory, so nothing of it is listed as completed.
-    // TODO: discard is the whole partial-artifact policy; finish the partial
-    // videos as a flagged artifact if anyone needs to watch a failed episode.
+    // TODO: finish partial videos as a flagged artifact instead of discarding them.
     pub fn abandon(&mut self) {
         self.lanes.clear();
         for (_, episode) in self.episodes.drain() {
@@ -625,7 +602,6 @@ pub(crate) fn warn(message: impl Into<String>) {
     let _ = crate::warnings::warn(crate::WarningCategory::UserWarning, message);
 }
 
-/// A uint8 Box shaped like a grayscale, HWC or CHW image.
 pub(crate) fn is_image_space(space: &SpaceSpec) -> bool {
     matches!(space.spec.as_ref(), Some(SpaceKind::Box(_)))
         && space.dtype == DType::Uint8
@@ -641,8 +617,6 @@ fn lane_record_id<'a>(ids: &'a [String], index: usize, fallback: &'a str) -> &'a
         .map_or(fallback, String::as_str)
 }
 
-/// Each lane is claimed once per event, so the value moves out rather than
-/// copying the lane's pixels.
 fn take_lane(values: &mut [StepValue], index: usize, keep: bool) -> Option<StepValue> {
     keep.then(|| values.get_mut(index).map(std::mem::take))
         .flatten()
@@ -658,8 +632,6 @@ fn info_seed(info: Option<&MetaMap>) -> Option<i64> {
 fn meta_map_to_json(map: &MetaMap) -> Json {
     fn value(v: &MetaValue) -> Json {
         match v {
-            // Bytes and tensors never appear in step infos the JSON column
-            // can carry; represented as null, as on 0.1.
             MetaValue::Null
             | MetaValue::Bytes(_)
             | MetaValue::Tensor(_)
@@ -684,8 +656,6 @@ fn meta_map_to_json(map: &MetaMap) -> Json {
     )
 }
 
-/// Whole-file writes go through a `.rlmesh-tmp` sibling, so a reader never
-/// sees a partial document.
 fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("out");
     let tmp = path.with_file_name(format!("{name}.rlmesh-tmp"));

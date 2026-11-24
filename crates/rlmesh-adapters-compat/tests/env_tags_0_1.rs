@@ -1,18 +1,7 @@
-//! Env tags this release writes, read by the released rlmesh-adapters 0.1.0.
-//!
-//! A 0.1 model resolves its adapter against a 0.2 env with the 0.1 reader:
-//! it parses the `rlmesh.adapters.v1.env_tags` metadata as its `EnvTags`, and
-//! its `resolve` first refuses any field it does not understand
-//! (`reject_bare_fields_env`). Each case here is what this release emits for
-//! a set of tags (parsed, checked and re-emitted by this release's writer),
-//! and must pass that reader with nothing dropped.
-
 use rlmesh_adapters::v1 as current;
 use rlmesh_adapters_0_1::v1 as released;
 use serde_json::{Value, json};
 
-/// What this release publishes for `tags`: what its writer accepts,
-/// re-emitted.
 fn emitted(tags: &Value) -> Result<Value, String> {
     let parsed: current::EnvTags =
         serde_json::from_value(tags.clone()).map_err(|err| err.to_string())?;
@@ -20,9 +9,6 @@ fn emitted(tags: &Value) -> Result<Value, String> {
     serde_json::to_value(&parsed).map_err(|err| err.to_string())
 }
 
-/// Whether the 0.1 reader takes `wire` as a 0.1 model's resolve does, keeping
-/// everything in it: what it reads back means to this release what `wire`
-/// does.
 fn released_reads(wire: &Value) -> Result<(), String> {
     let parsed: released::EnvTags =
         serde_json::from_value(wire.clone()).map_err(|err| format!("does not parse: {err}"))?;
@@ -41,7 +27,6 @@ fn released_reads(wire: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Every case `released_reads` fails, with why.
 fn failures<'a>(cases: impl IntoIterator<Item = (String, &'a Value)>) -> Vec<String> {
     cases
         .into_iter()
@@ -73,8 +58,6 @@ fn one_state() -> Value {
     json!({ "q": { "type": "state", "role": "proprio/joint_pos" } })
 }
 
-/// The tags of every case in this release's adapter conformance corpus that
-/// its writer accepts.
 #[test]
 fn the_conformance_corpus_reads_on_0_1() {
     let dir = concat!(
@@ -254,8 +237,6 @@ fn action_tags_read_on_0_1() {
     assert_read(cases);
 }
 
-/// The tags the repo's example envs publish, as `write_example_tags.py`
-/// recorded them.
 #[test]
 fn the_example_envs_tags_read_on_0_1() {
     let recorded: serde_json::Map<String, Value> =
@@ -264,7 +245,6 @@ fn the_example_envs_tags_read_on_0_1() {
     assert_read(recorded.into_iter().collect());
 }
 
-/// `polarity` and `unit`, which 0.2 added, on each leaf that takes them.
 fn convention_cases() -> Vec<(String, Value)> {
     vec![
         (
@@ -302,11 +282,6 @@ fn convention_cases() -> Vec<(String, Value)> {
     ]
 }
 
-/// What happens to each 0.2-only convention on the 0.1 reader: the tags
-/// parse, but resolve refuses them, since 0.1 treats a field it does not
-/// know as must-understand. A 0.1 model therefore fails closed, naming the
-/// field, against a 0.2 env that declares one. Kept as a record: the tag
-/// format is not changed for it.
 #[test]
 fn the_0_2_conventions_are_refused_by_0_1() {
     let cases = convention_cases();
@@ -324,7 +299,6 @@ fn the_0_2_conventions_are_refused_by_0_1() {
     }
 }
 
-/// The gate a 0.2 env meets a 0.1 model at: every convention read.
 #[test]
 #[ignore = "the released 0.1 resolve refuses 0.2's polarity (state, split field, actuator) \
             and actuator unit as unrecognized fields: see the_0_2_conventions_are_refused_by_0_1"]

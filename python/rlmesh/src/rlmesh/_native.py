@@ -1,5 +1,3 @@
-"""Dependency-free native RLMesh SDK classes."""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar, TypeVar, final

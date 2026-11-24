@@ -11,7 +11,6 @@ use super::{Space, SpaceSpec, space_newtype};
 use crate::{DType, Error, Result};
 
 /// One Box bound: a float, an integer, or infinity (`f64::INFINITY`).
-/// Integers stay exact; `From` each primitive picks the variant.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Bound {
@@ -54,14 +53,12 @@ impl Bound {
         }
     }
 
-    /// The exact integer, when the bound is finite and integral.
     fn as_exact_int(self) -> Option<i128> {
         match self {
             Bound::Bool(value) => Some(i128::from(value)),
             Bound::Int(value) => Some(i128::from(value)),
             Bound::Uint(value) => Some(i128::from(value)),
             Bound::Float(value) if value.is_finite() && value.fract() == 0.0 => {
-                // Inside +/-2^127, so the cast is exact for an integral f64.
                 (value.abs() < 2f64.powi(127)).then_some(value as i128)
             }
             Bound::Float(_) => None,
@@ -226,7 +223,6 @@ impl Box {
     }
 }
 
-/// A typed bound read in the dtype's domain: bool, unsigned or signed.
 fn typed_bound(scalar: Scalar, dtype: CoreDType) -> Bound {
     match scalar {
         Scalar::Bool(value) => Bound::Bool(value),
@@ -241,7 +237,6 @@ fn typed_bound(scalar: Scalar, dtype: CoreDType) -> Bound {
     }
 }
 
-/// Build a Box spec, validating shape, dtype and bounds.
 pub(crate) fn box_spec(
     low: Bound,
     high: Bound,
@@ -294,8 +289,6 @@ pub(crate) fn box_spec(
         .map_err(|err| Error::invalid_argument(err.to_string()))
 }
 
-/// Build a per-element Box spec (the C/C++ `ext` builders): each pair
-/// follows `box_spec`'s rules; all pairs must agree on float vs typed.
 pub(crate) fn box_elementwise_spec(
     low: &[Bound],
     high: &[Bound],

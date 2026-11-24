@@ -1,18 +1,13 @@
 //! A `MetaMap` (Gym `info`, reset `options`, env metadata) to and from JSON,
 //! losslessly.
 //!
-//! The lockstep messages carry `info` and `options` as JSON (`info_json`,
-//! `options_json`). Plain values map to plain JSON, so a v2-native
-//! reader sees the dict it expects; the three things JSON cannot say are
-//! tagged, so the compatibility path round-trips a `MetaMap` bit for bit:
+//! Plain values map to plain JSON; what JSON cannot say is tagged:
 //!
-//! - an integer is a JSON integer and a float always has a fraction or an
-//!   exponent (`1.0`), so the two stay apart;
+//! - an integer is a JSON integer and a float always has a fraction or exponent (`1.0`);
 //! - a non-finite float is `{"$f64": "nan" | "inf" | "-inf"}`;
 //! - bytes are `{"$bytes": "<base64>"}`;
-//! - a numeric or bool array (a NumPy array or scalar) is
-//!   `{"$tensor": {"dtype", "shape", "data": "<base64 of its little-endian
-//!   bytes>"}}`, and an object array `{"$array": {"shape", "items"}}`;
+//! - a numeric or bool array is `{"$tensor": {"dtype", "shape", "data": "<base64 of its
+//!   little-endian bytes>"}}`, and an object array `{"$array": {"shape", "items"}}`;
 //! - a map key starting with `$` is written with one more `$`.
 
 use base64::Engine as _;
@@ -211,7 +206,6 @@ mod tests {
             ("float", MetaValue::Float(2.0)),
             ("neg_zero", MetaValue::Float(-0.0)),
             ("tiny", MetaValue::Float(5e-324)),
-            // A shortest-repr float the default (fast) parser misrounds.
             ("third", MetaValue::Float(1.333_513_733_333_333_3)),
             ("nan", MetaValue::Float(f64::NAN)),
             ("inf", MetaValue::Float(f64::NEG_INFINITY)),
@@ -248,7 +242,6 @@ mod tests {
         }
         let text = to_json(&map);
         let back = from_json(&text).expect("decode");
-        // NaN != NaN: compare encodings.
         assert_eq!(to_json(&back), text);
         let MetaValue::Float(z) = back["neg_zero"] else {
             panic!("number");

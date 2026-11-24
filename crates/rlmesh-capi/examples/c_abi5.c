@@ -1,4 +1,3 @@
-/* Full ABI-5 input minima, unknown tails and unchanged extended out fields. */
 #include <rlmesh.h>
 #include <stdio.h>
 #include <string.h>
@@ -53,7 +52,6 @@ static void invalid_bool_inputs(void) {
 }
 int main(void) {
   invalid_bool_inputs();
-  /* Ordinary output slots need not contain initialized C values. */
   RLMeshValue* scalar;
   CHECK(rlmesh_value_int(42, &scalar) == RLMESH_OK);
   RLMeshBytes repr;

@@ -27,8 +27,6 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 /// The driver side's way to a served model: queries on `m/{model}`.
 #[derive(Clone)]
 pub struct ModelLink {
-    /// Its session, held as a transport so that dropping the last handle
-    /// closes it off the dropping thread.
     session: Transport,
     key: String,
 }
@@ -89,9 +87,7 @@ impl ModelLink {
             .timeout(timeout)
             .await
             .map_err(|e| GymError::Closed(e.to_string()))?;
-        // Replies that end, or end in Zenoh's error, before the timeout: the
-        // model's server went away while the request was in flight. At the
-        // timeout, Zenoh answers its own error: the deadline passed.
+        // Replies ending before the timeout mean the server went away mid-request; at the timeout Zenoh answers its own error.
         let ended = || {
             if started.elapsed() + crate::lockstep::exchange::ENDED_EARLY < timeout {
                 GymError::Closed(
@@ -116,11 +112,9 @@ pub struct ModelBinding {
     session: SessionAddress,
     name: ParticipantId,
     placed: Placed,
-    /// The address serving was asked for, to announce it at.
     requested: String,
 }
 
-/// The model's address without the key, for logs.
 impl std::fmt::Display for ModelBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.session, self.name)
@@ -151,8 +145,6 @@ impl ModelBinding {
 
     /// Joins the session as the model and answers `service` until
     /// `shutdown` fires, then closes it, waiting up to `timeout` (also the
-    /// join's) for its accepted requests; the session's host stops either
-    /// way.
     pub async fn serve<H: ModelHandler + 'static>(
         self,
         service: Arc<ModelService<H>>,
@@ -173,8 +165,6 @@ impl ModelBinding {
         timeout: Duration,
         shutdown: CancellationToken,
     ) -> Result<(), GymError> {
-        // A model drives nothing itself: it joins as a controller at model
-        // priority, so the roster shows it, and never takes a lease.
         let participant: Participant = self
             .session
             .join_declaring(
@@ -207,24 +197,19 @@ impl ModelBinding {
 
 /// A driver's connection to a served model: its participant in the
 /// model's session (or the session it invited the model into), and the
-/// link.
 pub struct ModelConnection {
     /// The link to the model.
     pub link: ModelLink,
     model: ParticipantId,
     participant: Participant,
-    /// The lockstep session when it is this connection's own, to close.
     lockstep: Option<Transport>,
-    /// The model's own session, when this connects there.
     own: Option<SessionAddress>,
-    /// The session the model was invited into, which it leaves at close.
     invited: Option<String>,
 }
 
 impl ModelConnection {
     /// Connects to the model at the participant address `address`: joins
     /// its session as `id` (never hosting it: the model's process does)
-    /// and waits up to `timeout` for the model to answer.
     pub async fn connect(address: &str, id: &str, timeout: Duration) -> Result<Self, GymError> {
         let parsed = Address::participant(address).map_err(|e| GymError::Config(e.to_string()))?;
         let model = ParticipantId::new(parsed.participant.clone().unwrap_or_default())
@@ -237,8 +222,6 @@ impl ModelConnection {
 
     /// Invites the model this connects to into `session` (a session
     /// address, which this driver runs in) and connects to it there,
-    /// leaving the model's own session: predicts then stay in `session`.
-    /// Refused when the model can't reach it.
     pub async fn invite(
         self,
         session: &str,
@@ -253,7 +236,6 @@ impl ModelConnection {
         self.close().await;
         match invited? {
             (ModelReply::Done, _) => {}
-            // The model could not reach the session (yet): a retry may.
             (ModelReply::Fault(fault), _) if fault.code == "UNAVAILABLE" => {
                 return Err(GymError::Unreachable(fault.message));
             }
@@ -270,8 +252,6 @@ impl ModelConnection {
         Ok(connection)
     }
 
-    /// Joins `session` as `id` and waits up to `timeout` for `model` to
-    /// answer there.
     async fn join(
         session: &SessionAddress,
         model: &ParticipantId,
@@ -286,7 +266,6 @@ impl ModelConnection {
             key: participant.keys().model(model),
         };
         link.wait_ready(timeout).await.map_err(|err| match err {
-            // A model still loading answers later: a retry may get past it.
             GymError::Timeout(_) => GymError::Session(SessionError::Timeout(
                 timeout,
                 format!("model {model} to answer at {session}/{model}"),

@@ -1,10 +1,3 @@
-"""Sandbox env lifecycle: a SandboxEnv IS a remote env that owns its container.
-
-These mock the container start (``_sandbox_start_env``) and the client attach
-(``PyEnvClient``) so the lifecycle -- start, attach, cleanup-on-failure, close-retry,
-and option handling -- is exercised without Docker.
-"""
-
 from __future__ import annotations
 
 import json
@@ -30,20 +23,15 @@ def _start_result(*_args: object, **_kwargs: object) -> dict[str, str]:
 
 @pytest.fixture(autouse=True)
 def _container_port_answers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The container's published port accepts, and speaks no v1 wire."""
     monkeypatch.setattr(sandbox, "_accepts", lambda _address: True)
     monkeypatch.setattr(sandbox, "_answers_v1", lambda _address: False)
 
 
 class _Contract:
-    """Minimal env contract the client handshake returns (single env)."""
-
     num_envs = 1
 
 
 class _OkClient:
-    """A PyEnvClient that attaches on the first dial."""
-
     def __init__(
         self,
         address: str,
@@ -85,8 +73,6 @@ def _patch_start(
 
 
 def _patch_stop(monkeypatch: pytest.MonkeyPatch, stop: Any) -> None:
-    # Both _stop() and the __init__-failure cleanup (session._attach) call the
-    # session-module alias, so one patch covers both paths.
     monkeypatch.setattr(sandbox, "_sandbox_stop_env", stop)
 
 
@@ -121,8 +107,6 @@ def test_sandbox_cleanup_runs_on_keyboard_interrupt(
     with pytest.raises(KeyboardInterrupt):
         rlmesh.SandboxEnv("CartPole-v1")
 
-    # The started container is stopped before the attach error propagates,
-    # killed: it never served, so no stop grace is waited out.
     assert stopped == ["container-1"]
     assert killed == [True]
     assert captured["address"] == "127.0.0.1:40000/env"
@@ -169,7 +153,6 @@ def test_sandbox_options_set_rlmesh_package_and_params_are_the_binding(
     )
     monkeypatch.setattr(native, "PyEnvClient", _OkClient)
 
-    # Build infra rides in build=; everything else is the make-binding (**params).
     with rlmesh.SandboxEnv(
         "CartPole-v1",
         build=rlmesh.SandboxBuild(rlmesh_package="local"),
@@ -200,10 +183,8 @@ def test_sandbox_retries_close_after_transient_stop_failure(
 
     session = rlmesh.SandboxEnv("CartPole-v1")
 
-    # First close attempt fails while stopping the container.
     with pytest.raises(RuntimeError, match="docker daemon unavailable"):
         session.close()
-    # Not marked closed, so the container is not leaked -- a retry can stop it.
     assert session._closed is False
 
     session.close()
@@ -251,7 +232,6 @@ def test_sandbox_options_accept_string_sequence(
 def test_start_sandbox_gym_path_forwards_imports(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # On the gym/hf source-string path, imports= (from options) is forwarded.
     captured: dict[str, object] = {}
 
     def start_result(*_args: object, **kwargs: object) -> dict[str, str]:
@@ -276,9 +256,6 @@ def test_start_sandbox_gym_path_forwards_imports(
 def test_sandbox_model_shutdown_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # SandboxModel.shutdown() must be safe to call more than once: an explicit
-    # shutdown() followed by __exit__ (or __del__) must not re-stop an already
-    # stopped container. Bypass __init__ (which starts a real container).
     from rlmesh._sandbox._model import SandboxModel
 
     stops: list[str] = []
@@ -296,14 +273,12 @@ def test_sandbox_model_shutdown_is_idempotent(
     model._serving = threading.Lock()
 
     with model:
-        model.shutdown()  # explicit early stop
-    model.shutdown()  # __exit__ already stopped; these must be no-ops
+        model.shutdown()
+    model.shutdown()
     assert stops == ["container-x"]
 
 
 def test_sandbox_model_source_resolution() -> None:
-    # A model is always a prebuilt image: bare tags and explicit schemes resolve;
-    # a non-string source and an empty/scheme-only tag are rejected.
     from rlmesh._sandbox._model import SandboxModel
 
     assert SandboxModel("smolvla:latest")._image == "smolvla:latest"
@@ -315,22 +290,15 @@ def test_sandbox_model_source_resolution() -> None:
         SandboxModel(123)  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="image tag"):
         SandboxModel("image://")
-    # A bare gym env id is never a model image -- reject it before docker run.
     with pytest.raises(ValueError, match="gym env id"):
         SandboxModel("CartPole-v1")
 
 
-# --- regression: source autodetect + swallowed options ----------------------
-
-
 def test_gym_module_id_with_colon_routes_to_build_not_docker() -> None:
-    # `pkg:Env-v0` is a valid gym module-import id (has a colon); it must build,
-    # never be probed as a Docker image. Pure -- the version suffix short-circuits.
     assert _sources.looks_like_gym_id("my_envs:MyEnv-v0") is True
     assert _sources._is_image_shaped("my_envs:MyEnv-v0") is False
     kind, ref = _sources.resolve_source_kind("my_envs:MyEnv-v0")
     assert (kind, ref) == ("build", "my_envs:MyEnv-v0")
-    # A real tagged image still resolves image-shaped.
     assert _sources._is_image_shaped("registry/img:v1.2") is True
 
 
@@ -378,8 +346,6 @@ def test_tagless_name_without_docker_cli_mentions_the_cli(
 def test_gym_ids_docker_cannot_spell_never_probe_docker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # CamelCase and the module form cannot be a tagless image name; a
-    # lowercase `name-v1` can, and is probed (test_sandbox_prebuilt.py).
     monkeypatch.setattr(
         _sources,
         "docker_image_exists",
@@ -410,8 +376,6 @@ def test_tagged_and_digest_sources_still_probe_and_pull(
 
 
 class _ManualSession(sandbox.SandboxLifecycle):
-    """A lifecycle-only session with a hand-wired sandbox, for _attach tests."""
-
     def __init__(self) -> None:
         self._source = "img:1"
         self._closed = False
@@ -432,9 +396,6 @@ class _ManualSession(sandbox.SandboxLifecycle):
 def test_attach_failure_with_failing_stop_leaves_session_retryable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When the cleanup stop fails after a failed attach, the session must NOT
-    be marked closed -- close() can then retry the stop instead of leaking a
-    running container for the process lifetime (mirrors _stop)."""
     stop_calls: list[str] = []
 
     def flaky_stop(*, container_id: str, kill: bool = False) -> None:
@@ -463,10 +424,6 @@ def test_attach_failure_with_failing_stop_leaves_session_retryable(
 def test_a_container_that_exits_during_startup_is_the_error_not_the_dial(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The exit leads, with the container's last 40 log lines (secrets
-    redacted), and the dial it cut short is neither in the text nor chained,
-    so a traceback's first exception is the exit, not a session timeout.
-    Whatever the dial raised: a refusal the container's death caused too."""
     key = "k" * 52
     docker_calls: list[list[str]] = []
 
@@ -509,8 +466,6 @@ def test_a_container_that_exits_during_startup_is_the_error_not_the_dial(
 def test_attach_reports_inspect_failure_distinctly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An inspect failure (daemon busy) must not be misreported as the container
-    having exited with empty logs."""
     _patch_stop(monkeypatch, lambda *, container_id, kill=False: None)
     monkeypatch.setattr(sandbox, "_container_state", lambda _cid: None)
 
@@ -522,8 +477,6 @@ def test_attach_reports_inspect_failure_distinctly(
 def test_attach_retries_in_short_attempts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Each dial waits at most a second, so an image that will never answer
-    is told apart between attempts, and the next one retries."""
     timeouts: list[float] = []
 
     class FlakyClient:
@@ -577,8 +530,6 @@ def test_attach_retries_in_short_attempts(
 
 
 def test_prebuilt_source_rejects_security_build_options() -> None:
-    """trust_remote_code/allow_unpinned_hf are trust grants; setting one on a
-    prebuilt (never-built) source is a hard error, not a silent drop."""
     for name in ("trust_remote_code", "allow_unpinned_hf"):
         with pytest.raises(ValueError, match=name):
             sandbox._warn_ignored_build_options(
@@ -606,8 +557,6 @@ def test_sandbox_vector_env_rejects_unknown_vectorization_mode(
 def test_sandbox_vector_env_default_mode_is_auto(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The default vectorization_mode is None (auto), matching the serve-CLI
-    surface instead of silently pinning the sandbox to sync."""
     captured: dict[str, object] = {}
     _patch_start(monkeypatch, captured)
     _patch_stop(monkeypatch, lambda *, container_id, kill=False: None)
@@ -656,8 +605,6 @@ def test_sandbox_vector_env_default_mode_is_auto(
 
 
 def test_top_level_sandbox_option_is_rejected_not_swallowed() -> None:
-    # Build/runtime flags live in build=/runtime=; passing them top-level must fail
-    # loud rather than vanish into the make-binding (a silent security/config drop).
     for name in (
         "trust_remote_code",
         "allow_unpinned_hf",
@@ -672,8 +619,6 @@ def test_top_level_sandbox_option_is_rejected_not_swallowed() -> None:
 def test_an_image_built_with_rlmesh_0_1_is_refused_naming_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A 0.1 image serves the v1 wire where a 0.2 one hosts its session: its
-    answer to an HTTP/2 preface gives it away, so the wait stops at once."""
     import socket
     import threading
 
@@ -682,15 +627,15 @@ def test_an_image_built_with_rlmesh_0_1_is_refused_naming_it(
     listener.listen(2)
 
     def v1_server() -> None:
-        for _ in range(2):  # the listening check, then the probe
+        for _ in range(2):
             conn, _ = listener.accept()
             with conn:
                 if conn.recv(64):
-                    conn.sendall(bytes([0, 0, 0, 4, 0, 0, 0, 0, 0]))  # SETTINGS
+                    conn.sendall(bytes([0, 0, 0, 4, 0, 0, 0, 0, 0]))
 
     thread = threading.Thread(target=v1_server, daemon=True)
     thread.start()
-    monkeypatch.undo()  # the real probes
+    monkeypatch.undo()
     info = sandbox.SandboxInfo(
         requested_source="old-model:0.1",
         resolved_source="docker://old-model:0.1",

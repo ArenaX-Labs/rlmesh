@@ -10,7 +10,6 @@ use crate::host::{HostActor, OsRng, lock};
 use crate::transport::{CONTROL_PRIORITY, RESENT_CONGESTION};
 
 impl HostActor {
-    /// Keeps one stream key slot per declared part.
     pub(super) fn sync_streams(&mut self) {
         let streams: Vec<StreamSlot> = self
             .authority
@@ -36,10 +35,6 @@ impl HostActor {
         }
     }
 
-    /// Sends what the key schedule has due: the host's own receivers first,
-    /// then every member's delivery; then decides the grants whose robots
-    /// answered (or ran out of time) and answers those a participant's end
-    /// failed.
     pub(super) async fn flush_keys(&mut self) {
         let now = self.now();
         while let Some(delivery) = self.auth.issuer().host_delivery() {

@@ -10,9 +10,8 @@ use crate::{Error, Metadata, Result, Value};
 
 /// The contract an env endpoint serves.
 ///
-/// Only the library builds one (an [`EnvServer`](crate::EnvServer) derives
-/// it from the env; a remote client reads it from the handshake). Clones are
-/// independent values.
+/// Only the library builds one: an [`EnvServer`](crate::EnvServer) derives it from the env,
+/// and a remote client reads it from the handshake.
 #[derive(Clone)]
 pub struct EnvContract {
     id: String,
@@ -84,8 +83,6 @@ impl EnvContract {
         out
     }
 
-    /// The contract a server derives (crate-private: only the library builds
-    /// one).
     pub(crate) fn new(
         id: String,
         observation_space: SpaceSpec,
@@ -106,7 +103,6 @@ impl EnvContract {
         }
     }
 
-    /// The facade contract for a wire contract; refuses one without spaces.
     pub(crate) fn from_wire(wire: &rlmesh_spaces::EnvContract) -> Result<EnvContract> {
         let space = |spec: &Option<rlmesh_spaces::SpaceSpec>, name: &str| {
             spec.clone()
@@ -124,7 +120,6 @@ impl EnvContract {
         ))
     }
 
-    /// The wire contract this one serves as.
     pub(crate) fn to_wire(&self) -> Result<rlmesh_spaces::EnvContract> {
         Ok(rlmesh_spaces::EnvContract {
             id: self.id.clone(),
@@ -141,12 +136,10 @@ impl EnvContract {
         })
     }
 
-    /// The derived autoreset mode.
     pub(crate) fn autoreset_mode(&self) -> AutoresetMode {
         self.autoreset_mode
     }
 
-    /// Construction step 7's lane comparison: the whole derived contract.
     pub(crate) fn same_lane_contract(&self, other: &EnvContract) -> bool {
         self.id == other.id
             && self.observation_space.to_space() == other.observation_space.to_space()
@@ -156,14 +149,12 @@ impl EnvContract {
             && self.autoreset_mode == other.autoreset_mode
     }
 
-    /// The same contract served at `num_envs` lanes.
     pub(crate) fn with_num_envs(mut self, num_envs: u64) -> EnvContract {
         self.num_envs = num_envs;
         self
     }
 }
 
-/// Text representation: `EnvContract(id="CartPole-v1", num_envs=1)`.
 impl fmt::Display for EnvContract {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -187,7 +178,6 @@ impl fmt::Debug for EnvContract {
     }
 }
 
-/// A space spec as a dictionary: `{kind, shape, dtype, details}`.
 pub(crate) fn spec_dict(spec: &SpaceSpec) -> Value {
     match rlmesh_adapters::v1::space_spec_to_json(spec.wire()) {
         Ok(json) => json_to_value(json),
@@ -195,7 +185,6 @@ pub(crate) fn spec_dict(spec: &SpaceSpec) -> Value {
     }
 }
 
-/// A JSON tree as a [`Value`] (objects become dicts, in the JSON's order).
 pub(crate) fn json_to_value(json: serde_json::Value) -> Value {
     match json {
         serde_json::Value::Null => Value::None,
@@ -216,8 +205,6 @@ pub(crate) fn json_to_value(json: serde_json::Value) -> Value {
     }
 }
 
-/// A [`Value`] as JSON (tensors as nested lists, as the metadata codec
-/// encodes them).
 pub(crate) fn value_to_json(value: &Value) -> Result<serde_json::Value> {
     Ok(meta_to_json(&meta_codec::value_to_wire(value)?))
 }

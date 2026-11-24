@@ -1,5 +1,3 @@
-"""The calls refusals suggest exist, with the keywords they use."""
-
 from __future__ import annotations
 
 import ast
@@ -18,14 +16,11 @@ SOURCES = [
     REPO_ROOT / "crates" / "rlmesh-session" / "src",
 ]
 
-#: A dotted call, to the end of its line.
 CALL = re.compile(r"\b[a-z_]+\.[a-z_]+\(.*\)")
-#: What a hint's receiver stands for.
 RECEIVERS: dict[str, type] = {"policy": realtime.Policy, "robot": realtime.Robot}
 
 
 def fixes() -> Iterator[tuple[str, str, str]]:
-    """Every call a golden refusal suggests: ``(golden, its text, the call)``."""
     for path in sorted(GOLDEN.glob("*__refused.txt")):
         text = path.read_text()
         for match in CALL.finditer(text):
@@ -62,7 +57,6 @@ def test_a_refusals_fix_is_a_real_call(name: str, text: str, fix: str) -> None:
     parameters = signature(call).parameters
     for keyword in call.keywords:
         assert keyword.arg is not None, fix
-        # A keyword bind does not name is a capture: `{side}` in a selector.
         assert keyword.arg in parameters or f"{{{keyword.arg}}}" in text, (
             f"{name}: {fix}: bind() has no {keyword.arg}"
         )
@@ -72,7 +66,6 @@ def test_a_refusals_fix_is_a_real_call(name: str, text: str, fix: str) -> None:
 
 
 def string_literal_calls(line: str) -> Iterator[str]:
-    """The ``policy.x(...)`` and ``robot.x(...)`` calls inside a Rust line's strings."""
     for match in re.finditer(r"\b(policy|robot)\.([a-z_]+)\(", line):
         before = line[: match.start()].replace('\\"', "")
         if before.count('"') % 2 == 1:

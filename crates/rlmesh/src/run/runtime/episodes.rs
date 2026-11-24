@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-/// One episode's session-global identity (`ep-NNNNNN` + index) and origin lane.
 #[derive(Debug, Clone)]
 pub(crate) struct EpisodeRecord {
     pub(crate) record_id: String,
@@ -11,9 +10,6 @@ pub(crate) struct EpisodeRecord {
     pub(crate) started_from_auto_reset: bool,
 }
 
-/// Assigns each distinct episode id a stable record id, session-global and
-/// independent of which lane the episode ran in. A repeated id resolves to its
-/// existing record (idempotent), so re-observing a slot never re-counts it.
 #[derive(Debug, Default)]
 pub(crate) struct EpisodeRecordRegistry {
     next_index: i64,
@@ -21,10 +17,6 @@ pub(crate) struct EpisodeRecordRegistry {
 }
 
 impl EpisodeRecordRegistry {
-    /// `positions` (the route lanes) and `indices` align to `episode_ids`: a
-    /// `Some` index pins that episode's index (and record id) to its
-    /// route-global slot, so ids stay unique and in start order across every
-    /// lane; `None` falls back to the registry's running count.
     pub(crate) fn ensure_for_slots(
         &mut self,
         positions: &[usize],
@@ -94,7 +86,6 @@ mod tests {
         assert_eq!(started[0].1.env_index, 1);
         assert!(started[0].1.started_from_auto_reset);
 
-        // A lone slot keeps its lane, not its place in the call.
         let (lone_ids, started) =
             registry.ensure_for_slots(&[3], &["runtime-d".to_string()], true, &[]);
         assert_eq!(lone_ids, ["ep-000004"]);

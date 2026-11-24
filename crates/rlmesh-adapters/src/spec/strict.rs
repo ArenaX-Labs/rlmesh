@@ -1,24 +1,11 @@
-//! The strict-v1 gate, decoupled from the serde layer.
+//! The strict-v1 gate, a post-parse pass separate from the always-tolerant serde codec.
 //!
-//! The serde codec is *unconditionally tolerant*: every growable leaf carries a
-//! `#[serde(flatten)]` capture map (see [`ImageTag`](super::ImageTag) et al.) and
-//! unknown kinds parse into `Unknown` arms, so any structurally-valid spec round-
-//! trips without loss. Strictness is this separate post-parse pass.
-//!
-//! Two recognition events are tolerated; everything else stays a hard parse
-//! error. They are gated at two altitudes:
-//!
-//! - **Unknown FIELD on a recognized kind.** A *bare* (unprefixed) unknown field
-//!   is "must-understand": fail-closed, because an old core silently applying its
-//!   own default for a modifier it never parsed is worse than failing. A
-//!   field in the reserved [`x-`/`ext.`](is_reserved_ext) namespace is the
-//!   producer's opt-in "safe to ignore" and passes. This rule runs at **both**
-//!   doors: PUBLISH (a typo dies at the trust boundary) and READ (a newer peer's
-//!   bare additive field taints — [`reject_bare_fields_env`]/`_model`).
-//! - **Unknown KIND.** Rejected at PUBLISH only (an author cannot publish a kind
-//!   their own core cannot build). The READ door *retains* it for relay and lets
-//!   the resolver decide — ignored with an advisory unless a model input
-//!   references it, then a localized `UnsupportedKind`.
+//! - An unknown *bare* field on a recognized kind is must-understand and fails, at both
+//!   publish and read. A field in the reserved `x-`/`ext.` namespace is safe to ignore and
+//!   passes.
+//! - An unknown *kind* fails at publish only. Read keeps it for relay and the resolver
+//!   decides: ignored with an advisory unless a model input references it, then
+//!   `UnsupportedKind`.
 
 use std::collections::BTreeMap;
 
@@ -33,8 +20,6 @@ use super::{Attr, FrameLaw, FrameRef, ReferenceLaw};
 
 /// Reject any bare unknown field **or** unknown leaf kind in an env spec (the
 /// PUBLISH gate: an author's own core must understand every kind and bare field).
-/// The closed role kinds are part of the same door: they hold under every
-/// role policy.
 pub fn reject_unknowns_env(tags: &EnvTags) -> Result<(), String> {
     walk_obs(&tags.observation, &NodePath::root(), true)?;
     reject_action(&tags.action)?;
@@ -64,14 +49,13 @@ pub fn reject_bare_fields_model(spec: &ModelSpec) -> Result<(), String> {
 }
 
 /// The publish-gate policy for ad-hoc (unregistered) roles, from most to
-/// least permissive. A part is never subject to it.
+/// least permissive.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RolePolicy {
-    /// Every role passes -- the open vocabulary (an authoring nudge only). The
-    /// local/OSS default.
+    /// Every role passes -- the open vocabulary (an authoring nudge only).
     Passthrough,
     /// Ad-hoc roles are rejected, but the `x/` escape is allowed: registered roles
-    /// or explicit escapes, no *accidental* ad-hoc. The curated managed default.
+    /// or explicit escapes, no *accidental* ad-hoc.
     Strict,
     /// Every unregistered role is rejected, even the `x/` escape: a registered-only
     /// lockdown, the absolute tier.
@@ -79,7 +63,6 @@ pub enum RolePolicy {
 }
 
 impl RolePolicy {
-    /// Whether `role` is allowed under this policy.
     fn allows(self, role: &str) -> bool {
         match self {
             RolePolicy::Passthrough => true,
@@ -89,8 +72,6 @@ impl RolePolicy {
     }
 }
 
-/// Reject a role that `policy` disallows, or whose kind prefix is unknown
-/// under any policy.
 fn reject_role(role: &str, locus: &str, policy: RolePolicy) -> Result<(), String> {
     crate::roles::registry::check_role(role).map_err(|reason| format!("{locus}: {reason}"))?;
     if !policy.allows(role) {
@@ -109,8 +90,7 @@ fn reject_role(role: &str, locus: &str, policy: RolePolicy) -> Result<(), String
     Ok(())
 }
 
-/// Reject any role an env spec declares that `policy` disallows. A separate pass
-/// from the field/kind gate, run only when the policy is not `Passthrough`.
+/// Reject any role an env spec declares that `policy` disallows.
 pub fn reject_unsanctioned_roles_env(tags: &EnvTags, policy: RolePolicy) -> Result<(), String> {
     walk_obs_roles(&tags.observation, &NodePath::root(), policy)?;
     reject_action_roles(&tags.action, policy)
@@ -168,8 +148,6 @@ fn model_leaf_roles(leaf: &ModelLeaf, path: &NodePath, policy: RolePolicy) -> Re
     let locus = format!("model input {:?}", path.to_string());
     match leaf {
         ModelLeaf::Image(input) => reject_role(&input.role, &locus, policy),
-        // A role-less part is a declared constant, not a role claim: there is
-        // nothing for the role tier to sanction.
         ModelLeaf::State(input) => input
             .components
             .iter()
@@ -192,16 +170,15 @@ fn reject_action_roles(action: &Action, policy: RolePolicy) -> Result<(), String
 /// The publish-gate policy for the geometry attributes (`frame`, `reference`).
 ///
 /// The registry says which roles they apply to ([`FrameLaw::Framed`],
-/// [`ReferenceLaw::Referenced`]); this says whether a spec must actually
-/// declare them. Opt-in, because an absent frame is legal v1 and every
-/// pre-geometry spec would fail the strict tier.
+/// [`ReferenceLaw::Referenced`]); this says whether a spec must declare them. Opt-in: an
+/// absent frame is legal v1.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FramePolicy {
     /// A declared frame is checked for agreement at resolve, but an absent one
     /// is fine -- the v1 default.
     Allow,
     /// Every role whose registry entry says a geometry attribute applies must
-    /// declare it. The managed opt-in (`spec-normalize --require-frames`).
+    /// declare it.
     Require,
 }
 
@@ -223,7 +200,6 @@ pub fn reject_unframed_roles_model(spec: &ModelSpec, policy: FramePolicy) -> Res
     reject_unframed_action(&spec.output)
 }
 
-/// Reject one role that owes `attr` and declares nothing.
 fn require_attr(
     role: &str,
     attr: Attr,
@@ -233,8 +209,6 @@ fn require_attr(
     let owed = match (attr, crate::roles::registry::role_def(role)) {
         (Attr::Frame, Some(def)) => def.frame == FrameLaw::Framed,
         (Attr::Reference, Some(def)) => def.reference == ReferenceLaw::Referenced,
-        // No tier requires a provenance: an env that names none is one that
-        // makes no claim, which the resolve rules treat as silence.
         (Attr::Provenance, Some(_)) | (_, None) => false,
     };
     if !owed || declared.is_some() {
@@ -312,14 +286,10 @@ fn reject_unframed_action(action: &Action) -> Result<(), String> {
     Ok(())
 }
 
-/// A field name in the reserved experimental/vendor namespace is "safe to
-/// ignore" — the producer, who knows its semantics, marked it cosmetic. Bare
-/// (unprefixed) fields are must-understand and fail closed.
 fn is_reserved_ext(key: &str) -> bool {
     key.starts_with("x-") || key.starts_with("ext.")
 }
 
-/// The first non-`x-` capture key, if any — the field that fails the gate.
 fn first_bare_field(unknown: &BTreeMap<String, Value>) -> Option<&String> {
     unknown.keys().find(|key| !is_reserved_ext(key))
 }
@@ -342,8 +312,6 @@ fn obs_leaf(leaf: &ObsLeaf, path: &NodePath, reject_kinds: bool) -> Result<(), S
         ObsLeaf::Image(tag) => bare_field(&tag.unknown, path),
         ObsLeaf::State(tag) => bare_field(&tag.unknown, path),
         ObsLeaf::Text(tag) => bare_field(&tag.unknown, path),
-        // The SplitLayout envelope stays strict (its wire struct keeps deny);
-        // its `Field` leaves are growable and carry a capture map.
         ObsLeaf::Split(layout) => {
             layout
                 .fields
@@ -400,7 +368,6 @@ fn model_leaf(leaf: &ModelLeaf, path: &NodePath, reject_kinds: bool) -> Result<(
     }
 }
 
-/// The gate message for an unrecognized leaf kind (PUBLISH only).
 fn unknown_kind_msg(domain: &str, kind: &str, path: &NodePath) -> String {
     format!(
         "{domain} {:?} declares unrecognized kind {kind:?}; this core cannot build it \
@@ -409,8 +376,6 @@ fn unknown_kind_msg(domain: &str, kind: &str, path: &NodePath) -> String {
     )
 }
 
-/// Action components (`Actuator`) are the only growable action leaves; the
-/// `Action`/`ActionWire` envelope itself stays strict (`deny_unknown_fields`).
 fn reject_action(action: &Action) -> Result<(), String> {
     for (index, actuator) in action.components.iter().enumerate() {
         bare_field_at(
@@ -463,8 +428,6 @@ mod tests {
 
     #[test]
     fn x_prefixed_field_is_tolerated_at_both_doors() {
-        // A producer-marked `x-`/`ext.` field is safe-to-ignore: it passes the
-        // publish gate and the read taint, and never taints the leaf.
         let spec: EnvTags = serde_json::from_str(
             r#"{"observation": {"cam": {"type": "image", "role": "image/primary",
                 "x-vendor-note": "hi", "ext.team": 7}},
@@ -477,8 +440,6 @@ mod tests {
 
     #[test]
     fn read_taint_flags_bare_field_but_tolerates_unknown_kind() {
-        // The READ door taints a bare additive field (fail-closed) but lets an
-        // unknown *kind* through (the resolver decides its fate).
         let bare: EnvTags = serde_json::from_str(
             r#"{"observation": {"cam": {"type": "image", "role": "image/primary", "normalize": false}},
                 "action": {"components": []}}"#,
@@ -500,8 +461,6 @@ mod tests {
 
     #[test]
     fn model_unknown_field_on_state_leaf_fails() {
-        // Fixes the old StateWire silent drop: a stray field on a state input is
-        // retained and rejected at the publish gate, not dropped.
         let dirty: ModelSpec = serde_json::from_str(
             r#"{"input": {"type": "state", "components": ["r"], "huh": true},
                 "output": {"components": []}}"#,
@@ -524,9 +483,6 @@ mod tests {
 
     #[test]
     fn inner_leaf_unknown_field_fails_the_gate() {
-        // The growable *inner* leaves: a split layout's `Field` and a state
-        // input's `ConcatPart`. Both parse leniently (this is where `frame`
-        // was previously untyped) and both are named by the publish gate.
         let dirty: EnvTags = serde_json::from_str(
             r#"{"observation": {"s": {"type": "split",
                     "fields": [{"role": "r", "dim": 1, "wobble": 1}]}},
@@ -566,8 +522,6 @@ mod tests {
     fn require_frames_rejects_only_the_roles_that_owe_one() {
         use super::{FramePolicy, reject_unframed_roles_env, reject_unframed_roles_model};
 
-        // The env declares a framed pose, a delta, and a gripper, all bare.
-        // `Allow` (the v1 default) is silent; `Require` names the first owed one.
         let bare: EnvTags = serde_json::from_str(
             r#"{"observation": {"p": {"type": "state", "role": "proprio/eef_pos"}},
                 "action": {"components": [
@@ -582,8 +536,6 @@ mod tests {
             "got: {err}"
         );
 
-        // Declared on every owed role, `Require` passes -- and the gripper, which
-        // owes neither attribute, never had to say anything.
         let declared: EnvTags = serde_json::from_str(
             r#"{"observation": {"p": {"type": "state", "role": "proprio/eef_pos",
                     "frame": "robot_base"}},
@@ -594,7 +546,6 @@ mod tests {
         .unwrap();
         assert!(reject_unframed_roles_env(&declared, FramePolicy::Require).is_ok());
 
-        // A delta owes a `reference`, not a `frame`.
         let no_reference: EnvTags = serde_json::from_str(
             r#"{"observation": {"c": {"type": "image", "role": "image/primary"}},
                 "action": {"components": [{"role": "action/delta_eef_pos", "dim": 3}]}}"#,
@@ -606,7 +557,6 @@ mod tests {
             "got: {err}"
         );
 
-        // The model side walks state parts and its own action layout.
         let model: ModelSpec = serde_json::from_str(
             r#"{"input": {"type": "state", "components": [{"role": "proprio/eef_pos", "dim": 3}]},
                 "output": {"components": [{"role": "action/gripper", "dim": 1}]}}"#,
@@ -655,8 +605,6 @@ mod tests {
         assert!(err.contains("proprio/made_up"), "{err}");
         assert!(!err.contains("names no kind"), "{err}");
 
-        // A kind-less role passes the open default (the join nudges it) but
-        // the strict tier names the missing kind prefix.
         let kindless: EnvTags = serde_json::from_str(
             r#"{"observation": {"cam": {"type": "image", "role": "image/primary"}},
                 "action": {"components": [{"role": "wiggle", "dim": 1}]}}"#,
@@ -675,7 +623,6 @@ mod tests {
     fn parts_are_never_tiered_and_kinds_hold_at_the_publish_door() {
         use super::{RolePolicy, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model};
 
-        // A part is any identifier: even the absolute tier never refuses one.
         let custom: EnvTags = serde_json::from_str(
             r#"{"observation": {"l": {"type": "state", "role": "proprio/eef_pos", "part": "franka"}},
                 "action": {"components": [{"role": "action/gripper", "dim": 1, "part": "tail"}]}}"#,
@@ -689,8 +636,6 @@ mod tests {
         .unwrap();
         assert!(reject_unsanctioned_roles_model(&custom, RolePolicy::Forbid).is_ok());
 
-        // The kind rule is not a tier: an unknown kind prefix fails the
-        // publish door under every policy.
         let bad_kind: EnvTags = serde_json::from_str(
             r#"{"observation": {"l": {"type": "state", "role": "audio/mic"}},
                 "action": {"components": []}}"#,
@@ -698,7 +643,6 @@ mod tests {
         .unwrap();
         let err = reject_unknowns_env(&bad_kind).unwrap_err();
         assert!(err.contains("kind this core does not define"), "{err}");
-        // The READ taint stays tolerant of it (resolve is where it fails).
         assert!(reject_bare_fields_env(&bad_kind).is_ok());
     }
 }

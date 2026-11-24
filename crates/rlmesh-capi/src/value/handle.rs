@@ -1,5 +1,4 @@
-//! Immutable core `Value` handles. Clones share the tree and borrowed children.
-#![allow(unsafe_code)] // FFI: raw pointers and owned handles.
+#![allow(unsafe_code)]
 
 use std::sync::{Arc, OnceLock};
 
@@ -53,8 +52,6 @@ pub enum RLMeshValueKind {
     Dict = 10,
 }
 
-/// # Safety
-/// A non-NULL handle must stay live for the returned reference's lifetime.
 pub(crate) unsafe fn value_ref<'a>(value: *const RLMeshValue) -> Result<&'a Value, CapiError> {
     Ok(unsafe {
         // SAFETY: the FFI contract supplies live handles and writable output storage.
@@ -62,8 +59,6 @@ pub(crate) unsafe fn value_ref<'a>(value: *const RLMeshValue) -> Result<&'a Valu
     }?
     .value())
 }
-/// # Safety
-/// A non-NULL handle must stay live for the returned reference's lifetime.
 unsafe fn handle_ref<'a>(value: *const RLMeshValue) -> Result<&'a RLMeshValue, CapiError> {
     unsafe { value.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null value"))
 }
@@ -488,10 +483,6 @@ pub unsafe extern "C" fn rlmesh_value_dict_contains_key(
     })
 }
 
-/// Initialize a C output without reading or dropping its previous bytes.
-///
-/// # Safety
-/// `out` is NULL or aligned, writable storage for T. It need not be initialized.
 pub(crate) unsafe fn write_out<T>(out: *mut T, value: T) -> Result<(), CapiError> {
     if out.is_null() {
         return Err(CapiError::invalid_arg("null out"));

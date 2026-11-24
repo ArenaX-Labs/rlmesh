@@ -1,5 +1,3 @@
-//! The virtual clock's tick barrier.
-
 use super::*;
 
 #[test]
@@ -82,7 +80,6 @@ fn a_virtual_session_ticks_through_the_barrier() {
     );
     assert_eq!(Fixture::status(stale), CtlStatus::StaleEpoch);
 
-    // A wall-clock session refuses tick verbs.
     let mut wall = Fixture::new();
     assert_eq!(
         Fixture::status(wall.run("robot", ready(0), 0)),
@@ -90,8 +87,6 @@ fn a_virtual_session_ticks_through_the_barrier() {
     );
 }
 
-/// A virtual session, armed: `robot`, and `policy` bound to `cmd1` at
-/// `replan_hz`.
 fn armed_at(replan_hz: f64) -> Fixture {
     let mut auth = Authority::new(
         SessionId::new(),
@@ -164,7 +159,6 @@ fn a_controller_that_leaves_stops_holding_up_the_barrier() {
 
 #[test]
 fn a_controller_is_due_once_every_period_of_ticks() {
-    // 500 Hz on 1 ms ticks: every second tick.
     let mut f = armed_at(500.0);
     let ready = |tick| Command::Ready {
         tick,

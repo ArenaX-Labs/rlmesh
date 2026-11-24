@@ -1,14 +1,3 @@
-"""Pins the inferred model generics doctrine.
-
-An annotated predict callable flows its observation/action types onto the
-model's generic parameters (and from there onto its ``Session``); an
-unannotated lambda pays no ceremony (framework-default observation side);
-duck-typed policy objects and class sources keep the permissive fallback; a
-``Model`` subclass binds the framework default value types, with the chunk
-corners admitting the optional ``execution_horizon`` in both spellings
-(second positional parameter, and keyword-only).
-"""
-
 from __future__ import annotations
 
 from typing import Any

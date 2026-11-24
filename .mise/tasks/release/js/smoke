@@ -5,7 +5,6 @@
 #USAGE flag "--max-glibc <version>" help="Fail if a Linux addon needs a newer glibc than this (release builds: 2.28)"
 #USAGE flag "--no-install" help="Check the tarballs only; install and run nothing"
 
-# The npm release rehearsal (release.yml, `rehearse: npm`) runs this on Linux and macOS.
 set -euo pipefail
 args=()
 [ "${usage_require_all:-false}" = true ] && args+=(--require-all)

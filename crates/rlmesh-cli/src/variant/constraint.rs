@@ -68,8 +68,8 @@ fn compare(left: &[u64], right: &[u64]) -> std::cmp::Ordering {
         .unwrap_or(std::cmp::Ordering::Equal)
 }
 
-/// Parse a comma-joined version constraint: each clause an optional `>=`,
-/// `>`, `<=`, `<`, `==`, or `=` and a version; a bare version is a minimum.
+/// Parse a comma-joined version constraint: each clause an optional `>=`, `>`,
+/// `<=`, `<`, `==`, or `=` and a version; a bare version is a minimum.
 pub fn parse_constraint(raw: &str) -> Option<Vec<Clause>> {
     if raw.trim().is_empty() {
         return None;
@@ -98,8 +98,6 @@ pub fn parse_constraint(raw: &str) -> Option<Vec<Clause>> {
         .collect()
 }
 
-/// The lowest version a constraint admits, from its clauses that bound from
-/// below (bare, `>=`, `>`, `==`); `None` when none does.
 fn constraint_floor(clauses: &[Clause]) -> Option<&[u64]> {
     clauses
         .iter()
@@ -134,7 +132,6 @@ mod tests {
             parse_constraint(raw).map(|clauses| Requirement::Version(clauses).to_string())
         };
         assert_eq!(parse(">=8.0,<10.0").as_deref(), Some(">=8.0,<10.0"));
-        // A bare version is a minimum.
         assert_eq!(parse("12.4").as_deref(), Some(">=12.4"));
         assert_eq!(parse(" >= 12.2 ").as_deref(), Some(">=12.2"));
         assert_eq!(parse("==12.4").as_deref(), Some("==12.4"));

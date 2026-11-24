@@ -1,6 +1,4 @@
 #![cfg(feature = "record")]
-//! A recording of a live session: a robot, a model replanning, an operator
-//! preempting it and handing back, all read back from the MCAP file.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,8 +22,6 @@ use rlmesh_session::{
 
 const WAIT: Duration = Duration::from_secs(10);
 
-// A long hold: recording is under test, not the fallback, and on a loaded
-// host a controller's chunks arrive late enough to run a short one out.
 const ROBOT: &str = r#"{
     "arm": {"kind": "joints", "count": 6, "fields": ["pos"], "hz": 500,
             "command": "position", "safe": "stop", "hold_max_ms": 2000, "max_action_age_ms": 1000},
@@ -43,9 +39,7 @@ struct World {
     base: std::net::SocketAddr,
     tenant: TenantId,
     session: SessionId,
-    /// What every participant attaches with (device `local`).
     credential: Credential,
-    /// `None` when a recording server hosts the session.
     _host: Option<SessionHost>,
 }
 
@@ -58,8 +52,6 @@ impl World {
         let session = SessionId::new();
         let mut config = HostConfig::new(tenant.clone(), session);
         config.clock = SystemMonotonicClock.shared();
-        // Leases change hands only by preemption and release here: a grace a
-        // loaded host's stalls cannot outlast keeps a lapse out of the timeline.
         config.lease_grace = Duration::from_secs(2);
         config.health_log = None;
         let host = SessionHost::start(transport, config).await.expect("host");
@@ -151,7 +143,6 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
     let recorder = Recorder::start(Arc::new(observer), &path)
         .await
         .expect("recorder");
-    // The host's health, about once a second: what the recorder takes too.
     let watcher = world
         .join("watcher", Role::Observer, PriorityClass::Scripted)
         .await;
@@ -225,7 +216,6 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     operator.release().await.expect("release");
-    // Preempted, the model is parked until handed back.
     assert_eq!(model.resume(), vec!["ur10e:arm".to_string()]);
     wait_until("the model back", || model.holds()).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -273,7 +263,6 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
         "model and operator"
     );
     assert!(summary.metadata.iter().any(|m| m == "rlmesh.robot.ur10e"));
-    // Marked with its format, and its chunks zstd-compressed.
     assert!(summary.metadata.iter().any(|m| m == RECORDING_METADATA));
     let bytes = std::fs::read(&path).expect("read");
     let file = mcap::Summary::read(&bytes)
@@ -282,7 +271,6 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
     assert!(!file.chunk_indexes.is_empty());
     assert!(file.chunk_indexes.iter().all(|c| c.compression == "zstd"));
 
-    // A recording in a newer format is refused, by name.
     let newer = dir.path().join("newer.mcap");
     let mut writer = mcap::Writer::new(std::io::BufWriter::new(
         std::fs::File::create(&newer).expect("create"),
@@ -300,7 +288,6 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
     assert!(matches!(err, RecordError::Format { .. }), "{err}");
     assert!(err.to_string().contains("upgrade rlmesh"), "{err}");
 
-    // model, then the operator (preemption), then the model under a fresh token.
     let arm: Vec<_> = summary
         .leases
         .iter()
@@ -315,7 +302,6 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
     assert_eq!(holders.last().copied(), Some("model"));
     assert!(arm.last().expect("last").token > arm[first_operator].token);
 
-    // Read back for replay: everything but the binding records, in log-time order.
     let messages = read(&path).expect("read");
     assert_eq!(
         messages.len() as u64,
@@ -330,8 +316,6 @@ async fn a_session_records_to_mcap_and_reads_back_with_its_lease_timeline() {
     );
 }
 
-/// A shadow run's starts leave no chunk and no dispatched action in the
-/// recording: only the run counters in the host's health say they happened.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_shadow_run_records_no_chunk_until_it_holds_a_lease() {
     let world = World::start().await;
@@ -346,7 +330,6 @@ async fn a_shadow_run_records_no_chunk_until_it_holds_a_lease() {
     let watcher = world
         .join("watcher", Role::Observer, PriorityClass::Scripted)
         .await;
-    // The model's counters as the host relays them, once it has predicted.
     let shadow_reported = Arc::new(AtomicBool::new(false));
     let _health = watcher
         .host_health({
@@ -442,7 +425,6 @@ async fn a_shadow_run_records_no_chunk_until_it_holds_a_lease() {
         .filter(|s| s.topic.ends_with("/_applied") && !s.fields.is_empty())
         .any(|s| s.log_ns < leased);
     assert!(!dispatched_early, "an action dispatched before the lease");
-    // The shadow starts show only in the counters the host relays.
     let shadow_health = before.iter().any(|m| match &m.message {
         Recorded::Health(health) => health.links.iter().any(|l| {
             l.report
@@ -455,7 +437,6 @@ async fn a_shadow_run_records_no_chunk_until_it_holds_a_lease() {
     assert!(shadow_health, "the shadow starts' counters in the health");
 }
 
-/// The segment files of one session's rolling recording, oldest first.
 fn segments(root: &std::path::Path, session: SessionId) -> Vec<std::path::PathBuf> {
     files_in(&root.join("rolling").join(session.to_string()))
 }
@@ -468,9 +449,6 @@ fn files_in(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-/// A robot publishing `ft` every 10 ms for `ms`. A test publishes through
-/// one `ft` publisher throughout: a new one numbers its samples from 1
-/// again, which a subscriber that saw the first drops as out of order.
 async fn publish_ft(robot: &Participant, ft: &SamplePublisher, ms: u64) {
     for _ in 0..ms / 10 {
         ft.publish(robot.clock().now_ns(), bytes::Bytes::from(vec![0_u8; 32]))
@@ -499,7 +477,6 @@ async fn a_recording_server_rolls_self_contained_segments_and_still_ends_session
         .await
         .expect("server");
 
-    // A session the server starts for its first participant.
     let session = SessionId::new();
     let world = World {
         base,
@@ -514,7 +491,6 @@ async fn a_recording_server_rolls_self_contained_segments_and_still_ends_session
     robot.declare_parts(FT).await.expect("declare");
     let publisher = robot.publisher("ft").await.expect("publisher");
     publish_ft(&robot, &publisher, 700).await;
-    // Any member that may arm asks the host to keep what it recorded.
     robot.keep("keep me").await.expect("kept");
     let incidents = files_in(&dir.path().join("incidents").join(session.to_string()));
     assert_eq!(incidents.len(), 1, "{incidents:?}");
@@ -573,15 +549,11 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     };
     let collected =
         collect(&rolling, world.session, "test set", &episode, started).expect("collected");
-    // Collecting it again keeps the same links, never copying over them.
     collect(&rolling, world.session, "test set", &episode, started).expect("again");
     robot.estop("test").await.expect("estop");
     publish_ft(&robot, &publisher, 500).await;
     let stats = recorder.finish().await.expect("finish");
     assert!(stats.segments >= 3, "{stats:?}");
-    // The purge spares the open segment and any written within the last
-    // period (another session's could still be open): the one just closed,
-    // and on a loaded runner the one before it too. About ten rolled.
     let rolling_kept = segments(dir.path(), world.session);
     assert!(
         rolling_kept.len() <= 3
@@ -590,8 +562,6 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
         "{rolling_kept:?} of {stats:?}"
     );
 
-    // Both incidents outlive the purge, the e-stop's with the segments
-    // written after it.
     let incidents = files_in(&dir.path().join("incidents").join(world.session.to_string()));
     assert_eq!(incidents.len(), 2, "{incidents:?}");
     assert!(incidents.contains(&kept));
@@ -608,7 +578,6 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
             .any(|m| matches!(m.message, Recorded::Sample(_)))
     );
 
-    // The episode keeps its segments, decoded into the declared fields.
     assert!(collected.starts_with(dir.path().join("collected").join("test_set")));
     let json = std::fs::read_to_string(collected.join("episode.json")).expect("episode.json");
     assert!(json.contains(r#""task": "hold""#), "{json}");
@@ -623,8 +592,6 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
         .map(|f| (f.name.as_str(), f.bytes.len()))
         .collect();
     assert_eq!(fields, [("force", 12), ("torque", 12)]);
-    // Streamed segment by segment, the same samples, each with its capture
-    // time in session time.
     let mut streamed: Vec<_> = samples_of(&collected)
         .expect("stream the episode")
         .collect::<Result<_, _>>()
@@ -633,11 +600,6 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
     streamed.sort_by_key(|s| (s.topic.clone(), s.capture_ns, s.log_ns));
     whole.sort_by_key(|s| (s.topic.clone(), s.capture_ns, s.log_ns));
     assert_eq!(streamed, whole);
-    // Capture and receipt are session time through two clock mappings, the
-    // robot's and the recorder's. Just after the robot joins they can
-    // disagree by a few ms on a loaded host (5 ms seen on one core), so a
-    // sample can read as captured slightly after it arrived; anything mapped
-    // from the wrong clock or unit is off by far more.
     let skew_ns: i64 = 25_000_000;
     let late: Vec<_> = streamed
         .iter()
@@ -646,7 +608,6 @@ async fn rolling_capture_keeps_its_budget_incidents_and_episodes_and_pauses_belo
         .collect();
     assert!(late.is_empty(), "captured after receipt by {late:?} ns");
 
-    // A disk below the floor gets nothing written.
     let full = tempfile::tempdir().expect("tempdir");
     let mut rolling = Rolling::new(full.path());
     rolling.min_free_bytes = u64::MAX;

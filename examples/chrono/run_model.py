@@ -43,7 +43,6 @@ STEP_METRES = 0.03
 def make_policy(
     kind: str, seed: int, pace: float
 ) -> Callable[[dict[str, Any]], np.ndarray]:
-    """A predict function in MODEL_SPEC's format: scripted (seek the goal) or random."""
     rng = np.random.default_rng(seed)
 
     def predict(payload: dict[str, Any]) -> np.ndarray:
@@ -62,8 +61,6 @@ def make_policy(
 
 
 class KeepResult(rlmesh.RunHooks):
-    """Keeps the result a binding reports when it closes."""
-
     result = rlmesh.RunResult()
 
     def on_run_end(self, result: rlmesh.RunResult) -> None:
@@ -71,7 +68,6 @@ class KeepResult(rlmesh.RunHooks):
 
 
 def main() -> None:
-    """Connect, print the resolved adapter, run the episodes, report."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("address", nargs="?", default="127.0.0.1:50051")
     parser.add_argument("--episodes", type=int, default=4)

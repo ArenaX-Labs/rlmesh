@@ -1,5 +1,3 @@
-//! Binding an image input.
-
 use super::problem::{Code, problem};
 use super::{Binder, Slot};
 use crate::prelude::*;
@@ -12,8 +10,6 @@ use crate::spec::plan::{Delivered, Fit, Plan, Size, Step};
 use crate::spec::policy::{Allow, ImageFormat, ImageLayout, Input, Resample};
 
 impl<'a> Binder<'a> {
-    /// The image pipeline: decode → rotate180 → declared crop →
-    /// aspect fit + resize → bgr → layout → dtype or range.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn image(
         &mut self,
@@ -42,7 +38,6 @@ impl<'a> Binder<'a> {
         let (height, width) = (field.shape[0], field.shape[1]);
         let channels = field.shape.get(2).copied();
         let mut dtype = field.dtype;
-        // Units (depth mm → m).
         if kind == Kind::Depth {
             let target = slot
                 .entry
@@ -87,7 +82,6 @@ impl<'a> Binder<'a> {
             );
             return None;
         }
-        // rotate180.
         let upside_down = part
             .attrs
             .get(attrs::MOUNT)
@@ -104,7 +98,6 @@ impl<'a> Binder<'a> {
             }
             plan.steps.push(Step::Rotate180);
         }
-        // Declared crop.
         let mut size = Size { width, height };
         if let Some(fraction) = input.crop {
             let cut = |side: u32| ((f64::from(side) * fraction).round() as u32).clamp(1, side);
@@ -119,7 +112,6 @@ impl<'a> Binder<'a> {
             });
             size = to;
         }
-        // Aspect fit and resize, one step (v1 `fit` semantics).
         let target = input.size.map_or(size, |(h, w)| Size {
             width: w,
             height: h,
@@ -190,7 +182,6 @@ impl<'a> Binder<'a> {
             });
             size = target;
         }
-        // bgr.
         if input.format == ImageFormat::Bgr8 {
             if !self.allowed(slot.entry, Allow::Bgr) {
                 self.not_allowed(
@@ -205,7 +196,6 @@ impl<'a> Binder<'a> {
         if input.layout == ImageLayout::Chw {
             plan.steps.push(Step::Chw);
         }
-        // Range normalisation, or a cast.
         if let Some((low, high)) = slot.entry.range {
             if kind == Kind::Depth {
                 self.incompatible(

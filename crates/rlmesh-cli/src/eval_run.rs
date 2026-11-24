@@ -1,15 +1,4 @@
 //! `rlmesh eval run`: an evaluation request on this machine, in Docker.
-//!
-//! The request compiles to a plan here (`rlmesh::binding::plan`) against the
-//! images it names: their `dev.rlmesh.package` labels, and for an env its
-//! describe envelope (its `dev.rlmesh.describe` label, else `python -m
-//! rlmesh._describe` run in the image). `python -m rlmesh._eval_run` then
-//! runs the workloads in sandboxes and writes their bundles, and the report
-//! is read back from them. Each image reference resolves to its image id
-//! once, here; every container after (the describe, each wave's model and
-//! envs) runs by that id, so a retag mid-run changes nothing. `<out>/index.json`
-//! holds the request, the plan, those ids and each workload's status;
-//! `--resume` continues only a run of the same request, plan and images.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -25,7 +14,6 @@ use crate::check::{docker_inspect, python_command};
 use crate::cli::EvalRunArgs;
 use crate::image_check::{DESCRIBE_LABEL, ImageConfig, PACKAGE_LABEL, parse_serve_command};
 
-/// Where a catalog name resolves when no local build carries it.
 const CATALOG_REGISTRY: &str = "registry.rlmesh.dev";
 const INDEX_SCHEMA: &str = "rlmesh.eval-run.v1";
 const RUN_MODULE: &str = "rlmesh._eval_run";
@@ -138,13 +126,9 @@ pub(crate) fn eval_run(
             s["error"].as_str().unwrap_or_default()
         )?;
     }
-    // An interrupted or failed runner exits the run as it did, once what it
-    // finished is recorded and reported.
     Ok(runner.unwrap_or(i32::from(!failed.is_empty())))
 }
 
-/// The exit code a runner that did not succeed passes on: 128 + the signal
-/// that killed it (130 for a Ctrl-C, as the `rlmesh` entrypoint's own).
 fn exit_code(exit: std::process::ExitStatus) -> Option<i32> {
     #[cfg(unix)]
     if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&exit) {
@@ -153,9 +137,6 @@ fn exit_code(exit: std::process::ExitStatus) -> Option<i32> {
     (!exit.success()).then(|| exit.code().unwrap_or(1))
 }
 
-/// The verdicts in the runner's status file. A runner cut short (a signal, a
-/// full disk) may leave its last record half written: the complete ones
-/// before it still count.
 fn read_verdicts(text: &str, exit: std::process::ExitStatus) -> Result<BTreeMap<String, Value>> {
     let mut verdicts = BTreeMap::new();
     let lines: Vec<&str> = text
@@ -179,10 +160,6 @@ fn read_verdicts(text: &str, exit: std::process::ExitStatus) -> Result<BTreeMap<
     Ok(verdicts)
 }
 
-/// What differs between the run in `previous` (an index) and this one, or
-/// `None` when this run continues it: a retagged image or a recompiled plan
-/// would mix two runs in one report, and an index written before runs
-/// recorded image ids cannot show its images are these.
 fn changed_since(
     previous: &Value,
     request: &Value,
@@ -206,7 +183,6 @@ fn bundle_dir(out: &Path, workload: &Workload) -> PathBuf {
     out.join("workloads").join(&workload.id)
 }
 
-/// The workload's bundle holds every planned episode, seeded as planned.
 fn recorded(bundle: &Path, workload: &Workload) -> bool {
     let Ok(bundles) = read_bundles([bundle]) else {
         return false;
@@ -262,8 +238,6 @@ fn write_index(
     Ok(())
 }
 
-/// Run the pending workloads through `python -m rlmesh._eval_run`, and read
-/// back each one's verdict and how the runner exited.
 fn run_workloads(
     args: &EvalRunArgs,
     plan: &Plan,
@@ -303,8 +277,6 @@ fn run_workloads(
     Ok((verdicts, exit))
 }
 
-/// The image and labels behind every model and env the request names, and
-/// each image's id by reference.
 fn resolve_images(
     request: &EvalRequest,
     catalog: Option<&str>,
@@ -343,9 +315,6 @@ fn resolve_images(
     Ok((images, ids))
 }
 
-/// A catalog name's image: `prebuilt/<path>[:tag]` is the local build
-/// `rlmesh-<path with - for />:<tag>` when one exists, else the registry's.
-/// Any other name, and every name without `--catalog`, is an image already.
 fn catalog_image(name: &str, catalog: Option<&str>) -> String {
     let (Some(local_tag), Some(path)) = (catalog, name.strip_prefix("prebuilt/")) else {
         return name.to_string();
@@ -371,9 +340,6 @@ fn catalog_image(name: &str, catalog: Option<&str>) -> String {
     )
 }
 
-/// The config of the image `image` names, pulled first when it is not
-/// here. Its id goes in `ids` the first time, and the config is read by
-/// that id, so both are one image.
 fn inspect(
     image: &str,
     ids: &mut BTreeMap<String, String>,
@@ -392,7 +358,6 @@ fn inspect(
     docker_inspect(&ids[image])
 }
 
-/// The id (config digest) of the local image `image` names.
 fn image_id(image: &str) -> Option<String> {
     let output = Command::new("docker")
         .args(["image", "inspect", "--format", "{{.Id}}", image])
@@ -430,8 +395,6 @@ fn package_label(image: &str, config: &ImageConfig) -> Result<Value> {
         })
 }
 
-/// An env's describe envelope: its label, else `rlmesh._describe` run in the
-/// image (by its `id`) on the target its command serves.
 fn describe(image: &str, id: &str, config: &ImageConfig, stderr: &mut impl Write) -> Result<Value> {
     if let Some(raw) = config.labels.get(DESCRIBE_LABEL) {
         return serde_json::from_str(raw)
@@ -524,7 +487,6 @@ mod tests {
             let got = changed_since(&index, request, plan, ids).unwrap();
             assert_eq!(got.is_some(), changed, "{name}: {got:?}");
         }
-        // An index from before runs recorded image ids says so.
         let legacy = json!({"request": request, "plan": plan});
         let got = changed_since(&legacy, &request, &plan, &ids).unwrap();
         assert!(
@@ -539,8 +501,6 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
         let complete = "{\"workload\":\"a\",\"status\":\"done\"}\n";
         let cut = format!("{complete}{{\"workload\":\"b\",\"sta");
-        // (raw wait status, status file, exit code, verdicts read; None =
-        // the status file is refused).
         for (raw, text, want, read) in [
             (0, complete, None, Some(1)),
             (1 << 8, complete, Some(1), Some(1)),

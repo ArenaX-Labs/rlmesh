@@ -16,7 +16,6 @@ namespace RLMesh.Unity.Verification
 {
     public sealed class ReloadTests
     {
-        // SessionState survives a domain reload; this value deliberately does not.
         private static readonly string Domain = Guid.NewGuid().ToString();
 
         [UnityTest]
@@ -44,7 +43,6 @@ namespace RLMesh.Unity.Verification
             yield return new WaitForDomainReload();
             Assert.AreNotEqual(SessionState.GetString("RLMesh.safe.oldDomain", ""), Domain);
             Assert.AreEqual(LifetimeState.Open, Lifetime.State);
-            // A fresh domain can bind and serve again, without a stale delegate.
             dispatcher = UnityEnvHost.BeginServe();
             env = new TestEnv();
             server = new EnvServer(new MainThreadEnv(dispatcher, env));
@@ -69,8 +67,6 @@ namespace RLMesh.Unity.Verification
         [UnityTest]
         public IEnumerator FailedBarrierDefersReloadAndRetryReleasesIt()
         {
-            // An artificial native-thread wedge keeps the Editor responsive.
-            // Wedging authored code on the MAIN thread itself freezes any Editor.
             var env = new TestEnv { Wedge = true };
             ReloadPreflight.Hold();
             var server = new EnvServer(env); server.Start();
@@ -87,20 +83,18 @@ namespace RLMesh.Unity.Verification
                     Assert.IsTrue(ReloadPreflight.State.IsLocked);
                     Assert.IsNotEmpty(Lifetime.Pending());
                     EditorUtility.RequestScriptReload();
-                    // Exercise the REAL Unity lock, not only the coordinator flag.
                     for (int tick = 0; tick < 30; tick++)
                     {
                         Assert.AreEqual(SessionState.GetString("RLMesh.failed.oldDomain", ""), Domain);
                         Assert.IsTrue(ReloadPreflight.State.IsLocked);
                         yield return null;
                     }
-                    Assert.IsTrue(env.Entered.IsSet); // Editor kept ticking, no abort/crash.
+                    Assert.IsTrue(env.Entered.IsSet);
                 }
                 finally { env.Release.Set(); }
                 yield return WaitFor(() => client.HasExited);
             }
             ReloadPreflight.RequestShutdown(TimeSpan.FromSeconds(5));
-            // The pending reload proceeds ONLY when the true result unlocks.
             yield return new WaitForDomainReload();
             Assert.AreNotEqual(SessionState.GetString("RLMesh.failed.oldDomain", ""), Domain);
             Assert.AreEqual(LifetimeState.Open, Lifetime.State);

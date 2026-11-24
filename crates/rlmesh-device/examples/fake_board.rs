@@ -1,14 +1,3 @@
-//! A board's provisioning responder on a serial device,
-//! with a file for its NVS: rehearses `rlmesh devices provision` without a
-//! board, over a pseudo-terminal pair (`socat`).
-//!
-//! ```sh
-//! cargo run -p rlmesh-device --example fake_board -- <tty> <nvs-file>
-//! ```
-//!
-//! The file holds the device key (32 bytes), then the record. Linux and
-//! macOS: the port is set up with `stty`.
-
 #![allow(clippy::print_stdout, clippy::print_stderr, clippy::disallowed_methods)]
 
 use std::fs::OpenOptions;
@@ -34,7 +23,6 @@ fn main() {
         .is_ok_and(|s| s.success());
     assert!(ok, "stty couldn't set up {tty}");
 
-    // The device key: made on first run, as a board's first boot does.
     let stored = std::fs::read(&nvs).unwrap_or_default();
     let mut key = [0_u8; 32];
     if stored.len() >= 32 {
@@ -64,7 +52,6 @@ fn main() {
         .expect("open the port");
     let mut reader = port.try_clone().expect("clone");
     let mut responder = Responder::new(&key, 4, record.as_ref());
-    // The sketch's text, as a board prints at boot.
     port.write_all(b"booted\r\n").expect("write");
     let mut buf = [0_u8; 256];
     loop {

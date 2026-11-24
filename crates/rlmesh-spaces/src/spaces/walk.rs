@@ -1,12 +1,9 @@
 //! Canonical leaf flatten / assemble over a `SpaceSpec`.
 //!
-//! The one sanctioned way to turn a composite [`SpaceValue`] into its ordered
-//! fundamental leaves and back. Order is DFS pre-order: Dict children in
-//! DECLARED key order (`DictSpec.keys`, **not** the value's `BTreeMap` order —
-//! the guard against silently reordering leaves), Tuple by index, a fundamental
-//! space is exactly one leaf. Decode pairs [`leaf_specs`] with the wire leaves;
-//! encode pairs [`flatten_leaves`] with them; [`assemble_value`] rebuilds the
-//! typed tree.
+//! Order is depth-first pre-order: Dict children in declared key order (`DictSpec.keys`, not
+//! the value's map order), Tuple by index, and a fundamental space is one leaf. Decode pairs
+//! [`leaf_specs`] with the wire leaves, encode pairs [`flatten_leaves`] with them, and
+//! [`assemble_value`] rebuilds the typed tree.
 
 use std::collections::BTreeMap;
 
@@ -14,8 +11,7 @@ use super::SpaceValue;
 use crate::errors::SpaceError;
 use crate::types::{SpaceKind, SpaceSpec};
 
-/// Fundamental leaf specs in canonical pre-order. Decode zips these with the
-/// wire `leaves` to know each leaf's dtype/shape before assembling.
+/// Fundamental leaf specs in canonical pre-order.
 #[must_use]
 pub fn leaf_specs(spec: &SpaceSpec) -> Vec<&SpaceSpec> {
     let mut out = Vec::new();
@@ -27,14 +23,13 @@ fn collect_specs<'a>(spec: &'a SpaceSpec, out: &mut Vec<&'a SpaceSpec>) {
     match &spec.spec {
         Some(SpaceKind::Dict(d)) => d.spaces.iter().for_each(|s| collect_specs(s, out)),
         Some(SpaceKind::Tuple(t)) => t.spaces.iter().for_each(|s| collect_specs(s, out)),
-        // Box/Discrete/MultiBinary/MultiDiscrete/Text (and Unspecified) = one leaf.
         _ => out.push(spec),
     }
 }
 
 /// Leaf values of `value` in canonical order, driven by `spec`'s declared
-/// structure. Errors on a structural mismatch (missing Dict key, wrong Tuple
-/// arity, composite spec over a non-composite value).
+/// structure. Dict children follow the declared key order, never the value's
+/// `BTreeMap` order.
 pub fn flatten_leaves<'v>(
     spec: &SpaceSpec,
     value: &'v SpaceValue,
@@ -75,7 +70,6 @@ fn flatten_into<'v>(
             "$",
             "composite spec but value is not the matching composite",
         )),
-        // fundamental leaf
         _ => {
             out.push(value);
             Ok(())
@@ -84,8 +78,10 @@ fn flatten_into<'v>(
 }
 
 /// Rebuild a typed [`SpaceValue`] tree from per-leaf values in canonical order.
-/// Errors if `leaves.len()` doesn't match the spec's leaf count (hard
-/// invariant — a wrong count must never silently truncate through `zip`).
+///
+/// # Errors
+/// [`SpaceError`] when `leaves.len()` is not the spec's leaf count. Leaf values are not
+/// checked against their specs.
 pub fn assemble_value(spec: &SpaceSpec, leaves: Vec<SpaceValue>) -> Result<SpaceValue, SpaceError> {
     let mut it = leaves.into_iter();
     let value = assemble_from(spec, &mut it)?;
@@ -138,8 +134,6 @@ mod tests {
         }
     }
 
-    // Dict keys DELIBERATELY non-sorted (z before a): the builder can't produce
-    // this, so it exercises the declared-order guard a raw/foreign DictSpec hits.
     fn nested_spec() -> SpaceSpec {
         SpaceSpec {
             spec: Some(SpaceKind::Dict(DictSpec {
@@ -159,8 +153,6 @@ mod tests {
     }
 
     fn nested_value() -> SpaceValue {
-        // BTreeMap will store keys sorted (a, z); flatten must still follow the
-        // spec's declared order (z, a).
         let mut m = BTreeMap::new();
         m.insert("z".to_string(), SpaceValue::Discrete(1));
         m.insert(
@@ -178,7 +170,6 @@ mod tests {
         assert_eq!(leaf_specs(&spec).len(), 3);
 
         let leaves = flatten_leaves(&spec, &value).unwrap();
-        // Declared order (z, a), NOT BTreeMap order (a, z): z's Discrete(1) leads.
         assert_eq!(
             leaves,
             vec![
@@ -195,14 +186,11 @@ mod tests {
     #[test]
     fn count_and_structure_mismatches_error() {
         let spec = nested_spec();
-        // Too few leaves.
         assert!(assemble_value(&spec, vec![SpaceValue::Discrete(1)]).is_err());
-        // Too many leaves.
         assert!(
             assemble_value(&spec, vec![SpaceValue::Discrete(0); 4]).is_err(),
             "extra leaf must not be silently dropped",
         );
-        // Missing Dict key.
         let mut m = BTreeMap::new();
         m.insert("z".to_string(), SpaceValue::Discrete(1));
         assert!(flatten_leaves(&spec, &SpaceValue::Dict(m)).is_err());

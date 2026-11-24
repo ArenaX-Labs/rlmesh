@@ -1,18 +1,9 @@
 //! A model probe's stand-in environment, built from the model's own spec.
 //!
-//! A probe exercises one container. For a model that means observations to
-//! predict on, which normally come from a paired env -- but a probe must not
-//! need one (its results say nothing about the env, and a model with no
-//! compatible env is exactly the one worth probing). The model's `ModelSpec`
-//! already declares every input it wants, by role, so this module turns that
-//! declaration into the spaces an env *would* offer: one observation leaf per
-//! model input, tagged with the role it asks for, plus an action space the
-//! width of its declared output. The binder then resolves the model against
-//! the stand-in exactly as it would against a real env.
-//!
-//! The binder
-//! drives an [`Env`], so the stand-in serves scripted observations and keeps
-//! the actions it receives.
+//! A probe needs no paired env: each model input becomes one observation leaf tagged with the
+//! role it asks for, plus an action space the width of the declared output, and the binder
+//! resolves the model against that as against a real env. The stand-in is an [`Env`] that
+//! serves scripted observations and keeps the actions it receives.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -35,33 +26,19 @@ use crate::{Env, InfoDict, Metadata, Result};
 /// stand-in spaces from a real env's.
 pub const SYNTHETIC_ENV_ID: &str = "rlmesh.probe.synthetic";
 
-/// Pixel size for an image input that declares none. Large enough to survive a
-/// model's own resize, small enough to keep payloads cheap.
 const DEFAULT_IMAGE_SIZE: u32 = 224;
-/// Upper bound on a synthesized camera axis, matching the spec's own
-/// `render`/`height`/`width` bound.
 const MAX_IMAGE_SIZE: u32 = 4096;
 const DEFAULT_TEXT_LENGTH: i64 = 256;
 
-/// The spaces a synthetic env offers, plus the tags that let the model's
-/// adapter resolve against them.
 #[derive(Debug, Clone)]
 pub(super) struct SynthesizedEnv {
     pub(super) observation: WireSpec,
     pub(super) action: WireSpec,
-    /// The env tags the stand-in publishes, as JSON; `None` passes a
-    /// reference env's contract through untagged.
     pub(super) tags: Option<Json>,
-    /// Model inputs that carry no resolvable role (custom transforms, kinds
-    /// this runtime does not know); the probe reports them on `resolve`.
     pub(super) unsupported: Vec<String>,
-    /// The camera resolutions the model's image inputs assert, in spec document
-    /// order. Read off the spec, not off a resolve, so a model whose adapter
-    /// fails to resolve still says what to set the env's camera dial to.
     pub(super) render_requests: Vec<RenderRequest>,
 }
 
-/// Builds a stand-in env from the model's `model_spec` describe block.
 pub(super) fn synthesize(model_spec: &Json) -> std::result::Result<SynthesizedEnv, String> {
     if let Some(error) = model_spec.get("error").and_then(Json::as_str) {
         return Err(format!(
@@ -79,11 +56,6 @@ pub(super) fn synthesize(model_spec: &Json) -> std::result::Result<SynthesizedEn
     let mut spaces: Vec<(String, WireSpec)> = Vec::new();
     let mut tags: BTreeMap<String, ObsNode> = BTreeMap::new();
     for leaf in leaves {
-        // One env feature per (role, part): a model may read a role from several
-        // input slots (one camera feeding two), but an env publishes it once, and
-        // two features sharing a role and part is a hard Duplicate error at
-        // resolve. The part stays in the key: a bimanual model's left and right
-        // wrist cameras are two features, not one.
         let key = match leaf.part() {
             Some(part) => feature_key(&format!("{}#{part}", leaf.role())),
             None => feature_key(leaf.role()),
@@ -115,9 +87,6 @@ pub(super) fn synthesize(model_spec: &Json) -> std::result::Result<SynthesizedEn
         observation: ObsNode::Dict(tags),
         action: spec.output.clone(),
     };
-    // The same join the resolver runs env-side: a synthesized tree that cannot
-    // join its own spaces would fail later inside the bind with a much worse
-    // message.
     join(
         &tags,
         &SpaceView::from(&observation),
@@ -144,11 +113,8 @@ pub(super) fn synthesize(model_spec: &Json) -> std::result::Result<SynthesizedEn
     })
 }
 
-/// A model input leaf that maps to one observation leaf.
 enum SynthLeaf {
     Image(Image),
-    /// One component of a state input: each pulls its own env role, so a
-    /// concat of three roles becomes three observation leaves.
     State(ConcatPart, State),
     Text(Text),
 }
@@ -157,8 +123,6 @@ impl SynthLeaf {
     fn role(&self) -> &str {
         match self {
             Self::Image(image) => &image.role,
-            // `collect_leaves` never builds a State leaf for a role-less
-            // (constant) part.
             Self::State(part, _) => part.role.as_deref().unwrap_or_default(),
             Self::Text(text) => &text.role,
         }
@@ -177,16 +141,11 @@ fn collect_leaves(node: &InputNode, out: &mut Vec<SynthLeaf>, unsupported: &mut 
     match node {
         InputNode::Leaf(ModelLeaf::Image(image)) => out.push(SynthLeaf::Image(image.clone())),
         InputNode::Leaf(ModelLeaf::State(state)) => {
-            // A role-less part is a declared constant: it contributes a fixed
-            // value, reads no env feature, and so needs no synthesized leaf.
             for part in state.components.iter().filter(|part| part.role.is_some()) {
                 out.push(SynthLeaf::State(part.clone(), state.clone()));
             }
         }
         InputNode::Leaf(ModelLeaf::Text(text)) => out.push(SynthLeaf::Text(text.clone())),
-        // A custom transform reads whatever it likes from the env; there is no
-        // declared role to synthesize, so the probe reports it rather than
-        // guessing a shape the model would reject.
         InputNode::Leaf(ModelLeaf::Custom(_)) => unsupported.push("custom".to_string()),
         InputNode::Leaf(ModelLeaf::Unknown { kind, .. }) => unsupported.push(kind.clone()),
         InputNode::Dict(children) => {
@@ -205,8 +164,6 @@ fn collect_leaves(node: &InputNode, out: &mut Vec<SynthLeaf>, unsupported: &mut 
 fn observation_leaf(leaf: &SynthLeaf) -> Option<(WireSpec, ObsLeaf)> {
     match leaf {
         SynthLeaf::Image(image) => image_leaf(image),
-        // A probe's stand-in values are its own to choose: bounded, so a
-        // model declaring a range exercises its remap.
         SynthLeaf::State(part, state) => {
             state_leaf(part, state_dim(part)?, &state.dtype, Some((-1.0, 1.0)))
         }
@@ -214,14 +171,9 @@ fn observation_leaf(leaf: &SynthLeaf) -> Option<(WireSpec, ObsLeaf)> {
     }
 }
 
-/// The camera a model image input asks for.
 fn image_leaf(image: &Image) -> Option<(WireSpec, ObsLeaf)> {
     let (height, width) = camera_size(image);
     let (height, width) = (i64::from(height), i64::from(width));
-    // Envs publish frames as HWC uint8; the model's own layout and dtype are
-    // its adapter's job, not the env's. The channel count is not: the resolver
-    // refuses to convert between channel counts, so a model asking for
-    // grayscale must be offered grayscale.
     let channels = i64::from(image.channels.unwrap_or(3).clamp(1, 4));
     let space = BoxSpaceBuilder::uint_scalar(0, 255, vec![height, width, channels])
         .dtype(DType::Uint8)
@@ -231,16 +183,12 @@ fn image_leaf(image: &Image) -> Option<(WireSpec, ObsLeaf)> {
         role: image.role.clone(),
         layout: ImageLayout::Hwc,
         upside_down: false,
-        // A model naming a body part binds only a leaf under that part, so the
-        // stand-in publishes the part it declared.
         part: image.part.clone(),
         unknown: BTreeMap::new(),
     });
     Some((space, tag))
 }
 
-/// The state feature one component of a model state input reads, `dim` wide
-/// in the input's `dtype`, its space bounded by `bounds` or unbounded.
 fn state_leaf(
     part: &ConcatPart,
     dim: u32,
@@ -253,19 +201,11 @@ fn state_leaf(
         None => BoxSpaceBuilder::unbounded(shape),
     };
     let space = builder.dtype(dtype_of(dtype)).build().ok()?;
-    // The tag carries no width: the resolver derives it from the space this
-    // leaf publishes, which is built from the same `dim`.
     let tag = ObsLeaf::State(StateTag {
         role: part.role.clone()?,
         encoding: part.encoding.as_ref().map(|encoding| encoding.accept_set()),
         range: None,
-        // The stand-in speaks the frame the model declared it was trained in,
-        // so it never reports a frame disagreement against spaces the model
-        // itself described.
         frame: part.frame.clone(),
-        // Likewise the provenance (the first the model accepts), body part,
-        // axis labels and polarity: a labeled model against an unlabeled env
-        // is a resolve error, and a stand-in is not a resolver test.
         provenance: part
             .provenance
             .as_ref()
@@ -279,7 +219,6 @@ fn state_leaf(
     Some((space, tag))
 }
 
-/// The text a model text input reads.
 fn text_leaf(text: &Text) -> Option<(WireSpec, ObsLeaf)> {
     let space = TextBuilder::new(DEFAULT_TEXT_LENGTH).build().ok()?;
     let tag = ObsLeaf::Text(TextTag {
@@ -289,18 +228,6 @@ fn text_leaf(text: &Text) -> Option<(WireSpec, ObsLeaf)> {
     Some((space, tag))
 }
 
-/// The resolution the stand-in camera renders at.
-///
-/// A `render` assertion is authoritative: the model says what its camera was
-/// trained at, and resolution *checks* that assertion, so a stand-in that
-/// ignored it would fail every model that declares one. Absent it, the
-/// declared input size, then a square default.
-///
-/// A crop keeps a `fraction` of each side, and the resolver's upscale guard
-/// measures that box rather than the whole frame, in either crop mode. So the
-/// camera must be large enough that the box still covers the target, hence
-/// `ceil(size / fraction)` of headroom. Both axes are clamped to
-/// `1..=MAX_IMAGE_SIZE`.
 fn camera_size(image: &Image) -> (u32, u32) {
     let (height, width) = match image.render {
         Some((height, width)) => (height, width),
@@ -317,7 +244,6 @@ fn camera_size(image: &Image) -> (u32, u32) {
     (axis(height), axis(width))
 }
 
-/// `1 / side fraction` for a cropping input, else 1.
 fn crop_headroom(image: &Image) -> f64 {
     let fraction = match (image.crop, image.crop_area) {
         (Some(side), _) => side,
@@ -327,11 +253,6 @@ fn crop_headroom(image: &Image) -> f64 {
     if fraction <= 0.0 { 1.0 } else { 1.0 / fraction }
 }
 
-/// The declared dim, else the role registry's fixed width, else the rotation
-/// encoding's. `None` for a role whose width is the embodiment's business
-/// (joint counts, gripper fingers) and that the model did not declare:
-/// guessing a scalar there would hand the model a 1-wide joint vector and
-/// surface as a shape failure of the model rather than of the stand-in.
 fn state_dim(part: &ConcatPart) -> Option<u32> {
     if let Some(dim) = part.dim {
         return Some(dim.max(1));
@@ -347,7 +268,6 @@ fn state_dim(part: &ConcatPart) -> Option<u32> {
         .map(|base| base.dims())
 }
 
-/// A model input's dtype name as a space dtype; float32 for anything else.
 fn dtype_of(name: &str) -> DType {
     match name {
         "float64" => DType::Float64,
@@ -358,7 +278,6 @@ fn dtype_of(name: &str) -> DType {
     }
 }
 
-/// One observation key per role, sanitized for a dict key.
 fn feature_key(role: &str) -> String {
     let key: String = role
         .chars()
@@ -371,9 +290,6 @@ fn feature_key(role: &str) -> String {
     }
 }
 
-/// The action space an env would publish for this output: element-wise bounds
-/// from each actuator's declared range, so the tags' ranges and the space agree
-/// (a fabricated uniform clip would be reconciled against them and lose).
 fn action_space(action: &Action) -> std::result::Result<WireSpec, String> {
     let width: usize = action
         .components
@@ -398,20 +314,12 @@ fn action_space(action: &Action) -> std::result::Result<WireSpec, String> {
         .map_err(|error| error.to_string())
 }
 
-/// What the stand-in serves and what it has received, shared between the
-/// probe and the env the binding drives.
 #[derive(Debug, Default)]
 pub(super) struct Script {
-    /// The observation seed of each tick: the reset's first, then one per
-    /// step; the last repeats once the script runs out.
     pub(super) observations: Vec<u64>,
-    /// The actions stepped in the current episode, in order.
     pub(super) actions: Vec<SpaceValue>,
 }
 
-/// A stand-in env over synthesized spaces: it serves the observation the
-/// script names for each tick and records every action, so a check compares
-/// the model's answers to inputs it chose.
 pub(super) struct StandIn {
     observation: Space,
     action: Space,
@@ -424,8 +332,6 @@ impl StandIn {
     pub(super) fn new(env: &SynthesizedEnv, script: Arc<Mutex<Script>>) -> Self {
         let metadata = env.tags.as_ref().map(|tags| {
             let mut metadata = Metadata::new();
-            // The binder reads the tags from this key as a mapping, as a live
-            // env publishes them.
             metadata.insert(
                 rlmesh_adapters::v1::ENV_METADATA_KEY,
                 crate::specs::json_to_value(tags.clone()),
@@ -508,10 +414,6 @@ impl Env for StandIn {
     }
 }
 
-/// Serve `env` in a fresh session on the host of the model at
-/// `model_address`, as the Python sandbox serves a local env for a served
-/// model: a model in a container reaches its own session, not one this
-/// process hosts.
 pub(super) fn serve_beside(model_address: &str, env: StandIn) -> Result<crate::EnvServer> {
     let base = model_address
         .rsplit_once('/')
@@ -534,8 +436,6 @@ mod tests {
 
     use super::*;
 
-    /// The SmolVLA libero spec: two cameras, a three-role state concat, an
-    /// instruction, and a 7-wide action.
     fn smolvla_spec() -> Json {
         serde_json::json!({
             "input": {
@@ -589,8 +489,6 @@ mod tests {
             ]
         );
         assert!(env.unsupported.is_empty());
-        // The resolver rejects a JSON string under the tags key: the tags
-        // must be the mapping a live env sends.
         assert!(env.tags.as_ref().is_some_and(Json::is_object));
         assert_eq!(env.action.shape, [7]);
     }
@@ -622,8 +520,6 @@ mod tests {
         );
     }
 
-    /// A `render` assertion wins over the input size; a crop gets headroom so
-    /// the cropped box still covers the target, in either crop mode.
     #[test]
     fn the_stand_in_camera_honours_render_and_crop_headroom() {
         let cases = [
@@ -632,8 +528,6 @@ mod tests {
                 serde_json::json!({"height": 224, "width": 224, "render": [256, 320]}),
                 (256, 320),
             ),
-            // OpenVLA's libero input: a 0.9-area crop resized to 224; a 224
-            // camera would crop to 213 and trip the upscale guard.
             (
                 serde_json::json!({"height": 224, "width": 224, "crop_area": 0.9}),
                 (237, 237),
@@ -666,8 +560,6 @@ mod tests {
             let index = dict.keys.iter().position(|k| k == key).expect("key");
             dict.spaces[index].shape.clone()
         };
-        // eef_pos is DimLaw::Fixed(3), eef_rot comes from axis_angle, gripper
-        // is declared dim=1.
         assert_eq!(width("proprio_eef_pos"), [3]);
         assert_eq!(width("proprio_eef_rot"), [3]);
         assert_eq!(width("proprio_gripper"), [1]);

@@ -15,12 +15,8 @@ pub fn reset_request_to_proto(
     Ok(ResetRequest {
         seeds: request.seed.into_iter().collect(),
         options: request.options.as_ref().map(meta_map_to_proto),
-        // Native timeout_ms is i64 (>=0 by construction); proto field is uint64.
         timeout_ms: request.timeout_ms.max(0) as u64,
-        // Whole-vector reset; partial reset threads through reset_subset (A3).
         env_indices: Vec::new(),
-        // Runtime-minted ids are pushed by the orchestrating runtime, not this
-        // bare single-env conversion; left empty here.
         episode_ids: Vec::new(),
     })
 }
@@ -32,8 +28,6 @@ pub fn reset_result_from_proto(
     Ok(native::ResetResult {
         observation: decode_value(response.observation.as_ref(), observation_space)?,
         info: response.infos.map(meta_map_from_proto),
-        // The env no longer returns ids (R1); the runtime is authoritative and
-        // pushes ids down. This bare conversion has no runtime, so no id.
         episode_id: None,
     })
 }
@@ -48,11 +42,8 @@ pub fn step_request_to_proto(
             .as_ref()
             .map(|value| encode_value(value, action_space))
             .transpose()?,
-        // Native timeout_ms is i64 (>=0 by construction); proto field is uint64.
         timeout_ms: request.timeout_ms.max(0) as u64,
-        // Full-width step; subset-stepping is reserved-but-deferred.
         env_indices: Vec::new(),
-        // See reset_request_to_proto: ids are runtime-pushed, not minted here.
         episode_ids: Vec::new(),
     })
 }
@@ -81,7 +72,6 @@ pub fn render_request_to_proto(request: &native::RenderRequest) -> RenderRequest
             .env_index
             .map(|i| vec![i as u32])
             .unwrap_or_default(),
-        // Native timeout_ms is i64 (>=0 by construction); proto field is uint64.
         timeout_ms: request.timeout_ms.max(0) as u64,
     }
 }
@@ -89,11 +79,7 @@ pub fn render_request_to_proto(request: &native::RenderRequest) -> RenderRequest
 pub fn render_result_from_proto(
     response: RenderResponse,
 ) -> Result<native::RenderResult, ProtocolError> {
-    // Per the RenderFormat contract, a frame whose format this build does not
-    // recognize must be SKIPPED (treated as no frame), never surfaced as if it
-    // were the default PNG -- otherwise a caller (e.g. the Python client) would
-    // misinterpret a future codec's bytes as PNG. Only UNSPECIFIED (the historical
-    // PNG default) and PNG are understood today; anything else drops the frame.
+    // A frame whose format this build does not recognize is skipped, never surfaced as the default PNG.
     let understood = matches!(
         RenderFormat::try_from(response.format),
         Ok(RenderFormat::Unspecified | RenderFormat::Png)
@@ -135,14 +121,11 @@ pub fn step_result_to_proto(
         truncated_mask: vec![u8::from(result.truncated)],
         infos: result.info.as_ref().map(meta_map_to_proto),
         completed_episodes: vec![],
-        // Full-width response; partial-width is reserved-but-deferred.
         env_indices: vec![],
     })
 }
 
 pub fn render_result_to_proto(result: &native::RenderResult) -> RenderResponse {
-    // Frames are PNG today; stamp the format explicitly so the discriminator is
-    // load-bearing from the freeze. A frame-less response leaves it UNSPECIFIED.
     let format = if result.frame.is_some() {
         RenderFormat::Png
     } else {

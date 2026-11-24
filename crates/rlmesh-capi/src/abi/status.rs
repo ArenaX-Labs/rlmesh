@@ -1,9 +1,4 @@
-//! A callback runs on a tokio worker thread, not the export caller's, so a
-//! thread-local set inside a callback is read on the wrong thread. Errors
-//! therefore travel by value (`CapiError`) to the outermost export, which
-//! writes the thread-local last-error slot on the caller's return thread as the
-//! final hop only.
-#![allow(unsafe_code)] // FFI: C string out-pointer + panic guard.
+#![allow(unsafe_code)]
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -14,18 +9,16 @@ use std::sync::{Arc, Mutex};
 use rlmesh::{ErrorClass, ErrorCode, ModelErrorCode};
 
 /// Integer values are stable (ABI). Values 0-8 and 99 keep their original
-/// discriminants; 9-12 were added with the cross-language error classes.
+/// discriminants; 9-12 are the cross-language error classes.
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RLMeshStatus {
     Ok = 0,
     InvalidArgument = 1,
-    /// Deprecated: never returned; a wrong-kind read is [`RLMeshStatus::Type`].
-    #[allow(dead_code)] // Kept for its ABI discriminant.
+    #[allow(dead_code)]
     InvalidValue = 2,
     Environment = 3,
     Model = 4,
-    /// `RLMESH_ERR_CONNECTION`; `RLMESH_ERR_TRANSPORT` is its deprecated alias.
     Connection = 5,
     Timeout = 6,
     Panic = 7,
@@ -59,7 +52,6 @@ pub enum RLMeshErrorClass {
 }
 
 impl RLMeshErrorClass {
-    /// The class a C value names; `None` for INVALID or an unknown value.
     pub(crate) fn from_c(value: i32) -> Option<Self> {
         Some(match value {
             1 => Self::RLMeshException,
@@ -94,19 +86,15 @@ impl RLMeshErrorClass {
             ErrorClass::ConnectionError => Self::ConnectionError,
             ErrorClass::TimeoutError => Self::TimeoutError,
             ErrorClass::KeyboardInterrupt => Self::KeyboardInterrupt,
-            // ErrorClass is #[non_exhaustive]; a class added later without a C
-            // value reports as its nearest documented base.
             _ => Self::RLMeshException,
         }
     }
 
-    /// The Rust class for a C value; `None` for `INVALID` or an unknown value.
     fn to_rust(value: c_int) -> Option<ErrorClass> {
         let index = usize::try_from(value).ok()?.checked_sub(1)?;
         ErrorClass::ALL.get(index).copied()
     }
 
-    /// The class a status reports when nothing more specific is known.
     fn for_status(status: RLMeshStatus) -> Self {
         match status {
             RLMeshStatus::Ok => Self::Invalid,
@@ -125,7 +113,6 @@ impl RLMeshErrorClass {
     }
 }
 
-/// The status an error of `class` returns.
 fn status_for_class(class: ErrorClass) -> RLMeshStatus {
     match class {
         ErrorClass::ProtocolException => RLMeshStatus::Protocol,
@@ -146,8 +133,6 @@ fn status_for_class(class: ErrorClass) -> RLMeshStatus {
     }
 }
 
-/// The detail code an error carries: an env code for the Environment family,
-/// a model code for the Model class (both as wire numbers).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum CapiCode {
     Env(ErrorCode),
@@ -181,7 +166,6 @@ fn env_code_wire(code: ErrorCode) -> i32 {
         ErrorCode::Crashed => 11,
         ErrorCode::Cancelled => 12,
         ErrorCode::Closed => 13,
-        // Internal, and any code added later (ErrorCode is #[non_exhaustive]).
         _ => 10,
     }
 }
@@ -195,7 +179,6 @@ fn model_code_wire(code: ModelErrorCode) -> i32 {
         ModelErrorCode::Unsupported => 5,
         ModelErrorCode::Cancelled => 12,
         ModelErrorCode::Closed => 13,
-        // Internal, and any code added later (#[non_exhaustive]).
         _ => 10,
     }
 }
@@ -230,7 +213,7 @@ fn model_code_from_wire(value: c_int) -> Option<ModelErrorCode> {
     })
 }
 
-// The pointer is owned by the slot. Its deleter may run on any thread (R-12).
+// The pointer is owned by the slot. Its deleter may run on any thread.
 struct OpaquePayload {
     pointer: *mut c_void,
     free: Option<unsafe extern "C" fn(*mut c_void)>,
@@ -249,8 +232,6 @@ type HostPayload = Arc<Mutex<Option<OpaquePayload>>>;
 thread_local! {
     static CALLBACK_PAYLOAD: RefCell<Option<HostPayload>> = const { RefCell::new(None) };
 }
-/// A callback owns its pending error independently from nested exports. Nested
-/// callbacks save and restore it; successful callbacks drop unused payloads.
 pub(crate) struct CallbackFrame {
     message: Option<(String, bool)>,
     class: Option<RLMeshErrorClass>,
@@ -264,7 +245,6 @@ impl CallbackFrame {
             payload: CALLBACK_PAYLOAD.with(|s| s.borrow_mut().take()),
         };
         // A new callback must not observe an earlier request's last error.
-        // Drop its host payload outside the TLS borrow so deleters may reenter.
         let previous = LAST_ERROR.with(|slot| slot.borrow_mut().take());
         drop(previous);
         frame
@@ -274,10 +254,13 @@ impl Drop for CallbackFrame {
     fn drop(&mut self) {
         CALLBACK_MESSAGE.with(|s| *s.borrow_mut() = self.message.take());
         CALLBACK_CLASS.with(|s| s.set(self.class.take()));
+        // Drop the replaced payload outside the TLS borrow so its deleter may reenter.
         let previous = CALLBACK_PAYLOAD.with(|s| s.replace(self.payload.take()));
         drop(previous);
     }
 }
+// A callback runs on a tokio worker thread, not the export caller's, so errors travel by value to the outermost export,
+// which writes the last-error slot on the caller's thread.
 thread_local! {
     static CALLBACK_MESSAGE: RefCell<Option<(String, bool)>> = const { RefCell::new(None) };
 }
@@ -287,7 +270,6 @@ pub(crate) fn callback_message() -> String {
 pub(crate) fn callback_recoverable() -> bool {
     CALLBACK_MESSAGE.with(|s| s.borrow().as_ref().is_some_and(|v| v.1))
 }
-/// Attach the callback's host exception to the error traveling to its caller.
 pub(crate) fn attach_callback_payload(error: rlmesh::Error) -> rlmesh::Error {
     let payload = CALLBACK_PAYLOAD.with(|slot| slot.borrow_mut().take());
     match payload {
@@ -387,12 +369,9 @@ impl CapiError {
             recoverable: false,
         }
     }
-    /// An invalid argument value (`ValueError`).
     pub(crate) fn invalid_arg(message: impl Into<String>) -> Self {
         Self::new(RLMeshStatus::InvalidArgument, message)
     }
-    /// The wrong kind of value or object (`TypeError`), such as a read of
-    /// another kind than the value holds.
     pub(crate) fn type_error(message: impl Into<String>) -> Self {
         Self::new(RLMeshStatus::Type, message)
     }
@@ -457,8 +436,6 @@ fn store(err: &CapiError) {
     drop(previous);
 }
 
-/// Record a callback's failure (`rlmesh_callback_set_error`): read back on the
-/// same thread when the callback returns nonzero.
 pub(crate) fn store_last_error(message: &str, recoverable: bool, status: RLMeshStatus) {
     let mut err = CapiError::new(status, message);
     err.recoverable = recoverable;
@@ -467,9 +444,6 @@ pub(crate) fn store_last_error(message: &str, recoverable: bool, status: RLMeshS
     CALLBACK_CLASS.with(|slot| slot.set(None));
 }
 
-/// Record a callback's failure of an exact class
-/// (`rlmesh_callback_set_error_class`); INVALID or an unknown value records
-/// `RLMeshException`. Only `RecoverableEnvironmentException` is recoverable.
 pub(crate) fn store_last_error_class(message: &str, class: i32) {
     let class = RLMeshErrorClass::from_c(class).unwrap_or(RLMeshErrorClass::RLMeshException);
     let error = error_of_class(class, message);
@@ -481,19 +455,14 @@ pub(crate) fn store_last_error_class(message: &str, class: i32) {
 }
 
 thread_local! {
-    /// The class the running callback set with
-    /// `rlmesh_callback_set_error_class`, so a nested export's own failure
-    /// is not mistaken for it.
     static CALLBACK_CLASS: std::cell::Cell<Option<RLMeshErrorClass>> =
         const { std::cell::Cell::new(None) };
 }
 
-/// The class the callback that just returned set, if it set one.
 pub(crate) fn take_callback_class() -> Option<RLMeshErrorClass> {
     CALLBACK_CLASS.with(|slot| slot.take())
 }
 
-/// The facade error a callback's recorded class stands for.
 pub(crate) fn error_of_class(class: RLMeshErrorClass, message: &str) -> rlmesh::Error {
     use rlmesh::Error;
     let message = message.to_string();
@@ -510,8 +479,6 @@ pub(crate) fn error_of_class(class: RLMeshErrorClass, message: &str) -> rlmesh::
         RLMeshErrorClass::RuntimeError => Error::Runtime(message),
         RLMeshErrorClass::OSError => Error::Os(message),
         RLMeshErrorClass::ConnectionError => Error::Connection(message),
-        // An authored TimeoutError has text, but no native deadline. Keep
-        // the text through the driver instead of fabricating a 0ns message.
         RLMeshErrorClass::TimeoutError => rlmesh::binding::AttachedError::with_message(
             Error::Timeout(std::time::Duration::ZERO),
             message,
@@ -573,8 +540,6 @@ where
     }
 }
 
-/// Panic boundary for value-returning exports (no status channel): on a panic,
-/// record it as the last error and return `default` instead of unwinding into C.
 pub(crate) fn guard_value<T, F>(default: T, f: F) -> T
 where
     F: FnOnce() -> T,
@@ -662,7 +627,6 @@ pub extern "C" fn rlmesh_last_error_code_str() -> *const c_char {
     })
 }
 
-/// Static NUL-terminated spelling of a code, or NULL.
 fn static_cstr(text: Option<&'static str>) -> *const c_char {
     macro_rules! table {
         ($($name:literal),*) => {
@@ -876,8 +840,6 @@ mod tests {
         );
         assert_eq!(rlmesh_last_error_is_recoverable(), 0);
 
-        // A transport failure is not recoverable in Python's sense (COR-4) and
-        // carries no code.
         fail_with(rlmesh::Error::Connection("reset".into()));
         let mut untouched = 77;
         assert!(!unsafe { rlmesh_last_error_code(&mut untouched) });
@@ -915,7 +877,6 @@ mod tests {
         );
         assert!(rlmesh_error_class_name(0).is_null());
         assert!(rlmesh_error_class_name(14).is_null());
-        // Every C class value round-trips to the Rust class of the same name.
         for class in ErrorClass::ALL {
             let value = RLMeshErrorClass::from_rust(class) as c_int;
             assert_eq!(

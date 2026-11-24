@@ -1,22 +1,9 @@
-//! Serve an environment in a session.
-//!
-//! This is the Rust side of the quickstart loop. It hosts a tiny environment on
-//! a socket; any RLMesh client can then step it from another process, in any
-//! supported language. Drive it with the `run_model` example, or with the
-//! Python client in `examples/python/quickstart/eval.py`.
-//!
-//! ```bash
-//! cargo run -p rlmesh --example serve_env            # :5555
-//! cargo run -p rlmesh --example serve_env :7000
-//! ```
 #![allow(clippy::print_stdout)]
 
 use rlmesh::prelude::*;
 use rlmesh::spaces::{Discrete, DiscreteOptions};
 use rlmesh::{EnvServer, EnvServerOptions};
 
-/// A three-step counter. The observation is the step index, every action earns
-/// a reward of 1.0, and the episode terminates after the third step.
 pub(crate) struct CounterEnv {
     observation_space: Space,
     action_space: Space,
@@ -75,8 +62,6 @@ fn main() -> rlmesh::Result<()> {
         .nth(1)
         .unwrap_or_else(|| ":5555".to_string());
 
-    // The server binds at construction, so the resolved address is known
-    // before serving. `serve()` blocks; Ctrl-C drains and closes the env.
     let server = EnvServer::new(
         CounterEnv::new()?,
         EnvServerOptions {

@@ -3,19 +3,18 @@
 //!
 //! - `/control`: the first message is a JSON hello (`{"type": "hello",
 //!   "priority": "model"}`, or `"observer"`); the gateway attaches a
-//!   participant for the connection with its token's credential and answers
-//!   with its id, then the authority snapshot. From then on binary frames
-//!   carry `ctl` requests and replies, heartbeats and echoes, chunks and
-//!   authority updates ([`crate::gateway::frame`]).
+//!   participant with the token's credential and answers with its id, then the
+//!   authority snapshot. From then on binary frames carry `ctl` requests and
+//!   replies, heartbeats and echoes, chunks and authority updates
+//!   ([`crate::gateway::frame`]).
 //! - `/state` and `/bulk`: JSON `{"type": "subscribe", "id": 0, "path":
 //!   "arm7/arm"}` (and `unsubscribe`); samples come back as `SAMPLE` frames.
 //!   State connections queue 64 frames, bulk ones 4; a full queue drops the
-//!   newest frame (the stream's own seq shows the loss).
+//!   newest frame (the stream's seq shows the loss).
 //!
 //! A socket whose participant the host refuses is closed with `4401`
-//! (`UNAUTHENTICATED`: a revoked token) or `4403` (`NOT_AUTHORIZED`), one
-//! the host detaches with [`DETACHED`], and every socket with
-//! [`SESSION_ENDED`] once the session ended.
+//! (`UNAUTHENTICATED`) or `4403` (`NOT_AUTHORIZED`), one the host detaches with
+//! [`DETACHED`], and every socket with [`SESSION_ENDED`] once the session ended.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -42,7 +41,6 @@ use crate::gateway::config::parse_priority;
 use crate::gateway::security::{self, Bearer, Policy, SubAdd, SubscriptionSet};
 use crate::wire::CtlStatus;
 
-/// How long a control connection may take to say hello.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What every route shares.
@@ -102,9 +100,6 @@ pub const SESSION_ENDED_REASON: &str = "host_lost: the session ended";
 /// again under the new entry, or is refused with `4401`.
 pub const DETACHED: u16 = 4409;
 
-/// The close a refused attach ends its socket with: `4401` for a key the
-/// host doesn't know (a revoked token), `4403` for what its device (or
-/// this gateway) does not allow.
 fn refused(err: &SessionError) -> Option<(u16, String)> {
     let refusal = err.refusal()?;
     let code = match refusal.status {
@@ -115,7 +110,6 @@ fn refused(err: &SessionError) -> Option<(u16, String)> {
     Some((code, close_reason(&refusal.message)))
 }
 
-/// `text` cut to what a close frame carries (123 bytes).
 fn close_reason(text: &str) -> String {
     let mut end = text.len().min(123);
     while !text.is_char_boundary(end) {
@@ -135,7 +129,6 @@ fn to_message(out: Outbound) -> Message {
     }
 }
 
-/// A new connection to a session that already ended is closed at once.
 fn refusal(st: &AppState) -> Option<(u16, String)> {
     (*st.gateway.ended().borrow()).then(|| (SESSION_ENDED, SESSION_ENDED_REASON.to_string()))
 }
@@ -144,7 +137,6 @@ async fn close_with(mut socket: WebSocket, code: u16, reason: String) {
     let _ = socket.send(to_message(Outbound::Close(code, reason))).await;
 }
 
-/// Resolves once the session ended.
 async fn session_ended(mut ended: tokio::sync::watch::Receiver<bool>) {
     if ended.wait_for(|e| *e).await.is_err() {
         std::future::pending::<()>().await;
@@ -163,7 +155,6 @@ async fn control(
     }
 }
 
-/// The class a hello asks for: `None` for an observer.
 fn hello_class(name: &str) -> Result<Option<crate::wire::PriorityClass>, String> {
     match name {
         "observer" => Ok(None),
@@ -182,7 +173,6 @@ async fn control_conn(socket: WebSocket, st: AppState, bearer: Bearer) {
         }
         let _ = tx.close().await;
     });
-    // The hello names the class this connection's participant attaches at.
     let hello = tokio::time::timeout(HELLO_TIMEOUT, async {
         while let Some(Ok(m)) = rx.next().await {
             if let Message::Text(t) = m {
@@ -268,7 +258,6 @@ async fn control_conn(socket: WebSocket, st: AppState, bearer: Bearer) {
     }
     drop(link);
     drop(out);
-    // Let a queued close frame go out.
     let _ = tokio::time::timeout(Duration::from_millis(500), writer).await;
 }
 

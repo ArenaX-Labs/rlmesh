@@ -1,6 +1,3 @@
-//! Refusals: their codes and problems, the call they suggest, and how the
-//! binder records them.
-
 use super::table::Dir;
 use super::{Binder, Slot};
 use crate::prelude::*;
@@ -54,8 +51,6 @@ impl fmt::Display for Code {
     }
 }
 
-/// Model and robot names that share nothing, on one part: rendered as one
-/// block for every entry they affect.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NamesClash {
     pub(crate) part: String,
@@ -72,16 +67,10 @@ pub struct Problem {
     pub dir: Dir,
     /// The entry.
     pub entry: String,
-    /// The first line, after `[code] `.
     pub(crate) head: String,
-    /// The lines under it, indented.
     pub(crate) body: Vec<String>,
-    /// A names clash (grouped across entries when rendered).
     pub(crate) names: Option<NamesClash>,
-    /// The robots whose declaring would resolve it, when it comes only from
-    /// their not having appeared yet.
     pub(crate) waiting: Vec<ParticipantId>,
-    /// What the entry is, in a refusal's words.
     pub(crate) subject: String,
 }
 
@@ -157,11 +146,8 @@ impl BindError {
     }
 }
 
-/// The callable a refusal's fix spells out, on the policy the user is
-/// binding. A Python test checks every rendered call against its signature.
 const BIND_CALL: &str = "policy.bind";
 
-/// The options a refusal's fix repeats, plus what it adds.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RunCall {
     robot: Option<String>,
@@ -350,10 +336,6 @@ impl<'a> Binder<'a> {
         });
     }
 
-    /// The robots `slot` is waiting for, if only their absence left it
-    /// without a part. A capture is shared across entries, so one robot's
-    /// absence can empty another entry's candidates; an unqualified entry
-    /// of a view may lie under a placed robot not declared yet.
     pub(super) fn waiting(&self, slot: &Slot<'_>) -> Vec<ParticipantId> {
         let qualified = slot.selector.as_ref().is_some_and(|s| s.robot.is_some());
         if qualified && !self.parts.iter().any(|p| p.owner == slot.robot) {

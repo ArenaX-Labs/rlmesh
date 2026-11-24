@@ -1,16 +1,10 @@
 //! Recording: encode HWC frames to an `.mp4`, AV1 in process by default or
 //! H.264 through the user's ffmpeg (`h264`).
 //!
-//! `VideoWriter` is the recording sink dual of the display sinks: it takes the
-//! same RGB frames the viewer already normalizes (via `rgb_from_hwc`),
-//! encodes them to AV1 with `rav1e` (pure Rust, royalty-free), and muxes the
-//! bitstream into a plain MP4 (`av01` sample entry) as each packet comes out --
-//! streaming, so peak memory is one frame plus the encoder state, never the whole
-//! episode. The MP4 muxer is a purpose-built minimum for our one shape: a single
-//! 8-bit 4:2:0 video track, one frame per sample, `pts == dts` (no reordering).
-//!
-//! The codec-configuration box (`av1C`) is taken verbatim from
-//! `rav1e`'s `container_sequence_header()`, so it always matches the bitstream.
+//! `VideoWriter` takes the same RGB frames the viewer normalizes, encodes them to AV1 with `rav1e`
+//! and muxes each packet into a plain MP4 as it comes out, so peak memory is one frame plus the
+//! encoder state, never the whole episode. The muxer writes a single 8-bit 4:2:0 video track, one
+//! frame per sample, with no reordering.
 
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
@@ -25,7 +19,6 @@ use super::VideoCodec;
 
 mod h264;
 
-/// Fixed MP4 offset where sample data begins: `ftyp` (32) + `mdat` header (16).
 const MDAT_DATA_OFFSET: u64 = 32 + 16;
 
 /// What [`VideoWriter::finish`] reports for the media manifest row.
@@ -39,7 +32,6 @@ pub struct Stats {
     pub height: u32,
 }
 
-/// One encoded frame's location in the `mdat`, gathered for the sample tables.
 struct Sample {
     size: u32,
     sync: bool,
@@ -92,8 +84,8 @@ enum Encoder {
 impl VideoWriter {
     /// Open `path` for `width` x `height` frames at `fps`.
     ///
-    /// AV1 4:2:0 crops an odd side by one pixel; H.264 pads it by one. Every [`push`](Self::push) must then hand the same
-    /// original `width`/`height`.
+    /// AV1 crops an odd side by one pixel; H.264 pads it by one. Every [`push`](Self::push) must
+    /// then pass the same original `width`/`height`.
     pub fn create(
         path: &Path,
         width: u32,
@@ -128,9 +120,6 @@ impl VideoWriter {
     }
 
     /// Encode one HWC uint8 frame (`channels` = 1/3/4).
-    ///
-    /// Rejects a frame whose dimensions differ from the ones [`create`](Self::create)
-    /// fixed -- a camera must not change resolution mid-episode.
     pub fn push(&mut self, buf: &[u8], width: u32, height: u32, channels: u32) -> io::Result<()> {
         if width != self.width || height != self.height {
             return Err(io::Error::other(format!(
@@ -170,11 +159,6 @@ impl VideoWriter {
     }
 }
 
-/// Streaming AV1-to-MP4 encoder.
-///
-/// The `y`/`u`/`v` fields are per-frame conversion scratch, allocated once at
-/// [`create`](Self::create) and overwritten each [`push`](Self::push) so the
-/// hot path performs no per-frame heap allocation.
 struct Av1Writer {
     ctx: Context<u8>,
     out: BufWriter<File>,
@@ -189,11 +173,6 @@ struct Av1Writer {
 }
 
 impl Av1Writer {
-    /// Open `path` and prepare to record even-cropped `width` x `height` frames.
-    ///
-    /// AV1 4:2:0 needs even dimensions, so odd inputs are cropped by one pixel;
-    /// every [`push`](Self::push) must then hand the same original `width`/`height`.
-    /// `quality` is 1..=100 (higher is better/larger), mapped to the AV1 quantizer.
     fn create(path: &Path, width: u32, height: u32, fps: u32, quality: u8) -> io::Result<Self> {
         let (ew, eh) = (width & !1, height & !1);
         if ew == 0 || eh == 0 {
@@ -242,7 +221,6 @@ impl Av1Writer {
         })
     }
 
-    /// Encode one HWC uint8 frame (`channels` = 1/3/4) and mux any ready packets.
     fn push(&mut self, buf: &[u8], width: u32, height: u32, channels: u32) -> io::Result<()> {
         let (w, h, c) = (width as usize, height as usize, channels as usize);
         let needed = w
@@ -274,12 +252,6 @@ impl Av1Writer {
         self.drain(false)
     }
 
-    /// Mux every packet the encoder has ready.
-    ///
-    /// When `flushing`, polls through `NeedMoreData`/`Encoded` until
-    /// `LimitReached`, bounded so an encoder that never reports completion
-    /// (rav1e documents no post-flush guarantee) errors out instead of
-    /// spinning forever.
     fn drain(&mut self, flushing: bool) -> io::Result<()> {
         let mut spins = 0u32;
         loop {
@@ -305,7 +277,6 @@ impl Av1Writer {
         }
     }
 
-    /// Flush the encoder, write the `moov`, and finalize the file.
     fn finish(mut self) -> io::Result<Stats> {
         self.ctx.flush();
         self.drain(true)?;
@@ -341,7 +312,6 @@ impl Av1Writer {
     }
 }
 
-/// One HWC uint8 frame queued for the encoder thread.
 struct FrameMsg {
     buf: Vec<u8>,
     width: u32,
@@ -351,11 +321,9 @@ struct FrameMsg {
 
 /// A `VideoWriter` running on its own encoder thread.
 ///
-/// `push` hands the frame to a bounded queue and returns immediately, so the
-/// caller (the eval loop) overlaps env stepping and model inference with
-/// encoding instead of stalling on it; the queue bound keeps at most a few
-/// frames in flight. An encode error surfaces on the next `push` (or at
-/// `finish`), which is also when a dimension change is rejected.
+/// `push` hands the frame to a bounded queue and returns at once, so the caller overlaps stepping
+/// and inference with encoding; at most a few frames are in flight. An encode error, or a
+/// dimension change, surfaces on the next `push` or at `finish`.
 pub struct ThreadedVideoWriter {
     sender: Option<std::sync::mpsc::SyncSender<FrameMsg>>,
     worker: Option<std::thread::JoinHandle<io::Result<Stats>>>,
@@ -431,16 +399,11 @@ impl ThreadedVideoWriter {
     }
 }
 
-/// Map a 1..=100 quality (higher is better) to a rav1e quantizer (0 best, 255 worst).
 fn quantizer_for(quality: u8) -> usize {
     let q = quality.clamp(1, 100) as usize;
     (100 - q) * 255 / 100
 }
 
-/// BT.601 limited-range RGB -> I420 planar, cropping to even dimensions.
-///
-/// Writes into caller-provided plane buffers (sized for the even-cropped
-/// dimensions) so the per-frame hot path allocates nothing.
 fn rgb_to_i420(rgb: &[u8], w: usize, h: usize, out: (&mut [u8], &mut [u8], &mut [u8])) {
     let (y, u, v) = out;
     let (ew, eh) = (w & !1, h & !1);
@@ -482,7 +445,6 @@ fn write_ftyp(out: &mut impl Write) -> io::Result<()> {
     out.write_all(&b)
 }
 
-/// `mdat` header with a 64-bit largesize (patched in [`VideoWriter::finish`]).
 fn write_mdat_header(out: &mut impl Write) -> io::Result<()> {
     out.write_all(&1u32.to_be_bytes())?;
     out.write_all(b"mdat")?;
@@ -615,10 +577,6 @@ fn matrix(b: &mut Vec<u8>) {
     }
 }
 
-/// `colr` (nclx) box declaring BT.601 limited-range, matching [`rgb_to_i420`].
-///
-/// Without it a player guesses the matrix from resolution (BT.709 for >=720p),
-/// which would shift the colors of a recorded HD camera away from what was drawn.
 fn write_colr_bt601(b: &mut Vec<u8>) {
     let colr = open_box(b, b"colr");
     b.extend_from_slice(b"nclx");
@@ -629,7 +587,6 @@ fn write_colr_bt601(b: &mut Vec<u8>) {
     close_box(b, colr);
 }
 
-/// Open a box, returning the index of its size field for [`close_box`].
 fn open_box(b: &mut Vec<u8>, box_type: &[u8; 4]) -> usize {
     let pos = b.len();
     b.extend_from_slice(&[0u8; 4]);
@@ -637,13 +594,11 @@ fn open_box(b: &mut Vec<u8>, box_type: &[u8; 4]) -> usize {
     pos
 }
 
-/// Patch a box's size field to span from `pos` to the current end.
 fn close_box(b: &mut [u8], pos: usize) {
     let size = (b.len() - pos) as u32;
     b[pos..pos + 4].copy_from_slice(&size.to_be_bytes());
 }
 
-/// Write a full box (version + flags header) with `body` appended, then close it.
 fn full_box(
     b: &mut Vec<u8>,
     box_type: &[u8; 4],
@@ -659,8 +614,6 @@ fn full_box(
 }
 
 /// Build an RGB frame from a contiguous HWC uint8 buffer (`channels` = 1/3/4).
-/// Grayscale expands to RGB; alpha is dropped. Returns `None` if the buffer is
-/// too short or `channels` is unsupported.
 pub fn rgb_from_hwc(buf: &[u8], width: u32, height: u32, channels: u32) -> Option<RgbImage> {
     let (w, h, c) = (width as usize, height as usize, channels as usize);
     let needed = w.checked_mul(h)?.checked_mul(c)?;
@@ -676,7 +629,7 @@ pub fn rgb_from_hwc(buf: &[u8], width: u32, height: u32, channels: u32) -> Optio
         let (r, g, b) = if c == 1 {
             (buf[base], buf[base], buf[base])
         } else {
-            (buf[base], buf[base + 1], buf[base + 2]) // c == 4: drop alpha
+            (buf[base], buf[base + 1], buf[base + 2])
         };
         rgb.extend_from_slice(&[r, g, b]);
     }
@@ -689,7 +642,6 @@ mod tests {
 
     const AV1: Encoding = Encoding::Av1 { quality: 60 };
 
-    /// One synthetic RGB gradient frame, HWC.
     fn frame(w: u32, h: u32, t: usize) -> Vec<u8> {
         let mut rgb = vec![0u8; (w * h * 3) as usize];
         for yy in 0..h as usize {
@@ -711,8 +663,6 @@ mod tests {
         vw.finish().expect("finish")
     }
 
-    /// ffprobe's codec, decoded frame count and size of the file's video
-    /// stream; `None` when ffprobe is not installed.
     fn ffprobe(path: &Path) -> Option<(String, u32, u32, u32)> {
         let output = std::process::Command::new("ffprobe")
             .args(["-v", "error", "-count_frames", "-select_streams", "v:0"])
@@ -743,7 +693,6 @@ mod tests {
 
     #[test]
     fn each_codec_writes_an_mp4_ffprobe_decodes() {
-        // An odd width: AV1 crops it, H.264 pads it.
         for (codec, expected) in [
             (VideoCodec::Av1, ("av1", 64)),
             (VideoCodec::H264, ("h264", 66)),

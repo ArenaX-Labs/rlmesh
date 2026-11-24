@@ -1,15 +1,3 @@
-"""End-to-end: the batched predict corners on a vectorized spec'd route.
-
-A spec'd model driven by the native in-process loop against a vectorized
-(``num_envs=2``) tagged env resolves its route at connect (the same
-``resolve_adapter`` the served path runs at ``ResolveAdapter``), so the engine
-dispatches the most-specific predict corner: ``predict_batch`` for an
-un-chunked route, ``predict_chunk_batch`` when an ``execution_horizon > 1`` is
-pinned. Regression for the route never resolving on ``run_local`` (every
-predict fell into the spec-less branch and the batched corners were
-unreachable).
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -42,8 +30,6 @@ def _spec() -> Any:
 
 
 class VecEnv:
-    """Two-lane vector env: Dict obs with one tagged state, 3-dim Box action."""
-
     def __init__(self) -> None:
         import gymnasium as gym
 
@@ -122,10 +108,6 @@ def _policy_cls(calls: dict[str, int], batch_shapes: list[Any]) -> Any:
 
 
 def test_vectorized_route_dispatches_predict_batch() -> None:
-    """One batched forward per step with the fused obs carrying the batch axis;
-    the single-lane corners never drive the route (the resolve-time stateless
-    probe accounts for every ``predict`` call), and the adapter's action path
-    hands the env the batched 2-lane action."""
     calls = {
         k: 0
         for k in ("predict", "predict_batch", "predict_chunk", "predict_chunk_batch")
@@ -149,9 +131,6 @@ def test_vectorized_route_dispatches_predict_batch() -> None:
 
 
 def test_run_public_api_drives_vectorized_env_end_to_end() -> None:
-    """The public ``Model.run`` on a tagged local vector env: served on loopback,
-    driven by the native loop, batched corner dispatched once per step, and the
-    RunResult carries the runtime's per-episode report."""
     import rlmesh.adapters as adapt
 
     calls = {
@@ -170,9 +149,6 @@ def test_run_public_api_drives_vectorized_env_end_to_end() -> None:
 
 
 def test_run_refuses_a_chunk_horizon_on_a_vector_env() -> None:
-    """Chunk replay is whole-batch: one lane's episode end would discard every
-    lane's buffered frames, so a vector env only runs at ``execution_horizon=1``
-    and the public ``Model.run`` refuses the combination before resolving."""
     import pytest
     import rlmesh.adapters as adapt
 
@@ -187,12 +163,6 @@ def test_run_refuses_a_chunk_horizon_on_a_vector_env() -> None:
 
 
 def test_chunk_only_model_collapses_to_batched_corner_at_horizon_1() -> None:
-    """A model defining ONLY the chunk corners still drives an un-chunked
-    (execution_horizon=1) vectorized route batched: corner synthesis derives
-    ``predict_batch`` from ``predict_chunk_batch`` (one-step decode, frame 0),
-    so the model's own chunk-batch corner runs once per step. The derived
-    corner also serves the resolve-time stateless probe, so the assertions are
-    behavioral (frames on the env) rather than an exact call count."""
     from rlmesh.numpy import Model
 
     calls = {"predict_chunk": 0, "predict_chunk_batch": 0}
@@ -227,9 +197,6 @@ def test_chunk_only_model_collapses_to_batched_corner_at_horizon_1() -> None:
 
 
 def test_vectorized_chunked_route_is_refused_before_resolve() -> None:
-    """Chunk replay is whole-batch, so a vector route never runs at a chunk
-    horizon: the local runner refuses ``execution_horizon=2`` on a 2-lane env
-    before any corner is dispatched and before the env sees a step."""
     calls = {
         k: 0
         for k in ("predict", "predict_batch", "predict_chunk", "predict_chunk_batch")

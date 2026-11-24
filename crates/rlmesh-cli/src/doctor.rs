@@ -25,15 +25,12 @@ pub(crate) fn doctor(args: &DoctorArgs, stdout: &mut impl Write, style: Style) -
     std::fs::create_dir_all(&output)
         .with_context(|| format!("create the output directory {}", output.display()))?;
     let image = &args.image;
-    // An env that serves no id of its own goes by what the image serves.
     let name = image_check::parse_serve_command(&config).target;
     let mut report = off_runtime(|| match kind {
         ProbeKind::Env => probe_env(image, describe, &output, name),
         ProbeKind::Model => probe_model(image, describe),
     })?;
     report.checks.insert(0, image_config_check(&config));
-    // A labelled image's float is in image_config; without a label, the
-    // model's handshake describe says the same.
     if !config.labels.contains_key(DESCRIBE_LABEL)
         && let Some(warning) = served_float_warning(&report)
     {
@@ -145,7 +142,6 @@ pub(crate) fn bench(args: &BenchArgs, stdout: &mut impl Write, style: Style) -> 
     Ok(i32::from(failed(report)))
 }
 
-/// The probe of an env image, served in a container of its own.
 fn probe_env(
     image: &ProbeImageArgs,
     describe: Option<serde_json::Value>,
@@ -170,7 +166,6 @@ fn probe_env(
     Ok(report)
 }
 
-/// The probe of a model image, beside its reference env when one is given.
 fn probe_model(image: &ProbeImageArgs, describe: Option<serde_json::Value>) -> Result<ProbeReport> {
     let (model, reference) = start_model(image)?;
     let model = match model {
@@ -192,9 +187,6 @@ fn probe_model(image: &ProbeImageArgs, describe: Option<serde_json::Value>) -> R
     Ok(report)
 }
 
-/// The first failed check, once the image served, carries the last lines
-/// its container logged (a model's traceback, say): the container, and its
-/// logs with it, is removed once the probe ends.
 fn with_container_logs(report: &mut ProbeReport, container: &Container, role: &str) {
     let Some(check) = report
         .checks
@@ -212,9 +204,6 @@ fn with_container_logs(report: &mut ProbeReport, container: &Container, role: &s
     }
 }
 
-/// The model container and, with `--env`, its reference env's. A model that
-/// does not come up is the report's failed handshake; an env that does not is
-/// an error, since nothing about the model was checked.
 fn start_model(image: &ProbeImageArgs) -> Result<(Result<Container, String>, Option<Container>)> {
     let reference =
         match &image.env {
@@ -229,8 +218,6 @@ fn start_model(image: &ProbeImageArgs) -> Result<(Result<Container, String>, Opt
     ))
 }
 
-/// The mounts and params `--volume` and `--kwargs-json` give the image under
-/// probe (not a reference env).
 fn probed(args: &ProbeImageArgs) -> RunExtras<'_> {
     RunExtras {
         volumes: &args.volumes,
@@ -238,8 +225,6 @@ fn probed(args: &ProbeImageArgs) -> RunExtras<'_> {
     }
 }
 
-/// Start `image` as participant `name` and wait for it to serve; the inner
-/// error is the container's failure to come up, with its logs.
 fn start(
     image: &str,
     name: &str,
@@ -260,8 +245,7 @@ fn start(
     )
 }
 
-/// Run `work` on a thread of its own: the probe blocks, and a blocking
-/// rlmesh call refuses to run on the CLI's async runtime.
+// A blocking rlmesh call refuses to run on the CLI's async runtime.
 fn off_runtime<T: Send>(work: impl FnOnce() -> Result<T> + Send) -> Result<T> {
     std::thread::scope(|scope| {
         scope
@@ -271,12 +255,10 @@ fn off_runtime<T: Send>(work: impl FnOnce() -> Result<T> + Send) -> Result<T> {
     })
 }
 
-/// The image's describe envelope, when it carries a parseable label.
 fn describe_label(config: &ImageConfig) -> Option<serde_json::Value> {
     serde_json::from_str(config.labels.get(DESCRIBE_LABEL)?).ok()
 }
 
-/// What the image serves: its describe label's kind, else its serve command's.
 fn image_kind(config: &ImageConfig) -> ProbeKind {
     let labelled = config
         .labels
@@ -291,8 +273,6 @@ fn image_kind(config: &ImageConfig) -> ProbeKind {
     }
 }
 
-/// `check-image`'s static checks of the image config and labels, as the
-/// report's first check: an invalid describe label fails here.
 fn image_config_check(config: &ImageConfig) -> ProbeCheck {
     let report = image_check::check_image(config, None);
     let (status, lines) = if !report.failed.is_empty() {
@@ -307,7 +287,6 @@ fn image_config_check(config: &ImageConfig) -> ProbeCheck {
         .metric("warnings", report.warnings.len() as f64)
 }
 
-/// The float nudge from the describe the served peer stamped on its handshake.
 fn served_float_warning(report: &ProbeReport) -> Option<String> {
     let runtime = report.peer.describe.as_ref()?.get("runtime")?.clone();
     let runtime: image_check::RuntimeOffer = serde_json::from_value(runtime).ok()?;
@@ -321,9 +300,6 @@ fn failed(report: &ProbeReport) -> bool {
         .any(|check| check.status == CheckStatus::Fail)
 }
 
-/// What to do when a model's predict checks were skipped for want of inputs
-/// (it declares no ModelSpec and no `--env` was given): the probe's own
-/// report cannot name this CLI's flag.
 fn predict_hint(report: &ProbeReport, image: &str) -> Option<String> {
     report
         .checks
@@ -388,8 +364,6 @@ fn render_checks(
 mod tests {
     use super::*;
 
-    /// What `probe_model` reports for a model that declares no ModelSpec,
-    /// probed with no `--env`.
     fn adapter_less_report() -> ProbeReport {
         let mut report = doctor::failed_handshake(ProbeSubject::Model, "");
         report.checks[0] = ProbeCheck::new(
@@ -429,13 +403,11 @@ mod tests {
              no inputs to probe it with. Declare one on the model (its `spec`), or pass \
              --env <env-image> to check it against that env's spaces"
         );
-        // The note sits above the summary, which still counts the skips.
         assert!(
             text.trim_end()
                 .ends_with("0 passed, 1 warnings, 0 failed, 6 skipped"),
             "{text}"
         );
-        // A model whose checks ran, or failed to start, gets no such note.
         let failed = doctor::failed_handshake(ProbeSubject::Model, "no answer");
         assert!(!rendered(&failed).contains("note"));
     }

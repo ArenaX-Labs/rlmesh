@@ -1,17 +1,5 @@
 //! `rlmesh devices provision`: a networked board's USB provisioning.
-//! The board answers `GET_DEVICE` with
-//! its device key; it stores the assigned robot name and home host's key,
-//! id and base addresses from `PROVISION`, and confirms with the record's
-//! CRC. Only then is its key enrolled in `devices.toml`, as a board
-//! (`kind = "board"`, default cap `model`) whose robot name is pinned to
-//! it. The cable is the presence check; nothing on the link is
-//! encrypted.
-//!
-//! It runs on the robot's machine, with rlmeshd running: rlmeshd gives the
-//! host's details over its local channel ([`crate::pair::host_details`]).
 // TODO: provisioning from a machine paired with the robot needs an enroll verb on
-// rlmeshd's pairing or ctl endpoint; add it when
-// boards are flashed away from the robot.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -28,19 +16,13 @@ use rlmesh_tether::provision::{
 
 use crate::devices::{DEVICES, Entry, Pin, edit};
 
-/// How long one try waits for the board's answer.
 const TRY: Duration = Duration::from_millis(200);
-/// Tries before giving up: 10 s in all, since opening the port resets many
-/// boards, and a sketch may join Wi-Fi before it listens.
 const TRIES: u32 = 50;
-/// A board's default cap.
 const BOARD_CAP: &str = "model";
 
 /// A byte link to a board: its serial port, or a test's fake.
 pub trait Port {
-    /// Writes `bytes`.
     fn send(&mut self, bytes: &[u8]) -> io::Result<()>;
-    /// Reads what arrives within `wait` into `buf`: 0 when nothing came.
     fn recv(&mut self, buf: &mut [u8], wait: Duration) -> io::Result<usize>;
 }
 
@@ -54,7 +36,6 @@ pub struct Home {
     pub addresses: Vec<String>,
 }
 
-/// The board, once it stored the record.
 #[derive(Debug, PartialEq, Eq)]
 struct Board {
     device_key: [u8; 32],
@@ -62,8 +43,6 @@ struct Board {
     previous: Option<String>,
 }
 
-/// Sends `frame` every [`TRY`], up to [`TRIES`] times, until `answer` takes
-/// a message the board sent: its result, or `None` when none did.
 fn ask<T>(
     port: &mut impl Port,
     frame: &[u8],
@@ -83,8 +62,6 @@ fn ask<T>(
                 break;
             }
             for &byte in &buf[..n] {
-                // A frame that fails a check (the sketch's text before a
-                // delimiter, noise) is dropped.
                 let Some(Ok(decoded)) = decoder.push(byte) else {
                     continue;
                 };
@@ -108,7 +85,6 @@ fn frame(msg: &Prov<'_>) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// The tether exchange, assigning robot `name` to the board behind `port`.
 fn run(port: &mut impl Port, name: &str, home: &Home) -> Result<Board> {
     if !valid_name(name.as_bytes()) {
         bail!("robot name must be 1–128 bytes of [A-Za-z0-9._-]");
@@ -126,7 +102,6 @@ fn run(port: &mut impl Port, name: &str, home: &Home) -> Result<Board> {
              is the port right, and is the serial monitor closed?"
         );
     };
-    // As many addresses as fit the payload.
     let usable: Vec<&[u8]> = home
         .addresses
         .iter()
@@ -197,7 +172,6 @@ fn run(port: &mut impl Port, name: &str, home: &Home) -> Result<Board> {
     }
 }
 
-/// What enrolling a board did to its device.
 #[derive(Debug, PartialEq, Eq)]
 enum Enrolled {
     /// A new device.
@@ -208,12 +182,6 @@ enum Enrolled {
     Renamed(String),
 }
 
-/// Enrolls `board`'s key in the table in `dir` as robot `name`'s board,
-/// and pins `name` to it: its device id, and what happened to the device.
-/// A key already there keeps its device (cap, parts and verbs), unless
-/// `max` changes the cap. A board's device is named after its robot, so a
-/// board given a new name has its device renamed too, and the pins that
-/// named the old id name the new one.
 fn enroll(dir: &Path, key: &[u8; 32], name: &str, max: Option<&str>) -> Result<(String, Enrolled)> {
     let public_key = base32(key);
     edit(dir, |table| {
@@ -233,7 +201,6 @@ fn enroll(dir: &Path, key: &[u8; 32], name: &str, max: Option<&str>) -> Result<(
         let id = if renamed {
             let entry = table.devices.remove(&id).context("the device")?;
             let new_id = table.free_id(name, "board");
-            // Its pins follow it (the old name's goes below).
             for pin in table.robots.values_mut().filter(|pin| pin.device == id) {
                 pin.device.clone_from(&new_id);
             }
@@ -265,7 +232,6 @@ fn enroll(dir: &Path, key: &[u8; 32], name: &str, max: Option<&str>) -> Result<(
         if let Some(max) = max {
             entry.max_priority = max.into();
         }
-        // A networked board: no tethered board_id behind it.
         table.robots.insert(
             name.into(),
             Pin {
@@ -292,7 +258,6 @@ pub fn provision(
         provision_on(&mut tty, dir, name, max, &home, stdout)
     }
     // TODO: no serial port off Unix; add one when boards are provisioned
-    // from Windows.
     #[cfg(not(unix))]
     {
         let _ = (dir, port, name, max, stdout);
@@ -347,7 +312,6 @@ mod tests {
     use super::*;
     use crate::devices::Table;
 
-    /// The tether vectors (`rlmesh-tether/tests/vectors.json`).
     fn vector(name: &str) -> Vec<u8> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -369,8 +333,6 @@ mod tests {
             .collect()
     }
 
-    /// A board on a fake port: unassigned `DEVICE_INFO` from the vectors, after the sketch's text, and `PROVISIONED` with the CRC
-    /// `crc` makes of the payload it got.
     struct FakeBoard {
         decoder: Decoder<MAX_DECODED>,
         out: VecDeque<u8>,
@@ -436,12 +398,10 @@ mod tests {
     #[test]
     fn a_board_is_enrolled_only_on_its_confirmation_and_keeps_its_device() {
         let dir = tempfile::tempdir().expect("tempdir");
-        // The vector's device key.
         let board_key: [u8; 32] = std::array::from_fn(|i| 0xa0 + i as u8);
         let mut out = Vec::new();
         let enrolled = |dir: &Path| Table::read(dir).expect("table").devices.len();
 
-        // A board confirming another record: nothing is enrolled.
         let err = provision_on(
             &mut FakeBoard::new(|c| c ^ 1),
             dir.path(),
@@ -454,7 +414,6 @@ mod tests {
         assert!(err.to_string().contains("CRC mismatch"), "{err}");
         assert_eq!(enrolled(dir.path()), 0);
 
-        // A matching confirmation enrolls a board at model, pinned.
         let mut board = FakeBoard::new(|c| c);
         provision_on(&mut board, dir.path(), "eye-3", None, &home(), &mut out)
             .expect("provisioned");
@@ -492,8 +451,6 @@ mod tests {
             }
         );
 
-        // Provisioned with a new name and cap: the same device, renamed with
-        // it, the old pin dropped.
         let mut out = Vec::new();
         provision_on(
             &mut FakeBoard::new(|c| c),
@@ -515,7 +472,6 @@ mod tests {
         assert!(!table.robots.contains_key("eye-3"));
         assert_eq!(table.robots["eye-4"].device, "eye-4");
 
-        // The same name again keeps the device as it is.
         let mut out = Vec::new();
         provision_on(
             &mut FakeBoard::new(|c| c),
@@ -535,9 +491,6 @@ mod tests {
         assert_eq!(again, table);
     }
 
-    /// A board enrolled as `eye-1` and provisioned as `gimbal-left` is device
-    /// `gimbal-left` from then on, with what its entry allowed, and every
-    /// pin that named it follows; an id it can't take gets the next free one.
     #[test]
     fn a_board_given_a_new_name_has_its_device_renamed() {
         let dir = tempfile::tempdir().unwrap();
@@ -548,7 +501,6 @@ mod tests {
         );
         edit(dir.path(), |table| {
             table.devices.get_mut("eye-1").unwrap().expires = Some("2030-01-01".into());
-            // A second robot name pinned to the board by hand.
             table.robots.insert(
                 "spare".into(),
                 Pin {
@@ -556,7 +508,6 @@ mod tests {
                     board_id: None,
                 },
             );
-            // The new name's own id was revoked once: never given out again.
             table.revoked.insert("gimbal-left".into());
             Ok(())
         })
@@ -574,7 +525,6 @@ mod tests {
         assert!(!table.robots.contains_key("eye-1"));
         assert_eq!(table.robots["gimbal-left"].device, "gimbal-left-2");
         assert_eq!(table.robots["spare"].device, "gimbal-left-2");
-        // The table the host reads admits the key under its new id alone.
         let (devices, _) = table.host().unwrap();
         assert_eq!(
             devices.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
@@ -644,7 +594,6 @@ mod tests {
         };
         assert_eq!(p.name.len(), 128);
         assert_eq!(p.addresses.as_slice().len(), 4);
-        // All four long addresses are valid on their own; only one fits with the name.
         home.addresses = vec![format!("{}:7447", "h".repeat(58)); 4];
         run(&mut board, &"x".repeat(128), &home).unwrap();
         let payload = &board.stored[1];

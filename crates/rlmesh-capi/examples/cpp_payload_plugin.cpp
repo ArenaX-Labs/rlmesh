@@ -1,4 +1,3 @@
-// A distinct shared-library/runtime domain must own its own exception payload.
 #include <rlmesh.hpp>
 namespace {
 int frees = 0;

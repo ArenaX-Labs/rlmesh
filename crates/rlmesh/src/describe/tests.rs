@@ -1,5 +1,3 @@
-//! Describe envelopes for model and env factory types and instances.
-
 use super::*;
 use crate::model::{LoadKey, ModelOptions};
 use crate::spaces::{Discrete, DiscreteOptions, Space};
@@ -161,7 +159,6 @@ fn a_given_edition_is_used_as_given() {
     assert_eq!(edition(""), rlmesh_proto::CURRENT_WORKFLOW_EDITION);
 }
 
-/// A three-step env whose observation space is `Discrete(size)`.
 struct Sized {
     size: i64,
 }

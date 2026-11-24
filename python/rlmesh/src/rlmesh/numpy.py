@@ -57,7 +57,7 @@ def ensure_available() -> None:
     """Raise if NumPy is not installed."""
     try:
         _ = importlib.import_module("numpy")
-    except ImportError as exc:  # pragma: no cover - import guard
+    except ImportError as exc:  # pragma: no cover
         raise ImportError(
             "rlmesh.numpy requires numpy. Install rlmesh[numpy]."
         ) from exc
@@ -133,11 +133,7 @@ def _encode_leaf(value: object) -> object:
 def _stack_leaf(values: list[object]) -> object:
     import numpy as np
 
-    # Text leaves stay a per-lane list; arrays and numeric primitives stack to
-    # [N, ...]. A ragged leaf cannot fuse -- raise rather than silently returning a
-    # list for this leaf while siblings stack, which hands the model a structurally
-    # inconsistent batch ({stacked leaves} + {one list leaf}). A None leaf would
-    # silently fuse into an object-dtype array, so it is rejected explicitly.
+    # A ragged leaf cannot fuse, and a None leaf would silently become an object array; both raise.
     if any(v is None for v in values):
         raise ValueError(
             f"cannot fuse a None observation leaf across {len(values)} lanes; a "

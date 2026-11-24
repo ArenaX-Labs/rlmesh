@@ -1,5 +1,3 @@
-"""Admission order includes callers waiting for the currently active corner."""
-
 import sys
 import threading
 import time

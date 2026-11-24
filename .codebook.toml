@@ -1,15 +1,12 @@
 dictionaries = ["en_us"]
 words = [
-  # Project
   "rlmesh",
 
-  # Math
   "numel",
   "elementwise",
   "nvec",
   "arange",
 
-  # Tools
   "mise",
   "prek",
   "rustup",
@@ -17,7 +14,6 @@ words = [
   "clippy",
   "oxfmt",
 
-  # Misc
   "cli",
   "blayone",
 ]

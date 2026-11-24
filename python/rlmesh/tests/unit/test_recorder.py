@@ -1,12 +1,3 @@
-"""Recorder: capture eval runs and export an ``rlmesh.result.v1`` bundle.
-
-Pins the OSS-native record shape and the two capture modes -- post-hoc ``add`` from
-a :class:`~rlmesh.RunResult` (path-agnostic) and live ``capture`` hooks (media on the
-session path) -- plus folder/zip export. The capture hooks are driven directly with
-fabricated :class:`~rlmesh.StepEvent` / :class:`~rlmesh.EpisodeResult` values, the
-same objects ``Session.run`` feeds them, so the tests need no env.
-"""
-
 from __future__ import annotations
 
 import json
@@ -23,7 +14,6 @@ from rlmesh.recorder import SCHEMA
 
 
 def _context(client: object, contract: object) -> Any:
-    """A RunContext stand-in: what the recorder reads off a run."""
     from rlmesh._models._view import discover_frame_sources
 
     return SimpleNamespace(
@@ -125,7 +115,6 @@ def test_recorder_validates_fps() -> None:
 
 
 def test_included_in_metrics_excludes_from_aggregates() -> None:
-    """An excluded episode is still recorded, but not counted in aggregates."""
     rec = Recorder()
     rec.add(
         _run(_episode(0, reward=10.0, success=True)),
@@ -141,7 +130,6 @@ def test_included_in_metrics_excludes_from_aggregates() -> None:
 
 
 def test_success_rate_counts_an_episode_with_no_reported_outcome_as_a_failure() -> None:
-    """success=None counts as a failure beside a reported outcome."""
     rec = Recorder()
     rec.add(
         _run(
@@ -179,7 +167,6 @@ def test_export_zip_by_suffix(tmp_path: Path) -> None:
 
 
 def test_export_folder_clears_stale_media(tmp_path: Path) -> None:
-    """Re-exporting a media-less bundle over a folder drops the earlier media/."""
     np = pytest.importorskip("numpy")
     dest = tmp_path / "bundle"
     img = np.full((32, 32, 3), 100, dtype=np.uint8)
@@ -223,7 +210,6 @@ def test_capture_records_av1_mp4(tmp_path: Path) -> None:
 
 
 def test_quality_controls_file_size(tmp_path: Path) -> None:
-    """Lower quality (higher quantizer) yields a smaller file for the same footage."""
     np = pytest.importorskip("numpy")
     frames = []
     for t in range(12):
@@ -262,7 +248,6 @@ def test_capture_multi_camera_records_each(tmp_path: Path) -> None:
 
 
 def test_capture_records_render_source(tmp_path: Path) -> None:
-    """An env with an rgb render mode but no image obs roles still records render()."""
     np = pytest.importorskip("numpy")
     img = np.full((48, 64, 3), 120, dtype=np.uint8)
 
@@ -291,11 +276,6 @@ def test_capture_records_render_source(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("path", ["bind", "native"])
 def test_capture_smoke_with_a_real_run(tmp_path: Path, path: str) -> None:
-    """Recorder.capture works through a real run's hook path, on either loop.
-
-    Deliberately omits ``binding=``: the hooks must adopt the run's context via
-    ``RunHooks.on_run_start`` and auto-discover the image role from it.
-    """
     np = pytest.importorskip("numpy")
     gym = pytest.importorskip("gymnasium")
 
@@ -357,8 +337,6 @@ def test_capture_smoke_with_a_real_run(tmp_path: Path, path: str) -> None:
 
 
 def test_native_capture_records_render_of_a_local_env(tmp_path: Path) -> None:
-    """On the native loop a local env object's ``render()`` is reachable: the env
-    is idle while a hook runs, so the recorder captures it like the session loop."""
     np = pytest.importorskip("numpy")
     gym = pytest.importorskip("gymnasium")
     from rlmesh.numpy import Model
@@ -405,8 +383,6 @@ def test_native_capture_records_render_of_a_local_env(tmp_path: Path) -> None:
 
 
 def test_record_writes_the_episode_artifact_tree_of_a_run(tmp_path: Path) -> None:
-    """Recorder.record writes the managed per-episode layout into the bundle;
-    with no transform the perturbed stream is the raw file."""
     np = pytest.importorskip("numpy")
     gym = pytest.importorskip("gymnasium")
     from rlmesh.numpy import Model
@@ -511,7 +487,6 @@ def test_capture_refuses_frames_from_a_vector_env() -> None:
     try:
         with pytest.raises(ValueError, match="single env"):
             model.run(_VectorEnv(), episodes=2, hooks=rec.capture(model="m", env="e"))
-        # Metrics-only capture is fine: episodes are records, not interleaved frames.
         result = model.run(
             _VectorEnv(),
             episodes=2,
@@ -526,7 +501,6 @@ def test_capture_refuses_frames_from_a_vector_env() -> None:
 
 
 def test_auto_discovery_records_image_role_named_render() -> None:
-    """A role named ``render`` must not be hidden by the env render() source."""
     np = pytest.importorskip("numpy")
     render_img = np.full((32, 32, 3), 200, dtype=np.uint8)
     role_img = np.full((32, 32, 3), 50, dtype=np.uint8)
@@ -564,7 +538,6 @@ def test_auto_discovery_records_image_role_named_render() -> None:
 
 
 def test_auto_discovery_reads_render_role_without_render_source() -> None:
-    """A ``render`` image role is recordable when there is no env render() source."""
     np = pytest.importorskip("numpy")
     role_img = np.full((32, 32, 3), 75, dtype=np.uint8)
     reads: list[str] = []
@@ -595,7 +568,6 @@ def test_auto_discovery_reads_render_role_without_render_source() -> None:
 
 
 def test_media_paths_unique_across_workloads(tmp_path: Path) -> None:
-    """Two models on the same task must not overwrite each other's media."""
     np = pytest.importorskip("numpy")
     rec = Recorder()
     img = np.full((32, 32, 3), 200, dtype=np.uint8)
@@ -614,7 +586,6 @@ def test_media_paths_unique_across_workloads(tmp_path: Path) -> None:
 
 
 def test_colliding_camera_names_get_distinct_paths(tmp_path: Path) -> None:
-    """Two roles that sanitize to the same filename must not share a media path."""
     np = pytest.importorskip("numpy")
     rec = Recorder()
     img = np.full((32, 32, 3), 90, dtype=np.uint8)
@@ -634,7 +605,6 @@ def test_colliding_camera_names_get_distinct_paths(tmp_path: Path) -> None:
 def test_env_video_eager_copy_survives_overwrite(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An env reusing one output path per episode must not clobber earlier ones."""
     monkeypatch.chdir(tmp_path)
     src = tmp_path / "rollout.mp4"
     rec = Recorder()
@@ -659,7 +629,6 @@ def test_env_video_eager_copy_survives_overwrite(
 
 
 def test_capture_defers_camera_discovery_to_first_step() -> None:
-    """capture(binding=) must not read the contract before the env connects."""
     rec = Recorder()
 
     class _Spy:
@@ -688,7 +657,6 @@ def test_capture_defers_camera_discovery_to_first_step() -> None:
 
 
 def test_explicit_empty_cameras_skips_discovery() -> None:
-    """cameras=[] is an explicit opt-out, distinct from cameras=None (auto-discover)."""
     rec = Recorder()
 
     class _Spy:
@@ -717,7 +685,6 @@ def test_explicit_empty_cameras_skips_discovery() -> None:
 
 
 def test_transient_read_error_skips_frame_keeps_camera() -> None:
-    """A one-off read failure drops that frame only; the camera keeps recording."""
     np = pytest.importorskip("numpy")
     rec = Recorder()
     img = np.full((32, 32, 3), 7, dtype=np.uint8)
@@ -741,7 +708,6 @@ def test_transient_read_error_skips_frame_keeps_camera() -> None:
 
 
 def test_capture_hook_guards_encode_errors() -> None:
-    """A staging/encode failure warns and drops the camera, never aborts the run."""
     np = pytest.importorskip("numpy")
     rec = Recorder()
     img = np.full((32, 32, 3), 10, dtype=np.uint8)
@@ -774,7 +740,6 @@ def test_capture_metrics_only_when_no_media() -> None:
 
 
 def test_multiple_episodes_into_one_capture_are_uniquely_indexed() -> None:
-    """Episodes all built with per-run index 0 are reindexed 0,1,2 in the workload."""
     rec = Recorder()
     hooks = rec.capture(model="m", env="e", task="t")
     for i in range(3):
@@ -799,8 +764,6 @@ def test_context_manager_cleans_staging(tmp_path: Path) -> None:
 
 
 def test_recorder_validates_video_options_at_construction(tmp_path: Path) -> None:
-    """Bad fps/quality/codec and a missing ffmpeg fail at construction, not as a
-    swallowed first-frame error."""
     with pytest.raises(ValueError, match="quality"):
         _ = Recorder(quality=300)
     with pytest.raises(ValueError, match="quality"):
@@ -826,7 +789,6 @@ def test_export_rejects_unknown_archive_string(tmp_path: Path) -> None:
 
 
 def test_export_refuses_to_clobber_foreign_media_dir(tmp_path: Path) -> None:
-    """Folder export into a non-bundle directory must not delete its media/."""
     dest = tmp_path / "project"
     keep = dest / "media" / "precious.txt"
     keep.parent.mkdir(parents=True)
@@ -848,8 +810,6 @@ def test_export_folder_over_zip_file_errors(tmp_path: Path) -> None:
 
 
 def test_export_after_close_with_media_errors(tmp_path: Path) -> None:
-    """close() removes staged media; a later export must fail, not ship a bundle
-    whose manifest references files absent from the archive."""
     np = pytest.importorskip("numpy")
     img = np.full((32, 32, 3), 50, dtype=np.uint8)
     rec = Recorder()
@@ -871,7 +831,6 @@ def test_export_after_close_without_media_is_fine(tmp_path: Path) -> None:
 
 
 def test_zip_export_stores_media_uncompressed(tmp_path: Path) -> None:
-    """Already-AV1-compressed mp4s are STORED; result.json stays deflated."""
     np = pytest.importorskip("numpy")
     img = np.full((32, 32, 3), 90, dtype=np.uint8)
     rec = Recorder()
@@ -889,7 +848,6 @@ def test_zip_export_stores_media_uncompressed(tmp_path: Path) -> None:
 
 
 def test_explicit_render_camera_prefers_declared_role() -> None:
-    """cameras=["render"] must reach an image role literally named render."""
     np = pytest.importorskip("numpy")
     role_img = np.full((16, 16, 3), 30, dtype=np.uint8)
     reads: list[str] = []
@@ -911,7 +869,6 @@ def test_explicit_render_camera_prefers_declared_role() -> None:
 
 
 def test_explicit_render_camera_falls_back_to_render_source() -> None:
-    """cameras=["render"] with no such role still records the env render()."""
     np = pytest.importorskip("numpy")
     img = np.full((16, 16, 3), 60, dtype=np.uint8)
 
@@ -936,7 +893,6 @@ def test_explicit_render_camera_falls_back_to_render_source() -> None:
 
 
 def test_unreadable_env_video_path_warns(tmp_path: Path) -> None:
-    """A video_url that is not a local file is skipped loudly, not silently."""
     rec = Recorder()
     hooks = rec.capture(model="m", env="e", task="t")
     hooks.on_episode_start(episode=0, seed=0)
@@ -950,14 +906,6 @@ def test_unreadable_env_video_path_warns(tmp_path: Path) -> None:
 def test_env_video_outside_the_run_directory_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, escape: str
 ) -> None:
-    """A peer-supplied path that leaves the run directory is never copied.
-
-    ``video_keys`` reads the path out of a remote env's step info, so an env that
-    names ``~/.ssh/id_rsa`` (directly, via ``..``, or through a symlink it drops in
-    the run directory) must not get that file copied into the exported bundle. The
-    ``nul`` case covers a path the OS refuses outright: it must be skipped like any
-    other unusable path, not raised out of ``on_episode_end``.
-    """
     outside = tmp_path / "secret.mp4"
     outside.write_bytes(b"secret")
     run_dir = tmp_path / "run"
@@ -986,7 +934,6 @@ def test_env_video_outside_the_run_directory_is_refused(
 
 
 def test_on_run_start_prefers_an_explicit_binding() -> None:
-    """A context passed to capture(binding=...) wins over the running one."""
     from rlmesh.recorder.hooks import CaptureHooks
 
     rec = Recorder()
@@ -1004,7 +951,6 @@ def test_on_run_start_prefers_an_explicit_binding() -> None:
 
 
 def test_capture_warnings_never_raise_under_warnings_as_errors() -> None:
-    """The capture contract holds under -W error: degradation never aborts the run."""
     import warnings as _warnings
 
     np = pytest.importorskip("numpy")
@@ -1028,9 +974,6 @@ def test_capture_warnings_never_raise_under_warnings_as_errors() -> None:
 
 @pytest.mark.parametrize("path", ["bind", "native"])
 def test_live_capture_and_add_record_the_same_episode_metrics(path: str) -> None:
-    """One timing definition: the record ``capture()`` builds from the episode
-    delivered to ``on_episode_end`` equals the one ``add(result)`` builds from
-    the returned result, on both loops."""
     np = pytest.importorskip("numpy")
     from rlmesh.numpy import Model
 
@@ -1064,7 +1007,6 @@ def test_live_capture_and_add_record_the_same_episode_metrics(path: str) -> None
     live = Recorder()
     hooks = live.capture(model="m", env="e", task="t", cameras=[])
     if path == "bind":
-        # A binding hands its result to on_run_end alone; keep it.
         ended: list[RunResult] = []
         record = hooks.on_run_end
 
@@ -1108,7 +1050,6 @@ def test_a_saved_result_loads_back_with_its_outcomes(tmp_path: Path, name: str) 
     assert (workload["model"], workload["env"]) == ("m", "e")
 
     loaded = RunResult.load(path)
-    # The bundle keeps outcomes, not the trial ordinal or the latencies.
     assert loaded.episodes == tuple(
         EpisodeResult(
             e.index,

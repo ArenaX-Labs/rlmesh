@@ -1,11 +1,10 @@
 """The :class:`Recorder` -- capture eval runs, export a portable bundle.
 
-Path-agnostic by design: every OSS execution path (``rlmesh.run`` or a
-:class:`~rlmesh.Binding` stepped by hand) converges on the same
-:class:`~rlmesh.RunResult`, so :meth:`Recorder.add` records from that return value
-with no runtime changes. :meth:`Recorder.capture` returns a
+:meth:`Recorder.add` records from a :class:`~rlmesh.RunResult` (from
+``rlmesh.run`` or a :class:`~rlmesh.Binding` stepped by hand).
+:meth:`Recorder.capture` returns a
 :class:`~rlmesh.RunHooks` for live per-episode capture (and media) on the
-Python-driven paths. Either way, :meth:`Recorder.export` writes an
+Python-driven paths. Either way, :meth:`Recorder.export` writes a
 portable ``rlmesh.result.v1`` bundle.
 """
 
@@ -101,12 +100,8 @@ class Recorder:
         PyVideoWriter.check_codec(codec, ffmpeg)
         self._result_set = ResultSet(result_set_id=result_set_id or uuid.uuid4().hex)
         self._stager = MediaStager(fps=fps, quality=quality, codec=codec, ffmpeg=ffmpeg)
-        #: Each workload's telemetry rows (keyed by ``id(workload)``), one
-        #: batch per recorded run, written beside the workload.
         self._telemetry: dict[int, list[TelemetryRow]] = {}
-        #: Each recorded workload's artifact tree: its writer and bundle prefix.
         self._trees: dict[int, tuple[PyEpisodeArtifacts, str]] = {}
-        #: This machine's hardware stamp, taken with the first tree.
         self._stamp: dict[str, Any] | None = None
 
     @property
@@ -196,8 +191,7 @@ class Recorder:
 
         ``video_info_keys`` name the step-``info`` keys checked for an env-produced
         video file path (the env renders its own video); the file is copied into the
-        bundle. Recorded frames are encoded to AV1 mp4 in process. ``session``
-        is 0.1's name for ``binding`` and is refused.
+        bundle. Recorded frames are encoded to AV1 mp4 in process.
         """
         if session is not None:
             from .._upgrade import removed

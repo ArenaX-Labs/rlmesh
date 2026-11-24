@@ -11,9 +11,6 @@ import rlmesh.adapters as adapt
 
 from . import act, geovla, smolvla, xvla
 
-# An escape-hatch adapter factory: given an env's tags and spaces,
-# return a custom adapter (for models whose deployment needs stateful logic
-# specs cannot express).
 MakeAdapter = Callable[
     [adapt.EnvTags, "gym.spaces.Space[Any]", "gym.spaces.Space[Any]"],
     adapt.AdapterBase[Any],

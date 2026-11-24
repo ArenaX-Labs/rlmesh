@@ -1,21 +1,5 @@
 //! `rlmesh.toml`: a version's builds and its `dev.rlmesh.package` label,
 //! written once in TOML instead of as JSON in a Dockerfile.
-//!
-//! The top level is the package label itself, under the label's own key
-//! names (`name`, `[[checkpoints]]`, `envVars`, ...), plus the build keys
-//! `dockerfile`, `target`, `context` and `build_args`. Each `[variant.KEY]` table is one
-//! build, in priority order (the first is the version's default): its
-//! `accel.*` keys are the variant's `requires`, under the same names, and it
-//! may set `facets`, `priority`, its own build keys, and a `package` table
-//! overriding top-level package keys for that build. `[profile.KEY]` tables
-//! are shared by every variant. A file with no `[variant.*]` table is one
-//! build, keyed `default`, whose `accel.*` keys sit at the top level; with
-//! none, its label has no variant block at all, as a hand-written one need
-//! not.
-//!
-//! Each variant's label is rendered as JSON and checked by the same
-//! [`parse_compute_blocks`] that checks a hand-written label, so the TOML
-//! accepts exactly what the label does.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -48,8 +32,8 @@ const PROFILE_KEYS: [&str; 6] = ["default", "accel", "facets", "envVars", "gpu",
 pub struct Manifest {
     /// The builds, in priority order; the first is the version's default.
     pub variants: Vec<VariantBuild>,
-    /// The version-level package keys (see [`VERSION_PACKAGE_KEYS`]) set at
-    /// the top level, for the index annotation; empty when none are.
+    /// The version-level package keys (see [`VERSION_PACKAGE_KEYS`]) set at the top
+    /// level, for the index annotation; empty when none are.
     pub version: Map<String, Value>,
 }
 
@@ -71,8 +55,7 @@ pub struct VariantBuild {
 }
 
 /// Read and check the manifest at `path` (`-` reads stdin, relative to the
-/// current directory). Returns it with its warnings; every problem found
-/// fails it at once.
+/// current directory).
 pub fn load(path: &Path) -> Result<(Manifest, Vec<String>)> {
     let (raw, dir) = if path == Path::new("-") {
         let mut raw = String::new();
@@ -142,9 +125,6 @@ pub fn parse(raw: &str, dir: &Path, origin: &str) -> Result<(Manifest, Vec<Strin
         }
     };
 
-    // A single build that declares no requirements writes no variant block,
-    // as a hand-written label would: the default row is `default` and
-    // names its profiles' rows by their bare keys (`egl`, not `default-egl`).
     let undeclared = variants.is_none() && top_accel.is_none();
     let tables: Vec<(String, toml::Table)> = match variants {
         None => {
@@ -223,7 +203,6 @@ pub fn parse(raw: &str, dir: &Path, origin: &str) -> Result<(Manifest, Vec<Strin
         }
 
         let (blocks, report) = parse_compute_blocks(&label);
-        // A profile's message is the same under every variant: say it once.
         let said = |list: &mut Vec<String>, message: String| {
             let message = match message.strip_prefix("variant: ") {
                 Some(rest) => format!("{at}: {rest}"),
@@ -280,8 +259,6 @@ pub fn parse(raw: &str, dir: &Path, origin: &str) -> Result<(Manifest, Vec<Strin
     ))
 }
 
-/// The build keys of the top level (`defaults` absent) or of one variant,
-/// which falls back to the top level's, key by key for `build_args`.
 struct Build {
     dockerfile: PathBuf,
     target: Option<String>,
@@ -356,7 +333,6 @@ impl Build {
     }
 }
 
-/// One `[profile.KEY]` table as a `profiles[]` entry.
 fn profile(key: &str, value: toml::Value, errors: &mut Vec<String>) -> Value {
     let at = format!("profile.{key}");
     let toml::Value::Table(table) = value else {
@@ -379,8 +355,6 @@ fn profile(key: &str, value: toml::Value, errors: &mut Vec<String>) -> Value {
     Value::Object(entry)
 }
 
-/// An `accel` table as the label's `requires`: `accel.vendor = "nvidia"`
-/// is the requirement `"accel.vendor": "nvidia"`.
 fn requires(at: &str, accel: toml::Value, errors: &mut Vec<String>) -> Value {
     let toml::Value::Table(accel) = accel else {
         errors.push(format!(

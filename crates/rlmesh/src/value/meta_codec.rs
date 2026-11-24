@@ -1,24 +1,16 @@
 //! [`Metadata`] on the wire.
-//!
-//! `None` → Null; `Bool`, `Int`, `Float`, `Bytes`, `List` and `Tensor` keep
-//! their kind (an array travels as an array, as a NumPy array does); `Text`
-//! → String; `Dict` → Map; `Tuple` → List. Decoding yields only the wire
-//! kinds, with maps in the wire's sorted key order and an object array as
-//! its nested lists.
 
 use rlmesh_spaces::{MetaMap, MetaValue};
 
 use super::{Metadata, Value};
 use crate::{Result, Tensor};
 
-/// Encode a map for the wire.
 pub(crate) fn metadata_to_wire(map: &Metadata) -> Result<MetaMap> {
     map.iter()
         .map(|(key, value)| Ok((key.to_string(), value_to_wire(value)?)))
         .collect()
 }
 
-/// Encode one value for the wire.
 pub(crate) fn value_to_wire(value: &Value) -> Result<MetaValue> {
     Ok(match value {
         Value::None => MetaValue::Null,
@@ -35,14 +27,12 @@ pub(crate) fn value_to_wire(value: &Value) -> Result<MetaValue> {
     })
 }
 
-/// Decode a wire map.
 pub(crate) fn metadata_from_wire(map: MetaMap) -> Metadata {
     map.into_iter()
         .map(|(key, value)| (key, value_from_wire(value)))
         .collect()
 }
 
-/// Decode one wire value.
 pub(crate) fn value_from_wire(value: MetaValue) -> Value {
     match value {
         MetaValue::Null => Value::None,
@@ -54,7 +44,6 @@ pub(crate) fn value_from_wire(value: MetaValue) -> Value {
         MetaValue::List(items) => Value::List(items.into_iter().map(value_from_wire).collect()),
         MetaValue::Map(map) => Value::Dict(metadata_from_wire(map)),
         MetaValue::Tensor(tensor) => Value::Tensor(Tensor::wrap(tensor)),
-        // The facade has no object array: its nested lists.
         array @ MetaValue::Array { .. } => value_from_wire(array.lowered()),
     }
 }
@@ -95,14 +84,12 @@ mod tests {
             wire["t"],
             MetaValue::List(vec![MetaValue::Int(1), MetaValue::String("a".into())])
         );
-        // Arrays travel as arrays, 0-d ones too.
         let grid = i32_tensor(&[1, 2, 3, 4, 5, 6], &[2, 3]);
         assert_eq!(wire["grid"], MetaValue::Tensor(grid.core().clone()));
         assert_eq!(
             wire["scalar"],
             MetaValue::Tensor(i32_tensor(&[7], &[]).core().clone())
         );
-        // Decoding yields the wire kinds, in sorted key order.
         let back = metadata_from_wire(wire);
         assert_eq!(back.keys().collect::<Vec<_>>()[0], "b");
         assert_eq!(

@@ -1,10 +1,9 @@
-// A Node robot and a Node policy in one session: the UR10e of the conformance fixtures, faked (commanded
-// joints become measured ones), driven for two seconds by a policy that holds the arm where it is.
+// A Node robot and a Node policy in one session; the policy holds the arm where it is for two seconds.
 //
 //   mise run build:js:native && (cd javascript/rlmesh && node build.mjs --node-only)
 //   node examples/node/hold.mjs
 //
-// Plain try/finally, so it runs on Node 22; on Node 24 `await using` closes each one for you.
+// Plain try/finally runs on Node 22; on Node 24 `await using` closes each one for you.
 import { readFileSync } from 'node:fs';
 import { Host, Policy, Rate, Robot } from '../../javascript/rlmesh/dist/node.js';
 
@@ -23,7 +22,6 @@ let running = true;
 try {
   await robot.arm();
 
-  // The robot's control loop: publish its sensors, play what its edge says is due.
   let q = Float32Array.of(0, -1.57, 1.57, -1.57, -1.57, 0);
   const zeros = new Float32Array(6);
   const control = (async () => {
@@ -39,7 +37,7 @@ try {
   })();
 
   await policy.bind('ur10e');
-  console.log(String(policy.binding)); // the binding table
+  console.log(String(policy.binding));
   const stats = await policy.run(
     async (obs) => {
       const arm = new Float32Array(60); // [chunk 10, 6 joints]

@@ -10,7 +10,6 @@ use crate::model::policy::{Corners, SpecArg};
 use crate::model::types::EpisodeInfo;
 use crate::{EnvContract, Error, Metadata, Result, Value};
 
-/// One row's identity and env, owned for a queued call.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Row {
     pub(crate) episode_id: String,
@@ -30,7 +29,6 @@ impl Row {
     }
 }
 
-/// The model's resolved declarations, read once after `load`.
 #[derive(Debug)]
 pub(crate) struct Resolved {
     pub(crate) corners: Corners,
@@ -43,15 +41,11 @@ pub(crate) struct Resolved {
     pub(crate) type_name: String,
     pub(crate) load_keys: Option<Vec<(String, bool)>>,
     pub(crate) trust_entrypoints: bool,
-    /// Whether the policy adds reset options (read after `load`).
     pub(crate) reset_options: bool,
-    /// The execution horizon `load` chose for its checkpoint.
     pub(crate) execution_horizon: Option<u32>,
 }
 
 impl Resolved {
-    /// The horizon a run naming none executes at: the one `load` chose, else
-    /// the spec's `timing.execution`, else 1.
     pub(crate) fn resolve_horizon(&self, explicit: Option<u32>) -> Result<u32> {
         crate::run::resolve_execution_horizon(
             explicit.map(i128::from),
@@ -64,15 +58,11 @@ impl Resolved {
         )
     }
 
-    /// Whether a chunk corner exists, written or derived (`predict_chunk`
-    /// from `predict_chunk_batch`).
     pub(crate) fn has_chunk(&self) -> bool {
         self.corners.has_chunk()
     }
 }
 
-/// What runs on the model's library thread: the policy, its store and
-/// hooks.
 #[allow(clippy::type_complexity)]
 pub(crate) struct Core {
     pub(super) policy: Box<dyn DynPolicy>,
@@ -111,13 +101,10 @@ impl Core {
         }
     }
 
-    /// The policy's reset options for one episode.
     pub(crate) fn reset_options(&mut self, episode: &Metadata) -> Result<Option<Metadata>> {
         self.policy.reset_options(episode)
     }
 
-    /// `predict` for one row: the policy's own, or a batch of one of
-    /// `predict_batch` (row 0).
     pub(crate) fn predict(&mut self, observation: Value, row: &Row) -> Result<Value> {
         if !self.corners.contains(Corners::PREDICT) {
             let mut actions = self.predict_batch(vec![observation], std::slice::from_ref(row))?;
@@ -138,7 +125,6 @@ impl Core {
         result
     }
 
-    /// The policy's own `predict_batch`.
     pub(crate) fn predict_batch(
         &mut self,
         observations: Vec<Value>,
@@ -158,8 +144,6 @@ impl Core {
         result
     }
 
-    /// `predict_chunk` for one row: the policy's own, or a batch of one of
-    /// `predict_chunk_batch`.
     pub(crate) fn predict_chunk(
         &mut self,
         observation: Value,
@@ -193,7 +177,6 @@ impl Core {
         result
     }
 
-    /// The policy's own `predict_chunk_batch`.
     pub(crate) fn predict_chunk_batch(
         &mut self,
         observations: Vec<Value>,
@@ -219,7 +202,6 @@ impl Core {
         result
     }
 
-    /// An episode ended: drop its entry, then fire the hook.
     pub(crate) fn episode_end(&mut self, episode_id: &str) -> Result<()> {
         self.store.end(episode_id);
         match self.on_episode_end.as_mut() {
@@ -228,7 +210,6 @@ impl Core {
         }
     }
 
-    /// An env's teardown: drop its entries, firing no hook.
     pub(crate) fn drop_env(&mut self, env_id: &str) {
         self.store.drop_env(env_id);
     }

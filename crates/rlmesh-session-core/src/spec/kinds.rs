@@ -28,7 +28,6 @@ use crate::wire::path::is_identifier;
 
 use crate::spec::units::Quantity;
 
-/// The longest kind name, namespace or name.
 const MAX_KIND_LEN: usize = 32;
 
 /// A part kind.
@@ -335,7 +334,6 @@ mod tests {
         ] {
             assert_eq!(quantity(Kind::Joints, field, unit), q, "{field} in {unit}");
         }
-        // A prismatic set's fields are linear whatever unit they arrive in.
         for (field, prismatic, q) in [
             ("vel", true, Quantity::LinearVelocity),
             ("effort", true, Quantity::Force),

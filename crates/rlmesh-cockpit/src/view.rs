@@ -1,10 +1,6 @@
 //! What the UI renders, derived from the [`Model`] at one instant
 //! ([`Model::view`]): plain data, so tests check it without a GUI and the UI
 //! never touches live state (one snapshot per frame).
-//!
-//! Every rate names the clock it is counted on ([`clocks`]): the counters are measured
-//! in different places, and a sim slower than real
-//! time makes "per second" mean two things.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -324,7 +320,6 @@ pub struct BindingView {
     pub raw: Option<String>,
 }
 
-/// The binder writes `→`; egui's bundled fonts have no glyph for it.
 fn ascii_arrows(s: &str) -> String {
     s.replace('→', "->")
 }
@@ -462,14 +457,11 @@ impl Model {
         }
     }
 
-    /// Session seconds per cockpit second, over the recent samples.
     fn real_time_factor(&self) -> Option<f64> {
         let (&(t0, c0), &(t1, c1)) = (self.progress.front()?, self.progress.back()?);
         (t1 - t0 > 500_000_000).then(|| (c1 - c0) as f64 / (t1 - t0) as f64)
     }
 
-    /// The freshness bound of a stream: its contracts' effective
-    /// bound, else the robot's declared one.
     fn bound(&self, channel: ChannelId, part: &PartSpec) -> Option<(f64, &'static str)> {
         let s = self.snapshot.as_ref()?;
         let contracted = s
@@ -701,11 +693,6 @@ impl Model {
         rows
     }
 
-    /// Valid coverage remaining on a commandable part, as an
-    /// observer estimates it: `min(t0 + chunk·dt, valid_until, receipt +
-    /// max_action_age, lease expiry) − now`, in session time, with the
-    /// cockpit's receipt standing in for the edge's and the validity less
-    /// the two clocks' error, as the edge counts it.
     fn coverage_ms(&self, channel: ChannelId, now_ns: i64) -> Option<f64> {
         let s = self.snapshot.as_ref()?;
         let lease = s.lease(channel)?;
@@ -892,7 +879,6 @@ impl Model {
                     error_ms: clock.map(|c| c.error_ns as f64 * 1e-6),
                     rtt_ms: clock.map(|c| c.rtt_ns as f64 * 1e-6),
                     health: link.map(|(l, _)| format!("{:?}", l.health).to_lowercase()),
-                    // As the host measured it, plus the time since it said.
                     heartbeat_age_ms: link
                         .filter(|(l, _)| l.heartbeats > 0)
                         .map(|(l, at)| l.last_heartbeat_age_ns as f64 * 1e-6 + ms(now_ns - at)),
@@ -918,8 +904,6 @@ impl Model {
             .collect()
     }
 
-    /// The lanes' reach: the configured window, or less while the cockpit
-    /// has seen less (at least 10 s).
     fn lane_window_s(&self, now_ns: i64) -> f64 {
         let first = self
             .timeline
@@ -999,7 +983,6 @@ impl Model {
         };
         let (inputs, actions) = (rows("inputs"), rows("actions"));
         if table.get("inputs").is_none() && table.get("actions").is_none() {
-            // An identity binding: parts commanded by path, no plan.
             let parts: Vec<String> = b
                 .channels
                 .iter()
@@ -1139,8 +1122,6 @@ impl Model {
 }
 
 impl crate::model::StreamState {
-    /// Now on the publisher's capture clock: the newest stamp plus the
-    /// cockpit time since it arrived, so silence counts on any clock.
     pub(crate) fn captured_end(&self, now_ns: i64) -> i64 {
         let received = self.last.map_or(now_ns, |(_, _, at)| at);
         self.captured_newest
@@ -1149,9 +1130,6 @@ impl crate::model::StreamState {
 }
 
 impl crate::model::EdgeState {
-    /// Now on the edge's tick clock, as [`StreamState::captured_end`].
-    ///
-    /// [`StreamState::captured_end`]: crate::model::StreamState::captured_end
     pub(crate) fn ticks_end(&self, now_ns: i64) -> i64 {
         self.last
             .map_or(0, |(_, at)| at)

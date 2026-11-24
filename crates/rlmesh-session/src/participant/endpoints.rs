@@ -52,7 +52,6 @@ impl Participant {
         }
         let key = self.shared.keys.data(&stream.owner, &stream.path);
         let history_key = self.shared.keys.history(&stream.owner, &stream.path);
-        // An applied stream has no `send` ceiling; a part's is its rate cap.
         let ceiling_hz = if stream.applied {
             None
         } else {
@@ -245,11 +244,9 @@ impl Participant {
     }
 
     /// Calls `on_health` with each of the host's health messages
-    /// (`host/health`, about once a second) on the transport's callback
-    /// thread: every attached participant's link, clock mapping, edge
-    /// counters and latest observer report, as the host sees them. A message
-    /// not signed by the host, or not newer than the last one taken, is
-    /// dropped. The subscription lasts as long as the returned handle.
+    /// (`host/health`, about once a second) on the transport's callback thread.
+    /// Messages not signed by the host, or not newer than the last, are ignored.
+    /// The subscription lasts as long as the returned handle.
     pub async fn host_health(
         &self,
         on_health: impl Fn(HostHealth) + Send + Sync + 'static,
@@ -281,24 +278,19 @@ pub struct HealthSubscription {
     _subscriber: zenoh::pubsub::Subscriber<()>,
 }
 
-/// The host's newest health, as [`Participant::health`] keeps it.
 pub(crate) struct HealthWatch {
     latest: watch::Receiver<Option<Arc<HostHealth>>>,
     _subscription: HealthSubscription,
 }
 
 impl Participant {
-    /// The session's live link health as the host last published it (once
-    /// a second): every attached participant's link as the host measures it
-    /// (round trip, jitter, heartbeat gaps, clock mapping), each edge's
-    /// newest accepted and applied chunk and its refusals by reason, and
-    /// each participant's latest report (publisher counters, a controller's
-    /// run counters). Times are ns. Any participant can read it, an
-    /// observer too.
+    /// The session's live link health as the host last published it (once a
+    /// second): every attached participant's link, edge counters and latest
+    /// report. Times are ns. Any participant can read it, an observer too.
     ///
-    /// The first call subscribes (nothing is received before it) and waits
-    /// up to `timeout` for the host's first publication; later calls return
-    /// the newest at once.
+    /// The first call subscribes (nothing is received before it) and waits up to
+    /// `timeout` for the host's first publication; later calls return the newest
+    /// at once.
     pub async fn health(&self, timeout: Duration) -> Result<Arc<HostHealth>, SessionError> {
         let mut latest = self.health_watch().await?.latest.clone();
         let current = latest.borrow_and_update().clone();

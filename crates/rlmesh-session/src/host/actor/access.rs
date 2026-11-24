@@ -13,7 +13,6 @@ use crate::host::{HostActor, OsRng};
 use crate::wire::ReasonCode;
 
 impl HostActor {
-    /// Changes `device`'s entry: see [`SessionHost::set_access`].
     pub(super) async fn set_access(
         &mut self,
         device: &str,
@@ -30,7 +29,6 @@ impl HostActor {
         Ok(())
     }
 
-    /// Accepts a new device: see [`SessionHost::admit`].
     pub(super) async fn admit(&mut self, device: Device) -> Result<(), SessionError> {
         if device.id == LOCAL_DEVICE || self.authority.config().access.get(&device.id).is_some() {
             return Err(SessionError::Config(format!(
@@ -47,7 +45,6 @@ impl HostActor {
         Ok(())
     }
 
-    /// Revokes a device: see [`SessionHost::revoke`].
     pub(super) async fn revoke(&mut self, device: &str) -> Result<(), SessionError> {
         if self.authority.config().access.get(device).is_none() {
             return Err(SessionError::Config(format!(
@@ -61,8 +58,6 @@ impl HostActor {
         Ok(())
     }
 
-    /// The device table changed: the stores see it, and every stream key a
-    /// device can no longer read rotates.
     async fn access_changed(&mut self, events: Vec<AuthorityEvent>) {
         let access = self.authority.config().access.clone();
         if let Ok(mut shared) = self.store.access.write() {
@@ -75,7 +70,6 @@ impl HostActor {
         }
     }
 
-    /// Closes the scene: see [`SessionHost::close_scene`].
     #[cfg(feature = "fleet")]
     pub(super) async fn close_scene(
         &mut self,
@@ -87,7 +81,6 @@ impl HostActor {
             return Err(SessionError::Config("this session runs no scene".into()));
         }
         let events = self.authority.close_scene(code, by, detail, self.now());
-        // A disarmed session with no lease changes only `closing`.
         if events.is_empty() {
             self.publish().await;
         } else {
@@ -96,7 +89,6 @@ impl HostActor {
         Ok(())
     }
 
-    /// Pins a robot name: see [`SessionHost::pin`].
     pub(super) async fn pin(&mut self, robot: &ParticipantId, pin: Option<Pin>) {
         let device = pin.as_ref().map(|p| p.device.clone());
         let before = self.auth.pin(robot, pin);

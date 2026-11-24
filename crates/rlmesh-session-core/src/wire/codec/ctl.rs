@@ -95,19 +95,14 @@ pub fn decode_view_reply(buf: &[u8]) -> Result<ViewReply, WireError> {
     Ok(reply)
 }
 
-/// The most leases one reply grants (one per part).
 const MAX_GRANTED: usize = 256;
-/// The fewest bytes a lease encodes to: a holder and a binding, tagged.
 const MIN_LEASE: usize = 13;
-/// The longest refusal message a robot keeps.
 const MAX_MESSAGE: usize = 1024;
 
 /// [`decode_view_reply`] with the reply's view decoded into `view`
-/// ([`decode_view_into`], its parts only when `parts`): the reply without
-/// it, and whether it carried one. Read field by field: the `state` is
-/// skipped unread, so a board never links its decoder; leases and keys are
-/// decoded one at a time, each capped, into vectors allocated once and
-/// fallibly; an assignment or a run is capped before it is decoded.
+/// ([`decode_view_into`], its parts only when `parts`): the reply without it,
+/// and whether it carried one. The `state` is skipped unread; leases, keys, an assignment
+/// and a run are each capped, and vectors are allocated once and fallibly.
 ///
 /// # Errors
 /// [`WireError`]: malformed, or over a cap; `view` is then unspecified.
@@ -176,8 +171,7 @@ pub fn decode_view_reply_into(
 
 /// The unsealed `UNAUTHENTICATED` refusal `buf` is, if it is one: only its
 /// status and message are read (at most 256 bytes of it), whatever else it
-/// holds, and nothing is allocated for anything else. Anyone can answer
-/// `ctl`, so this reads what may be a stranger's bytes.
+/// holds, and nothing is allocated for anything else.
 pub fn decode_unauthenticated(buf: &[u8]) -> Option<CtlError> {
     const M: &str = "ctl reply";
     const MAX_MESSAGE: usize = 256;
@@ -206,9 +200,6 @@ pub fn decode_unauthenticated(buf: &[u8]) -> Option<CtlError> {
     })
 }
 
-/// `CtlReply` without its `view` (field 9), which only robots that take
-/// their device view get: what [`decode_reply`] decodes, so the browser's
-/// binding never links the view's decoder.
 #[derive(Clone, PartialEq, prost::Message)]
 struct ReplyWithoutView {
     #[prost(enumeration = "pb::CtlStatus", tag = "1")]
@@ -301,8 +292,6 @@ pub(super) fn status_to_pb(status: CtlStatus) -> pb::CtlStatus {
     }
 }
 
-/// `Ok(())` for OK; anything else (an unknown, newer status included) is a
-/// refusal.
 pub(super) fn status_from_pb(raw: i32, message: String) -> Result<(), CtlError> {
     let status = match pb::CtlStatus::try_from(raw) {
         Ok(pb::CtlStatus::Ok) => return Ok(()),

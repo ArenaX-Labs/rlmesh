@@ -1,16 +1,3 @@
-"""The builders' dicts as the host takes them, and the conveniences around a run.
-
-- Every builder's output binds against a robot with a part of every kind,
-  in an in-process session: the real normaliser and binder take it.
-- A policy declared by keyword drives a robot through its part handles;
-  ``predict(obs, policy)`` publishes, ``obs.age_ms`` reads its inputs' ages,
-  and a second policy reads what the first publishes with ``inputs.of``.
-- Every result a session returns has its ``TypedDict``'s keys and types.
-- ``Policy(timeout=None)`` waits for a late robot and stays interruptible;
-  ``bind(timeout=...)`` overrides it.
-- ``Robot.serve`` serves a lockstep robot, and ``serve_lockstep`` still does.
-"""
-
 from __future__ import annotations
 
 import _thread
@@ -36,7 +23,6 @@ BOXES = parts.custom(
     safe=parts.Safe.HOLD,
 )
 
-#: A part of every kind, every commandable one commanded.
 BENCH = {
     "cam": parts.camera(64, 48, hz=10, frame="cam_optical"),
     "depth": parts.depth(64, 48, hz=10, frame="cam_optical"),
@@ -85,7 +71,7 @@ def test_a_robot_logs_no_demand_warning_as_readers_come_and_go(
     capfd: pytest.CaptureFixture[str],
 ) -> None:
     with realtime.Host() as host, realtime.Robot("bench", BENCH, session=host):
-        time.sleep(1.0)  # joined with no reader: nothing to acknowledge
+        time.sleep(1.0)
         assert "demand" not in capfd.readouterr().err
         for i in range(5):
             binds(
@@ -136,7 +122,6 @@ def test_every_builder_with_its_defaults_binds(
         actions={
             "arm": actions.joints("bench:arm"),
             "hand": actions.hand("bench:hand"),
-            # A part that can't hold its target needs chunks that outlast a replan.
             "ft": actions.wrench("bench:ft", chunk=3),
             "tcp": actions.pose("bench:tcp"),
             "gripper": actions.gripper("bench:gripper"),
@@ -158,7 +143,6 @@ def test_every_builder_with_its_defaults_binds(
     assert len(table.json["actions"]) == 9
 
 
-#: One entry per builder with its options set, each bound alone.
 OPTIONS: list[tuple[str, dict[str, Any]]] = [
     (
         "camera",
@@ -551,7 +535,6 @@ def test_a_keyword_policy_drives_a_robot_through_its_part_handles() -> None:
                 ):
                     obs.age_ms("cam")
 
-                # Every result, key for key and type for type.
                 check(tracker.stats(), results.PolicyStats, "stats()")
                 check(tracker.health(), results.Health, "Policy.health()")
                 check(robot.health(), results.Health, "Robot.health()")
@@ -595,7 +578,7 @@ def test_a_policy_without_a_timeout_waits_for_a_late_robot() -> None:
             target=lambda: bound.append(policy.bind("late")), daemon=True
         )
         thread.start()
-        time.sleep(1.5)  # past nothing in particular: the wait has no limit
+        time.sleep(1.5)
         assert thread.is_alive() and not bound
         with realtime.Robot("late", GIMBAL, session=host):
             thread.join(WAIT)
@@ -627,7 +610,7 @@ def test_a_long_bind_says_what_it_waits_for(capfd: pytest.CaptureFixture[str]) -
         thread = threading.Thread(target=lambda: policy.bind("late"), daemon=True)
         thread.start()
         time.sleep(1.0)
-        assert "waiting for" not in capfd.readouterr().err  # not yet: quiet at first
+        assert "waiting for" not in capfd.readouterr().err
         time.sleep(3.0)
         err = capfd.readouterr().err
         assert err.count("waiting for robot late to declare its parts") == 1, err
@@ -708,7 +691,6 @@ def test_a_wait_without_a_timeout_stops_on_ctrl_c() -> None:
             policy.close()
 
 
-#: A lockstep robot's map.
 SERVOS = {"servos": GIMBAL["servos"]}
 
 

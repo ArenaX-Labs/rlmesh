@@ -7,8 +7,6 @@ use serde_json::{Value as Json, json};
 use crate::specs::{EnvContract, value_to_json};
 use crate::{Error, Result};
 
-/// Who is describing: the envelope's `runtime` component and language, plus
-/// any host-supplied runtime fields (a C++ toolchain).
 #[derive(Clone, Debug)]
 pub(crate) struct DescribingHost {
     pub(crate) component: &'static str,
@@ -26,8 +24,6 @@ impl DescribingHost {
     }
 }
 
-/// The env envelope for `contract`: `target` `native:<id>` (or the given
-/// qualname), its spaces, tags and runtime, and an optional variant catalog.
 pub(crate) fn env_envelope(
     contract: &EnvContract,
     qualname: Option<&str>,

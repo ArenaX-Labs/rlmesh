@@ -1,5 +1,4 @@
-//! Stable typed adapters built on the public Rust facade.
-#![allow(unsafe_code)] // C callbacks, borrowed immutable trees and owned handles.
+#![allow(unsafe_code)]
 mod inputs;
 mod records;
 pub(crate) mod runtime;
@@ -519,7 +518,6 @@ pub unsafe extern "C" fn rlmesh_env_tags_action(p: *const RLMeshEnvTags) -> *con
     })
 }
 
-/// Write only the known output prefix; preserve the caller's declared size and tail.
 pub(crate) unsafe fn out_struct<T: Copy>(
     out: *mut T,
     mut value: T,

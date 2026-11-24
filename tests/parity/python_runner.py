@@ -16,8 +16,6 @@ from rlmesh.adapters import AdapterResolutionError
 
 
 class ScriptedEnv:
-    """Count starts and closes."""
-
     def __init__(self):
         self.metadata = {rlmesh.ENV_RESET_OPTIONS_KEY: ["trial_index"]}
         self.observation_space = spaces.Discrete(3)
@@ -41,8 +39,6 @@ class ScriptedEnv:
 
 
 class ScriptedPolicy:
-    """Return action zero and count lifecycle calls independently of sessions."""
-
     def __init__(self):
         self.ends = self.closes = self.starts = 0
         self.failure = None
@@ -61,7 +57,6 @@ class ScriptedPolicy:
 
 
 def error_record(error):
-    """Expose the R-21 row, preserving folded Python subclasses by isinstance."""
     classes = [
         AdapterResolutionError,
         rlmesh.RecoverableEnvironmentException,
@@ -94,7 +89,6 @@ def error_record(error):
 
 
 def execute(case):
-    """Execute one fixture with fresh handles and return observed values."""
     env, policy = ScriptedEnv(), ScriptedPolicy()
     model = rlmesh.Model(
         policy, on_episode_end=policy.on_episode_end, on_close=policy.close
@@ -178,7 +172,6 @@ def execute(case):
                 "env_closes": env.closes,
                 "model_closes": policy.closes,
             }
-            # Reuse the same model, including after close_env=true.
             model.run(ScriptedEnv())
             observed["reusable"] = True
             return observed
@@ -323,7 +316,6 @@ def execute(case):
 
 
 def check_warning_error():
-    """Exercise warning frame attribution and the actual -W error interpreter."""
     model = rlmesh.Model(ScriptedPolicy())
     try:
         with warnings.catch_warnings(record=True) as caught:

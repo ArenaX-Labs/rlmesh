@@ -1,5 +1,3 @@
-//! The binding table: its input and action rows, and its canonical JSON.
-
 use crate::prelude::*;
 
 use core::time::Duration;
@@ -200,7 +198,6 @@ impl Binding {
 }
 
 fn table_value(b: &Binding) -> Value {
-    // A view's rows name their robot, so its fingerprint covers them.
     let robot = |row: &mut Value, part: &Option<PartSpec>| {
         if !b.places.is_empty() {
             row["robot"] = json!(part.as_ref().map(|p| p.owner.as_str()));

@@ -2,14 +2,6 @@
 //! everything a session shows (authority, every stream and `_applied`
 //! stream, every commandable part's chunks, and the host's health), turned
 //! into [`Input`]s for the [`Model`], plus the verbs the operator sends.
-//!
-//! The observer is never in the loop: subscriptions run on the transport's
-//! threads and only queue inputs. Samples go through a bounded queue the UI
-//! drains each frame; when the UI falls behind, inputs are dropped and
-//! counted ([`Input::Overrun`]), never buffered without bound. Authority,
-//! presence and verb answers ride their own unbounded queue (they are rare)
-//! and are taken in first, so a new part's spec is known before its
-//! samples.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,7 +28,6 @@ pub const QUEUE: usize = 1 << 16;
 /// Called when something the operator should see at once arrived.
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
-/// The data queue's sending side: drops and counts when full.
 #[derive(Clone)]
 struct Data {
     tx: SyncSender<Input>,
@@ -71,7 +62,6 @@ struct Subscriptions {
 
 impl Feed {
     /// Subscribes `participant` (attached as an observer) to the session.
-    /// Call it on a Tokio runtime.
     pub async fn start(participant: Arc<Participant>, wake: Wake) -> Result<Self, SessionError> {
         let (control_tx, control) = channel();
         let (data_tx, data) = sync_channel(QUEUE);
@@ -83,8 +73,6 @@ impl Feed {
         let subscriptions = Arc::new(Mutex::new(Subscriptions::default()));
         let clock = participant.clock().clone();
 
-        // The host's health: every link, edge counter and observer report,
-        // as the host relays them (heartbeats and reports are sealed to it).
         let health = participant
             .host_health({
                 let (data, clock) = (data_tx.clone(), clock.clone());
@@ -222,8 +210,6 @@ async fn watch_authority(participant: Arc<Participant>, control: Sender<Input>, 
     }
 }
 
-/// Subscribes to every stream and every commandable part's chunks, as parts
-/// appear.
 async fn watch_parts(
     participant: Arc<Participant>,
     data: Data,
@@ -278,8 +264,6 @@ async fn watch_parts(
                     .declare_subscriber(key)
                     .callback(move |sample| {
                         let receive_ns = clock.now_ns();
-                        // No command key here: a signed chunk is shown as
-                        // sent, unverified; a sealed one can't be read.
                         let bytes = payload_bytes(sample.payload());
                         let Some(body) = unverified_body(&bytes) else {
                             return;

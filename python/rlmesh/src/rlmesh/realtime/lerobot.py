@@ -171,12 +171,9 @@ def _frames(
     end = take.end_ns
     at = take.start_ns
     latest: dict[str, _Fields] = {}
-    # Each topic's newest capture: a sample later than the reorder window
-    # never replaces a newer one.
     newest: dict[str, int] = {}
     events = _by_capture(V2Recorder.samples(os.fspath(take.path), images))
     for event in events:
-        # A watermark: every frame up to it is complete.
         horizon = event if isinstance(event, int) else event[0] - 1
         while at is not None and at <= horizon and (end is None or at <= end):
             if latest:
@@ -186,7 +183,6 @@ def _frames(
             continue
         capture, topic, fields = event
         if at is None:
-            # A whole recording starts at its first sample.
             at = capture
         if (end is not None and capture > end) or capture < newest.get(topic, capture):
             continue
@@ -246,8 +242,6 @@ def export(
     takes = _takes(Path(source), include_failed, task)
     if not takes:
         raise ValueError(f"no episodes to export under {source}")
-    # The features are every stream the first take holds, as last seen with
-    # a value; camera frames are left encoded for this pass.
     last: dict[str, _Fields] = {}
     for frame in _frames(takes[0], fps, images=False):
         last.update((t, f) for t, f in frame.items() if f)
@@ -291,7 +285,6 @@ def export(
     for take in takes:
         frames = 0
         for frame in _frames(take, fps):
-            # Frames before every stream's first value are left out.
             if any(not frame.get(t) for t in wanted):
                 continue
             row: dict[str, Any] = {

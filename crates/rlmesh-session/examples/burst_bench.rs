@@ -6,28 +6,6 @@
 //!     [--spacing-us 1000] [--rounds 40] [--window 10] [--burn 0]
 //!     [--camera-hz 0] [--width 640] [--height 480]
 //! ```
-//!
-//! A host, a robot and a reader run in this process, each participant with
-//! one Zenoh session per traffic class over TCP, as in the session tests.
-//! Each round the robot publishes `--n` samples of a 72-byte Realtime stream
-//! `--spacing-us` apart (0: back to back) to a reader subscribed with a
-//! `--window`; the host also counts what reaches it, so a loss is placed on
-//! the robot's link (missing at the host) or on the host's relay (at the host,
-//! missing at the reader). `--burn` spins that many threads meanwhile;
-//! `--camera-hz` adds a raw camera (Bulk) the reader also subscribes to.
-//!
-//! `--listeners one` is how a host listens: one session on one port; `four`
-//! is a session per class on four consecutive ports. `--joiner peer` joins
-//! as Zenoh peers that listen on a free port each, as the session tests did
-//! before the host listened on one port: the host's gossip then links the
-//! robot to the reader directly, and samples skip the host's relay.
-//!
-//! Prints one JSON object: samples published, arrived at the host, and
-//! received and out of order at the reader, summed over the rounds, with
-//! the rounds that lost anything. `RUST_LOG` (as
-//! `zenoh_transport::common::pipeline=trace`) logs to stderr: Zenoh logs
-//! the first sample of each drop episode, not those that follow it while
-//! the queue stays congested.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
@@ -106,7 +84,6 @@ fn tcp(port: u16) -> String {
     format!("tcp/{}:{port}", Ipv4Addr::LOCALHOST)
 }
 
-/// A base port whose next `n - 1` ports were free a moment ago.
 fn free_base(n: u16) -> Result<u16, BoxError> {
     let ip = Ipv4Addr::LOCALHOST;
     for _ in 0..64 {
@@ -177,8 +154,6 @@ fn robot_map(args: &Args) -> String {
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), BoxError> {
     let args = parse_args()?;
-    // `RUST_LOG=zenoh_transport::common::pipeline=trace`: where Zenoh drops
-    // a sample for want of a free transmit batch.
     if std::env::var_os("RUST_LOG").is_some() {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -219,7 +194,6 @@ async fn main() -> Result<(), BoxError> {
         .await?;
     let ft = robot.publisher("ft").await?;
 
-    // What reaches the host, counted on its own Realtime session.
     let at_host = Arc::new(AtomicU64::new(0));
     let keys = SessionKeys::new(&tenant, session);
     let _at_host = transport
@@ -263,7 +237,6 @@ async fn main() -> Result<(), BoxError> {
             )
         }
     };
-    // Probe until a sample travels end to end.
     let started = Instant::now();
     while sub.stats().received == 0 {
         if started.elapsed() > WAIT {
@@ -348,7 +321,6 @@ async fn main() -> Result<(), BoxError> {
             .join()
             .expect("publisher")
         });
-        // A lost last sample never advances `last_seq`: wait it out.
         let last = first + args.n - 1;
         let waited = Instant::now();
         while sub.stats().last_seq < last && waited.elapsed() < Duration::from_millis(300) {

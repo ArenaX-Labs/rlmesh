@@ -1,9 +1,3 @@
-"""Run-prebuilt source resolution and the binding injected as env vars.
-
-These mock Docker (``subprocess``/image probes) so the resolution table and the
-``RLMESH_MAKE_KWARGS`` injection are exercised without a daemon.
-"""
-
 from __future__ import annotations
 
 import json
@@ -17,20 +11,14 @@ from rlmesh._sandbox import session as sandbox
 
 @pytest.fixture(autouse=True)
 def _session_port(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Containers publish on 40000, under keys ``k``, and serve at once."""
     monkeypatch.setattr(sandbox, "_sandbox_session_port", lambda: 40000)
     monkeypatch.setattr(sandbox, "_sandbox_host_identity", lambda: ("secret", "k"))
     monkeypatch.setattr(_model, "wait_serving", lambda *_args, **_kwargs: None)
 
 
-# --- resolve_source_kind -----------------------------------------------------
-
-
 def test_gym_and_explicit_schemes_skip_docker_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A gym id / gym:// / hf:// never probes Docker; explicit docker://image://
-    # resolves to prebuilt without a probe either.
     monkeypatch.setattr(
         _sources,
         "docker_image_exists",
@@ -72,8 +60,6 @@ def test_bare_image_tag_pulls_when_not_local(
 def test_bare_image_tag_not_found_raises_with_pull_stderr(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A failed pull's stderr tail is surfaced so an auth failure never reads as
-    a plain "not found"."""
     monkeypatch.setattr(_sources, "docker_image_exists", lambda image: False)
     monkeypatch.setattr(
         _sources,
@@ -88,10 +74,6 @@ def test_bare_image_tag_not_found_raises_with_pull_stderr(
 def test_a_gym_shaped_name_that_is_also_a_local_image_says_which_it_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A lowercase ``name-v1`` is both a valid gym id and a valid Docker name.
-    With no local image it builds as before; with one, an id no installed
-    gym package registers runs the image, and a registered id (or a build
-    asked for with build options) still builds, warning with ``docker://``."""
     monkeypatch.setattr(_sources.shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(
         _sources, "docker_pull", lambda *_a: pytest.fail("never pulls a gym id")
@@ -107,21 +89,18 @@ def test_a_gym_shaped_name_that_is_also_a_local_image_says_which_it_runs(
     registered: set[str] = set()
     monkeypatch.setattr(_sources, "gym_id_registered", lambda v: v in registered)
 
-    # No local image: unchanged, a build.
     assert _sources.resolve_source_kind("rlmesh-libero-v1") == (
         "build",
         "rlmesh-libero-v1",
     )
     assert probed == ["rlmesh-libero-v1"]
 
-    # A local image, and no gym package registers the id: the image.
     local.add("rlmesh-libero-v1")
     assert _sources.resolve_source_kind("rlmesh-libero-v1") == (
         "prebuilt",
         "rlmesh-libero-v1",
     )
 
-    # A registered id still builds, and says how to run the image instead.
     registered.add("rlmesh-libero-v1")
     with pytest.warns(UserWarning, match=r"docker://rlmesh-libero-v1 to run the image"):
         assert _sources.resolve_source_kind("rlmesh-libero-v1") == (
@@ -129,7 +108,6 @@ def test_a_gym_shaped_name_that_is_also_a_local_image_says_which_it_runs(
             "rlmesh-libero-v1",
         )
 
-    # So does one given build options, whatever the registry says.
     registered.clear()
     with pytest.warns(UserWarning, match="because build options were given"):
         assert _sources.resolve_source_kind("rlmesh-libero-v1", prefer_build=True) == (
@@ -137,8 +115,6 @@ def test_a_gym_shaped_name_that_is_also_a_local_image_says_which_it_runs(
             "rlmesh-libero-v1",
         )
 
-    # A name Docker cannot spell, or a module form, is never probed; an
-    # explicit scheme neither.
     probed.clear()
     local.update({"Rlmesh-Libero-v1", "pkg:env-v1"})
     assert _sources.resolve_source_kind("Rlmesh-Libero-v1")[0] == "build"
@@ -157,9 +133,6 @@ def test_build_options_ask_for_a_build() -> None:
     assert not sandbox._asks_for_build(sandbox.SandboxBuild())
     assert sandbox._asks_for_build(sandbox.SandboxBuild(packages=["libero"]))
     assert sandbox._asks_for_build(sandbox.SandboxBuild(trust_remote_code=True))
-
-
-# --- prebuilt_run_cmd hardening + binding ------------------------------------
 
 
 def test_prebuilt_run_cmd_is_hardened_with_image_last() -> None:
@@ -181,14 +154,10 @@ def test_prebuilt_run_cmd_is_hardened_with_image_last() -> None:
     v_idxs = [i for i, a in enumerate(cmd) if a == "-v"]
     assert [cmd[i + 1] for i in v_idxs] == ["/h/a:/c/a", "/h/b:/c/b:ro"]
     assert cmd[cmd.index("-e") + 1] == 'RLMESH_MAKE_KWARGS={"suite": "a"}'
-    # The session's one port, on loopback, to the same number.
     assert [cmd[i + 1] for i, a in enumerate(cmd) if a == "-p"] == [
         "127.0.0.1:40000:40000"
     ]
-    assert cmd[-1] == "img:1"  # image always last
-
-
-# --- start_prebuilt_container injects the binding ----------------------------
+    assert cmd[-1] == "img:1"
 
 
 def _docker_dispatch(captured: dict[str, list[str]]) -> Any:
@@ -239,21 +208,15 @@ def test_start_prebuilt_container_injects_binding_and_serves_in_a_session(
         if a.startswith("RLMESH_MAKE_KWARGS=")
     )
     assert json.loads(payload) == {"suite": "libero_spatial", "task_id": 3}
-    # num_envs/mode ride alongside the binding as their own env vars.
     assert any(a.startswith("RLMESH_NUM_ENVS=4") for a in run_cmd)
     assert any(a.startswith("RLMESH_VECTORIZATION_MODE=sync") for a in run_cmd)
-    # It hosts a session on all its interfaces and serves in it as env.
     assert "RLMESH_ADDRESS=0.0.0.0:40000" in run_cmd
     assert "RLMESH_NAME=env" in run_cmd
-    # Its keys pass by name (never argv), and the address carries their key.
     assert run_cmd[run_cmd.index("RLMESH_HOST_IDENTITY") - 1] == "-e"
     assert not any("secret" in a for a in run_cmd)
     assert info.container_id == "container-9"
     assert info.address == "127.0.0.1:40000#k/env"
     assert info.resolved_source == "docker://libero:latest"
-
-
-# --- SandboxModel forwards **params as the binding ---------------------------
 
 
 def test_sandbox_model_params_inject_make_kwargs(
@@ -371,27 +334,20 @@ def test_sandbox_model_forwards_user(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_sandbox_model_runtime_and_rejects_build_runtime_params() -> None:
-    # A model is always a prebuilt image (no build config). Runtime flags ride in
-    # runtime=SandboxRuntime(...); construction is inert (no container started).
     m = rlmesh.SandboxModel(
         "m:latest",
         runtime=rlmesh.SandboxRuntime(gpus="all", devices=["nvidia.com/gpu=all"]),
     )
     assert m._gpus == "all"
     assert m._devices == ["nvidia.com/gpu=all"]
-    # A colliding build/runtime field in **params fails loud, not silently bound.
     for name in ("gpus", "volumes", "base_image", "packages"):
         with pytest.raises(TypeError, match="build=SandboxBuild"):
             rlmesh.SandboxModel("m:latest", **{name: "x"})  # type: ignore[arg-type]
 
 
-# --- Docker hang guard and pre-pull -------------------------------------------
-
-
 def test_run_docker_converts_timeout_into_daemon_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A wedged Docker daemon surfaces as a directive error, never a hang."""
     import subprocess
 
     def hang(*_a: Any, **_k: Any) -> Any:
@@ -406,8 +362,6 @@ def test_start_prebuilt_container_pre_pulls_missing_image(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A missing prebuilt image is pulled up front (announced on stderr), not
-    invisibly inside docker run."""
     pulls: list[list[str]] = []
 
     def fake_run(cmd: list[str], **_kwargs: Any) -> Any:
@@ -442,19 +396,16 @@ def test_start_prebuilt_container_pre_pulls_missing_image(
     assert "pulling image 'img:9'" in capsys.readouterr().err
 
 
-# --- A failed run carries the model container's last log lines ---------------
-
-
 def test_a_model_failure_carries_the_containers_log_lines_without_secrets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import subprocess
 
-    key = "a" * 26 + "b2c3d4e5f6g7" + "z" * 14  # an address key's 52 base32 characters
+    key = "a" * 26 + "b2c3d4e5f6g7" + "z" * 14
     logs: list[list[str]] = []
 
     def docker(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        if cmd[1] == "inspect":  # still running
+        if cmd[1] == "inspect":
             return subprocess.CompletedProcess(cmd, 0, "true\n", "")
         logs.append(cmd)
         out = f"serving at 0.0.0.0:7447#{key}/model\nloading weights\n"
@@ -487,5 +438,4 @@ def test_a_model_failure_carries_the_containers_log_lines_without_secrets(
 
     first, other = model.run_routes(cast(Any, [object(), object()]))
     assert "the model container's last log lines" in str(first)
-    # A failure that is not the model's, with the container still up, is left as is.
     assert str(other) == "not mine"

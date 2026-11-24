@@ -39,8 +39,8 @@ class FacadeHookRelay:
         weak_context: bool = False,
     ) -> None:
         self.hooks = hooks
-        # The native binding owns its observer: holding the Python Binding here
-        # would introduce a cycle through an opaque extension object.
+        # The native binding owns its observer; holding the Python Binding
+        # here would form a cycle.
         self._weak_context: weakref.ReferenceType[Any] | None = (
             weakref.ref(context) if weak_context else None
         )
@@ -188,8 +188,6 @@ class EnvTarget:
         self.binding = binding
         self.trust = trust
         self.instruction = instruction
-        #: The call's own ``workflow_edition=`` keyword, the top rung of the
-        #: local env's declaration as of the model's.
         self.workflow_edition = workflow_edition
         self.env: Any = None
         self.server: Any = None
@@ -220,8 +218,6 @@ class EnvTarget:
                 if model._env_session is not None:
                     invite = peer_session(payload.sandbox)
                 return address, invite, False
-            # A SandboxEnv lends its container, as to a run; any other open
-            # handle holds its env's lease.
             if self.binding:
                 from .._upgrade import removed
 
@@ -247,7 +243,6 @@ class EnvTarget:
             if self.context is not None:
                 self.context.bind_client(payload, local=False)
             return address, None, False
-        # Refused before a factory builds anything, as serving refuses it.
         edition = self._local_edition(payload, edition)
         if kind == "factory":
             self.env = factory_env(payload)

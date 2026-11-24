@@ -1,9 +1,7 @@
 // The `rlmesh` session: the public API on the main thread, over one supervised Worker (and one
-// reconnecting WebSocket) per traffic class. Platform specifics (how Workers are created, how the wasm
-// Module is loaded) come in through `Platform`, so the same code runs in browsers and under Node.
-//
-// The control Worker's connection is a session participant of its own (the gateway attaches it): its
-// leases are the host's, its heartbeats renew them, and its chunks are fenced by the robot's edge.
+// reconnecting WebSocket) per traffic class. `Platform` supplies how Workers are created and the wasm loaded.
+// The control Worker's connection is a session participant of its own: its leases are the host's and
+// its chunks are fenced by the robot's edge.
 
 import { Lease } from './lease.js';
 import { BoundedQueue, type Subscription } from './queue.js';
@@ -45,7 +43,6 @@ const SLOTS = 32;
 const SLOT_VALUES = 24;
 const nowLocal = () => performance.timeOrigin + performance.now();
 
-/** Fixed-size sample of recent values for p50/p99 on the main thread. */
 class Window {
   private v: Float64Array;
   private n = 0;
@@ -68,7 +65,6 @@ class Window {
   }
 }
 
-/** One received frame: pooled buffer + bitmap, recycled when superseded and no longer pinned. */
 interface FrameRec {
   meta: Omit<Frame, 'data' | 'age_ms'>;
   buf: ArrayBuffer;
@@ -174,13 +170,11 @@ export class Session {
   private readonly declsP = new Promise<void>((r) => (this.gotDecls = r));
   private readonly clockP = new Promise<void>((r) => (this.gotClock = r));
   private refused!: (e: Error) => void;
-  /** Rejects when the gateway ends the connection for good before connect resolves. */
   private readonly refusedP = (() => {
     const p = new Promise<never>((_, rej) => (this.refused = rej));
     p.catch(() => {}); // only connect awaits it; afterwards the `ended` event reports the same
     return p;
   })();
-  /** Set once the gateway ended the connection for good. */
   ended: SessionEnded | null = null;
   private robots = new Set<string>();
   private readonly pins = new FinalizationRegistry<PinToken>((t) => {
@@ -221,8 +215,6 @@ export class Session {
     );
   }
 
-  // ------------------------------------------------------------------ events
-
   on<K extends keyof SessionEvents>(type: K, fn: Listener<K>): () => void {
     let set = this.listeners.get(type);
     if (!set) this.listeners.set(type, (set = new Set()));
@@ -246,9 +238,6 @@ export class Session {
     return (this.listeners.get(type)?.size ?? 0) > 0;
   }
 
-  // ------------------------------------------------------------------ declarations, status, clock
-
-  /** The session mode. */
   get mode() {
     return this.state.mode;
   }
@@ -278,8 +267,6 @@ export class Session {
     }
     throw new Error(`unknown stream ${path}; declared: ${this.streams.map((s) => s.path).join(', ')}`);
   }
-
-  // ------------------------------------------------------------------ worker plumbing
 
   private post(cls: TrafficClass, m: unknown, t: Transferable[] = []) {
     return this.sup.post(cls, m, t);
@@ -327,8 +314,6 @@ export class Session {
     }
   }
 
-  // ------------------------------------------------------------------ samples
-
   /**
    * Every sample of a stream as an async iterator, with a bounded queue: a slow consumer loses the
    * oldest samples (counted in `dropped`), the producer never blocks. Samples are owned by you. Frames
@@ -340,7 +325,6 @@ export class Session {
     if (!set) this.subs.set(path, (set = new Set()));
     const q: BoundedQueue<Sample<T>> = new BoundedQueue<Sample<T>>(opts.maxQueue ?? 1024, () => {
       set.delete(q);
-      // A stream whose robot left is gone: nothing to re-subscribe.
       if (!this.closed && this.streams.some((d) => d.path === path)) this.ensureSub(path);
     });
     set.add(q);
@@ -439,8 +423,6 @@ export class Session {
     if (rec.buf.byteLength) this.post('bulk', { op: 'return', buf: rec.buf }, [rec.buf]);
   }
 
-  // ------------------------------------------------------------------ leases and verbs
-
   /**
    * Acquire the lease on a commandable part; resolves when the host grants it (preempting lower
    * classes than this connection's `priority`). Rejects if refused (busy, not bound, not ready), on
@@ -503,7 +485,6 @@ export class Session {
     },
   };
 
-  /** Robots come and go with their parts: report each change, and end the leases and streams of one that left. */
   private trackRobots() {
     const now = new Set([...this.streams.map((s) => s.robot), ...this.controls.map((c) => c.robot)]);
     for (const robot of this.robots) {
@@ -523,7 +504,6 @@ export class Session {
     this.robots = now;
   }
 
-  /** The gateway ended the connection for good: fail a pending connect, or end the session. */
   private end(e: SessionEnded) {
     if (this.ended) return;
     this.ended = e;
@@ -547,8 +527,6 @@ export class Session {
       l._end(r);
     }
   }
-
-  // ------------------------------------------------------------------ worker messages
 
   private onWorker(cls: TrafficClass, m: any) {
     switch (m.op) {
@@ -697,7 +675,6 @@ export class Session {
           if (p) {
             clearTimeout(p.timer);
             this.pending.delete(e.path);
-            // An observer is never granted one.
             const l = new Lease(this.leaseHost, e.path, this.priority as Priority, e.token, e.holder);
             this.leases.set(e.path, l);
             p.resolve(l);
@@ -720,8 +697,6 @@ export class Session {
         break;
     }
   }
-
-  // ------------------------------------------------------------------ supervision
 
   private onWorkerDown(cls: TrafficClass, reason: string) {
     for (const [rid, r] of this.reqs) {
@@ -756,8 +731,6 @@ export class Session {
     this.emit('worker_restart', info);
   }
 
-  // ------------------------------------------------------------------ lifecycle
-
   /** @internal */
   async _start() {
     const t0 = performance.now();
@@ -768,7 +741,6 @@ export class Session {
     this.load.shared_memory = !!this.sab;
     const ready = await Promise.all(CLASSES.map((c) => this.sup.start(c)));
     CLASSES.forEach((c, i) => (this.load.workers[c] = ready[i]));
-    // What the control Worker relayed before the data Workers were up.
     for (const cls of ['state', 'bulk'] as const) {
       this.forwardState(cls);
       this.forwardClock(cls);
@@ -805,7 +777,6 @@ export class Session {
     this.closed = true;
     clearInterval(this.stallTimer);
     for (const s of this.subs.values()) for (const q of s) q.close();
-    // Give the release frames a moment to leave the control socket.
     if (held.length) setTimeout(() => this.sup.close(), 50);
     else this.sup.close();
   }
@@ -840,7 +811,6 @@ export class Session {
   };
 }
 
-/** Shared by the browser and Node entry points. */
 export async function connectWith(platform: Platform, url: string, opts: ConnectOptions = {}): Promise<Session> {
   if (opts.workers && opts.workers !== 'per-class') throw new Error('only workers: "per-class" is supported');
   const s = new Session(url, platform, opts);

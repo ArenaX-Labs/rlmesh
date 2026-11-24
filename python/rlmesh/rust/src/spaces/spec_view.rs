@@ -81,8 +81,6 @@ impl PySpaceSpec {
     }
 
     fn __repr__(&self) -> String {
-        // Gymnasium-style spec rendering, e.g. `Box(-1.0, 1.0, (3,), float32)`
-        // or `Discrete(4, start=-1)` (rlmesh_spaces::Display for SpaceSpec).
         self.inner.to_string()
     }
 }
@@ -240,8 +238,7 @@ impl PySpace {
     #[pyo3(signature = (seed=None))]
     fn seed(&self, seed: Option<u64>) -> u64 {
         let seed = seed.unwrap_or_else(rand::random);
-        // Recover from a poisoned mutex: a prior sample() that raised a Python
-        // exception while holding the guard must not permanently brick the RNG.
+        // Recover from a poisoned mutex: a raising sample() must not brick the RNG.
         *self.rng.lock().unwrap_or_else(|err| err.into_inner()) = ChaCha12Rng::seed_from_u64(seed);
         seed
     }
@@ -257,14 +254,8 @@ impl PySpace {
         py: Python<'_>,
         #[gen_stub(override_type(type_repr = "object", imports = ()))] value: &Bound<'_, PyAny>,
     ) -> bool {
-        // `contains` is the strict membership predicate: a full member, where both
-        // structural and range conformance hold. Encoding rejects structural
-        // deviations; the strict `contains` check then also rejects range
-        // deviations (out-of-bounds, charset, length) that the transport path
-        // tolerates under its validation policy.
-        // A Box value must have the space's exact shape: the encoder reshapes
-        // to the space's shape (the transport accepts batches), so `contains`
-        // checks the input's own shape first.
+        // `contains` is strict: it also rejects range deviations that encoding tolerates,
+        // and a Box value must match the space's exact shape.
         let Ok(value) = normalize_contains_input(value, &self.spec) else {
             return false;
         };
@@ -278,13 +269,10 @@ impl PySpace {
     }
 
     fn __repr__(&self) -> String {
-        // Mirror the spec's Gymnasium-style rendering (see PySpaceSpec).
         self.spec.to_string()
     }
 }
 
-/// Materialize wrappers and iterators once so shape checking and encoding see
-/// the same tree, including nested namedtuple dictionaries and one-shot inputs.
 fn normalize_contains_input<'py>(
     value: &Bound<'py, PyAny>,
     space: &SpaceSpec,
@@ -309,7 +297,6 @@ fn normalize_contains_input<'py>(
             for (item, child) in value.try_iter()?.zip(&spec.spaces) {
                 out.append(normalize_contains_input(&item?, child)?)?;
             }
-            // Preserve arity checking in the encoder.
             if value.len()? != spec.spaces.len() {
                 return Ok(value.clone());
             }
@@ -339,10 +326,6 @@ fn normalize_array_input<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, 
     }
 }
 
-/// Whether every Box value inside `value` has its space's exact shape
-/// (Gymnasium's `Box.contains`): a `(6,)` value is not in a `(2, 3)` Box, and a
-/// bare number is a member only of a shape-`()` Box. Composite values recurse;
-/// anything the encoder will refuse anyway reads as matching here.
 fn box_shapes_match(value: &Bound<'_, PyAny>, space: &SpaceSpec) -> bool {
     match space.spec.as_ref() {
         Some(SpaceKind::Box(_)) => input_shape(value).is_some_and(|shape| shape == space.shape),
@@ -375,8 +358,6 @@ fn box_shapes_match(value: &Bound<'_, PyAny>, space: &SpaceSpec) -> bool {
     }
 }
 
-/// The shape of a Box input: a native tensor's, an array-like's `.shape`, the
-/// nesting of a list or tuple (`None` when ragged), or `()` for a number.
 fn input_shape(value: &Bound<'_, PyAny>) -> Option<Vec<i64>> {
     if let Ok(Some(tensor)) = extract_tensor(value) {
         return Some(tensor.inner.shape().to_vec());
@@ -465,8 +446,6 @@ fn box_space_spec(
     }
     let integral = is_integral_dtype(dtype);
     if integral {
-        // A fractional bound on an integer or bool dtype would silently change
-        // the declared range (0.5..3.7 used to truncate to 0..3): refuse it.
         for (name, value) in [("low", low_f), ("high", high_f)] {
             if value.is_finite() && value.fract() != 0.0 {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -476,11 +455,9 @@ fn box_space_spec(
             }
         }
     }
-    // A fully open range is unbounded regardless of dtype.
     let builder = if low_f == f64::NEG_INFINITY && high_f == f64::INFINITY {
         BoxSpaceBuilder::unbounded(shape)
     } else if integral && low_f.is_finite() && high_f.is_finite() {
-        // Integer/boolean dtypes with finite bounds carry dtype-typed bytes.
         match exact_int_bounds(low, low_f, high, high_f) {
             Some(IntBounds::Signed(low, high)) => BoxSpaceBuilder::int_scalar(low, high, shape),
             Some(IntBounds::Unsigned(low, high)) => BoxSpaceBuilder::uint_scalar(low, high, shape),
@@ -491,23 +468,16 @@ fn box_space_spec(
             }
         }
     } else {
-        // Float dtypes, and half-open integer ranges, keep the double-based
-        // uniform form (an infinite side reads as unbounded at containment).
         BoxSpaceBuilder::scalar(low_f, high_f, shape)
     };
     space_spec_to_pyobject(py, builder.dtype(dtype).build())
 }
 
-/// Exact 64-bit bounds, kept out of `f64`.
 enum IntBounds {
     Signed(i64, i64),
     Unsigned(u64, u64),
 }
 
-/// Read a finite, integral bound pair as exact integers. A Python `int` is
-/// read raw: going through `f64` would round anything above 2^53 and saturate
-/// a `uint64` bound at `i64::MAX`. An integral `float` (`3.0`) converts
-/// exactly. `None` when the pair fits neither `i64` nor `u64`.
 fn exact_int_bounds(
     low: &Bound<'_, PyAny>,
     low_f: f64,
@@ -521,8 +491,6 @@ fn exact_int_bounds(
         if let Ok(value) = value.extract::<u64>() {
             return Some(i128::from(value));
         }
-        // Not a Python int that fits 64 bits: an integral float (checked by
-        // the caller) inside the 64-bit range.
         let in_range = as_float >= -(2f64.powi(63)) && as_float < 2f64.powi(64);
         (value.extract::<f64>().is_ok()
             && !value.is_instance_of::<pyo3::types::PyInt>()
@@ -539,7 +507,6 @@ fn exact_int_bounds(
     }
 }
 
-/// Integer/boolean dtypes whose Box bounds are stored as dtype-typed bytes.
 fn is_integral_dtype(dtype: DType) -> bool {
     matches!(
         dtype,
@@ -871,8 +838,6 @@ mod tests {
                 .unwrap();
             let space = PySpace::new(spec);
 
-            // The sampler now builds a Tensor buffer directly rather than
-            // emitting nested Python lists for Python to repack.
             let sample = space.sample(py).unwrap();
             assert!(
                 sample
@@ -892,8 +857,6 @@ mod tests {
         use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
 
         Python::attach(|py| {
-            // A remote contract can carry an invalid Discrete{n:0}; sampling it
-            // must raise a clean Python error rather than panicking.
             let spec = SpaceSpec {
                 shape: vec![],
                 dtype: DType::Int64,
@@ -902,8 +865,6 @@ mod tests {
             let space = PySpace::new(spec);
 
             assert!(space.sample(py).is_err());
-            // The RNG mutex must not be poisoned: seeding and re-sampling still
-            // return clean errors instead of panicking.
             assert_eq!(space.seed(Some(7)), 7);
             assert!(space.sample(py).is_err());
         });

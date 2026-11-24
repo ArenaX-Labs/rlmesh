@@ -20,7 +20,6 @@ pub(crate) fn register(name: &str, transform: ObsTransform) -> Result<()> {
         .write()
         .unwrap_or_else(|e| e.into_inner())
         .insert(name.into(), transform);
-    // Foreign deleters may re-enter the registry. Release the guard first.
     drop(replaced);
     Ok(())
 }
@@ -123,8 +122,6 @@ fn numeric(value: &Value) -> Result<Vec<f64>> {
     }
 }
 fn vector(v: &[f64], dtype: crate::DType) -> Result<Value> {
-    // Casting through the adapter's numeric pipeline keeps all twelve dtypes
-    // identical to declarative state output (including integer narrowing).
     let bytes = rlmesh_spaces::scalar::encode_scalars(
         &v.iter()
             .copied()
@@ -668,7 +665,6 @@ fn raw_map(raw: Value) -> Result<BTreeMap<String, core::Value>> {
     }
 }
 impl AdapterBase for Adapter {
-    /// Transform an environment observation into model input.
     fn transform_obs(&mut self, raw: Value) -> Result<Value> {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let AdapterState {
@@ -695,7 +691,6 @@ impl AdapterBase for Adapter {
         .map_err(Error::from_apply)?;
         Ok(restore_shape(from_adapter(out)?, &parts.input))
     }
-    /// Transform model output into an environment action.
     fn transform_action(&mut self, raw: Value) -> Result<Value> {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let AdapterState {
@@ -714,7 +709,6 @@ impl AdapterBase for Adapter {
             .map_err(Error::from_apply)?;
         crate::binding::tensor_from_core(tensor).map(Value::Tensor)
     }
-    /// Record an observation for stateful transforms.
     fn observe(&mut self, raw: Value) -> Result<()> {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let AdapterState {
@@ -731,7 +725,6 @@ impl AdapterBase for Adapter {
         *step = tick + 1;
         core::observe_obs(&parts.plan, &raw_map(raw)?, "local", buffers).map_err(Error::from_apply)
     }
-    /// Reset stateful transforms for a new episode.
     fn reset(&mut self) -> Result<()> {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         s.buffers.clear();
@@ -739,7 +732,6 @@ impl AdapterBase for Adapter {
         s.current_step = 0;
         Ok(())
     }
-    /// Describe the resolved transformation plan.
     fn explain(&self) -> Result<String> {
         Ok(self
             .0

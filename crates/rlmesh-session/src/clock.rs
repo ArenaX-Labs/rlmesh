@@ -1,11 +1,4 @@
 //! Clock domains and NTP-style offset estimation.
-//!
-//! Every participant stamps with its own monotonic clock. In wall mode the
-//! session clock is the host's monotonic clock, and the host keeps, per
-//! participant, an offset estimate with a rigorous error bound:
-//! `session_ns = participant_ns + offset_ns`, within `± error_ns`.
-//!
-//! Virtual and lockstep session clocks are later work (wave 5).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -13,9 +6,6 @@ use std::time::{Duration, Instant};
 /// The offset estimator is sans-IO and lives in `rlmesh-session-core`.
 pub use rlmesh_session_core::clock::{OffsetEstimate, OffsetEstimator, OffsetEstimatorConfig};
 
-/// The instant `timeout` from now. A wait with no limit ([`Duration::MAX`])
-/// ends past what an instant can hold: decades away, as Tokio's own
-/// unbounded sleeps do.
 pub(crate) fn deadline_after(timeout: Duration) -> tokio::time::Instant {
     const FAR: Duration = Duration::from_secs(30 * 365 * 24 * 3600);
     let now = tokio::time::Instant::now();
@@ -30,9 +20,8 @@ pub trait Clock: Send + Sync + 'static {
 
 /// `std::time::Instant` measured from an anchor, plus a fixed shift.
 ///
-/// The shift exists so one process can host several clock domains with known
-/// offsets between them (tests and the demo); production participants use
-/// [`MonotonicClock::new`].
+/// The shift lets one process host several clock domains with known offsets between them;
+/// production participants use [`MonotonicClock::new`].
 #[derive(Clone, Debug)]
 pub struct MonotonicClock {
     anchor: Instant,
@@ -123,7 +112,6 @@ mod tests {
         let anchor = Instant::now();
         let a = MonotonicClock::with_anchor(anchor, 0);
         let b = MonotonicClock::with_anchor(anchor, -3_000_000_000);
-        // b is read after a, so the difference can only fall short of 3 s.
         let (ta, tb) = (a.now_ns(), b.now_ns());
         let diff = ta - tb;
         assert!((2_990_000_000..=3_000_000_000).contains(&diff), "{diff}");

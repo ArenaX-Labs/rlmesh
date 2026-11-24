@@ -1,18 +1,3 @@
-// Recovery end to end, under Node: the package's `default` entry (dist/node.js: worker_threads class
-// Workers, the real wasm, Node's WebSocket) against the example robot (a real session host, an
-// rlmesh-session edge robot and a model policy) and the real rlmesh-gateway.
-//
-//   1. a real wasm trap in the state Worker -> respawned, the same subscription keeps flowing;
-//   2. a trap in the control Worker -> the lease is revoked (worker_restart); its participant is gone,
-//      so the host goes SAFE; arm + a new lease (a new token) -> ACTIVE;
-//   3. SIGKILL the gateway -> every class socket reports disconnected, the lease is revoked
-//      (disconnected); restart it -> sockets reconnect with backoff, data resumes, the host went SAFE,
-//      arm + a fresh lease bring it back to ACTIVE.
-//
-// The page token (`RLMESH_GATEWAY_TOKEN`, which a page gets in its URL fragment) never reaches the
-// gateway's logs, at debug.
-//
-// `mise run test:js:e2e` builds the release binaries and dist/ and sets RLMESH_E2E_TARGET.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -32,7 +17,6 @@ const scratch = mkdtempSync(join(process.env.XDG_CACHE_HOME ?? join(process.env.
 const sessionFile = join(scratch, 'session.id');
 const TOKEN = randomBytes(24).toString('hex');
 const procs = new Set();
-/** Everything every gateway logged. */
 let gatewayLog = '';
 
 function start(name, path, args, env = {}) {
@@ -71,7 +55,6 @@ const waitFor = (session, type, pred = () => true, ms = 10000) =>
   });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Next sample from a subscription with seq greater than `after`. */
 async function nextAfter(sub, after, ms = 5000) {
   const deadline = Date.now() + ms;
   for (;;) {
@@ -81,18 +64,15 @@ async function nextAfter(sub, after, ms = 5000) {
   }
 }
 
-/** Wait for the session mode (from the declarations' state events). */
 async function modeIs(session, mode, ms = 5000) {
   if (session.mode === mode) return;
   await waitFor(session, 'state', (s) => s.mode === mode, ms);
 }
 
-/** Re-arm after a fallback and take the lease (preempting the policy, which re-requests too). */
 async function rearmAndLease(session, path, ms = 5000) {
   const deadline = Date.now() + ms;
   for (;;) {
     try {
-      // Right after a reconnect the new participant may not be attached yet: retry both.
       if (session.mode === 'safe' || session.mode === 'disarmed') await session.arm();
       return await session.lease(path, { timeoutMs: 1000 });
     } catch (e) {
@@ -154,7 +134,6 @@ test('wasm trap in the control Worker: the lease is revoked (worker_restart), th
   assert.equal(rev.cause, 'worker_restart');
   await restarted;
   assert.equal(lease.active, false);
-  // The dead Worker's participant left: the host ended its lease and went SAFE.
   await modeIs(session, 'safe', 5000);
   assert.notEqual(session.id, oldId, 'a new participant');
   const again = await rearmAndLease(session, 'arm7/arm');

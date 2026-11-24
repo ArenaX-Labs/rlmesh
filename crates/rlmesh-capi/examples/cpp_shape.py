@@ -13,7 +13,6 @@ allowed = set(range(start, end + 1))
 
 
 def tokens(path):
-    """Extract header tokens using compiler line markers and the sole exception."""
     own = False
     line_number = 0
     text = []
@@ -26,7 +25,6 @@ def tokens(path):
             if own and line_number not in allowed and not line.startswith("#"):
                 text.append(line)
             line_number += 1
-    # Preserve literals and multi-character punctuators while ignoring whitespace.
     result = re.findall(
         r"""(?:u8|[uUL])?(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
         r"|[a-zA-Z_][a-zA-Z_0-9]*|[0-9]+(?:\.[0-9]+)?"

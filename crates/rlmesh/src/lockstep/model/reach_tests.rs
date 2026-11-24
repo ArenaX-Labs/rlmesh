@@ -1,12 +1,3 @@
-//! A model served where its driver's loopback is not its own (a container,
-//! another machine) drives a local env, and one asked to join a session it
-//! can't reach says so in seconds.
-//!
-//! Each side is a process of its own: the model's, whose host this process
-//! reaches at an address the model's process cannot dial (a port forwarded
-//! from another network namespace, as a container publishes one), and the
-//! driver's.
-
 use std::io::BufRead;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -19,17 +10,11 @@ use crate::{
     RemoteModel, RemoteModelOptions, Result, RunOptions, Value,
 };
 
-/// A model child: serves at this participant address until stdin closes.
 const MODEL_AT: &str = "RLMESH_TEST_REACH_MODEL_AT";
-/// With [`MODEL_AT`]: relay the host's port from the Unix socket `session`
-/// in this directory, as a container's published port.
 const RELAY: &str = "RLMESH_TEST_REACH_RELAY";
-/// A driver child: runs the model at this address against a local env.
 const DRIVE: &str = "RLMESH_TEST_REACH_DRIVE";
-/// With [`DRIVE`]: serve the env at its own address and pass that.
 const ENV_BY_ADDRESS: &str = "RLMESH_TEST_REACH_ENV_BY_ADDRESS";
 
-/// Ends each episode at its third step.
 struct Three(i64);
 
 impl Env for Three {
@@ -82,7 +67,6 @@ fn model_child() {
     );
 }
 
-/// Relays the Unix socket `session` in `dir` to `base`.
 fn relay_in(dir: PathBuf, base: SocketAddr) {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     std::thread::spawn(move || {
@@ -152,7 +136,6 @@ fn child_args(test: &str) -> [String; 3] {
     ]
 }
 
-/// The scratch directories both children share.
 struct Scratch {
     dir: tempfile::TempDir,
 }
@@ -181,7 +164,6 @@ impl Scratch {
     }
 }
 
-/// A model child, stopped when dropped (its stdin closed, then killed).
 struct ModelProcess {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -214,7 +196,6 @@ impl Drop for ModelProcess {
     }
 }
 
-/// What a driver child printed: the steps it ran, or its error.
 fn drive(scratch: &Scratch, address: &str, env_by_address: bool) -> String {
     let mut command = Command::new(exe());
     command.args(child_args("driver_child"));
@@ -242,8 +223,6 @@ fn free_base() -> SocketAddr {
     rlmesh_session::transport::free_local_base(Ipv4Addr::LOCALHOST.into()).expect("free port")
 }
 
-/// The plain case: the model in another process on this machine, reached
-/// by its address alone, drives a local env.
 #[test]
 fn a_model_in_another_process_drives_a_local_env() {
     let scratch = Scratch::new();
@@ -256,8 +235,6 @@ fn a_model_in_another_process_drives_a_local_env() {
     assert_eq!(drive(&scratch, &format!("{base}/model"), false), "STEPS=6");
 }
 
-/// Whether this machine lets an unprivileged user make a network namespace
-/// with its loopback up.
 fn namespaces() -> bool {
     Command::new("unshare")
         .args(["-rn", "ip", "link", "set", "lo", "up"])
@@ -267,8 +244,6 @@ fn namespaces() -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// Forwards `published` on this machine's loopback to the Unix socket
-/// `session` in `relay`, as a container's published port.
 fn publish(published: SocketAddr, relay: PathBuf) -> tokio::runtime::Runtime {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     let listener = runtime
@@ -288,9 +263,6 @@ fn publish(published: SocketAddr, relay: PathBuf) -> tokio::runtime::Runtime {
     runtime
 }
 
-/// The model in a network namespace of its own, its host's port published
-/// on this machine's loopback under another number: the model can dial
-/// neither this machine's loopback nor the address its driver dials.
 fn contained(
     scratch: &Scratch,
     relay: &Path,
@@ -299,7 +271,6 @@ fn contained(
         return None;
     }
     let (identity, key) = rlmesh_session::address::launch_identity().expect("identity");
-    // Inside the namespace every port is free.
     let inside = SocketAddr::from((Ipv4Addr::LOCALHOST, 20_000));
     let mut command = Command::new("unshare");
     command
@@ -307,7 +278,6 @@ fn contained(
         .arg(exe())
         .args(child_args("model_child"));
     scratch.env(&mut command);
-    // The launcher's identity, through the environment as a sandbox passes it.
     command
         .env("RLMESH_HOST_IDENTITY", identity.as_str())
         .env(MODEL_AT, format!("{inside}/model"))
@@ -318,9 +288,6 @@ fn contained(
     Some((model, format!("{published}#{key}/model"), runtime))
 }
 
-/// A served model that can't reach its driver's machine still drives a
-/// local env: the env is served on the model's host, which the model
-/// recognises by its key in the address the driver dialed.
 #[test]
 fn a_model_that_cannot_reach_its_driver_drives_a_local_env() {
     let scratch = Scratch::new();
@@ -331,8 +298,6 @@ fn a_model_that_cannot_reach_its_driver_drives_a_local_env() {
     };
     assert_eq!(drive(&scratch, &address, false), "STEPS=6");
 
-    // An env given by address is the model's to reach: it can't, and says
-    // so in seconds rather than at the driver's timeout.
     let refused = drive(&scratch, &address, true);
     assert!(
         refused.contains("could not reach the env's session at 127.0.0.1:"),

@@ -1,7 +1,3 @@
-//! Whether a failed lockstep connect can succeed on retry: a driver that
-//! dials an env still starting retries while the error is transient and
-//! stops at once on a refusal the same call meets again.
-
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -15,12 +11,8 @@ use rlmesh::ext::ErrorExt;
 use rlmesh::lockstep::ConnectOptions;
 use rlmesh_spaces::AutoresetMode;
 
-/// Set in the child process that serves the env.
 const CHILD: &str = "RLMESH_TEST_CONNECT_CHILD";
 
-/// The child half of [`a_connect_failure_says_whether_retrying_can_succeed`]:
-/// serves an env in a session it hosts under the launch identity its parent
-/// passed, as a launched container does, and prints only its port.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn connect_child() {
     if std::env::var_os(CHILD).is_none() {
@@ -40,7 +32,6 @@ async fn connect_child() {
         .unwrap();
 }
 
-/// Kills the child env when the test ends, however it ends.
 struct Child(std::process::Child);
 
 impl Drop for Child {
@@ -61,7 +52,6 @@ fn options(timeout: Duration) -> ConnectOptions {
 async fn a_connect_failure_says_whether_retrying_can_succeed() {
     let (identity, key) = rlmesh_session::address::launch_identity().unwrap();
     let (_, wrong) = rlmesh_session::address::launch_identity().unwrap();
-    // The identity reaches the child through its environment, never argv.
     let mut child = Child(
         std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "connect_child", "--nocapture"])
@@ -90,8 +80,6 @@ async fn a_connect_failure_says_whether_retrying_can_succeed() {
     .expect("the right key connects");
     drop(env);
 
-    // A key the host does not hold: final, and said well within the
-    // timeout instead of waiting it out as a host not up yet.
     let started = Instant::now();
     let refused = rlmesh::lockstep::connect(
         &format!("127.0.0.1:{port}#{wrong}/env"),
@@ -105,8 +93,6 @@ async fn a_connect_failure_says_whether_retrying_can_succeed() {
     assert!(refused.to_string().contains("refused"), "{refused}");
     assert!(!refused.to_string().contains(&wrong.to_string()));
 
-    // A robot the session does not have reads as one not joined yet, and
-    // the error names the robots that are there.
     let missing = rlmesh::lockstep::connect(
         &format!("127.0.0.1:{port}#{key}/envv"),
         options(Duration::from_secs(2)),
@@ -120,8 +106,6 @@ async fn a_connect_failure_says_whether_retrying_can_succeed() {
         "{missing}"
     );
 
-    // Nobody listening yet: transient, and the keyed address does not host
-    // the session in the driver's place, so the env can still bind it.
     drop(child);
     let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let free_port = free.local_addr().unwrap().port();
@@ -131,7 +115,6 @@ async fn a_connect_failure_says_whether_retrying_can_succeed() {
         rlmesh::lockstep::connect(&keyed, options(Duration::from_secs(3))).await
     });
     tokio::time::sleep(Duration::from_secs(1)).await;
-    // While it dials, the port stays free for the env.
     assert!(std::net::TcpListener::bind(("127.0.0.1", free_port)).is_ok());
     let absent = dialing.await.unwrap().err().expect("nobody listens");
     assert!(absent.is_transient(), "{absent}");
@@ -147,7 +130,6 @@ async fn an_edition_the_env_does_not_run_is_a_final_refusal() {
         rlmesh::lockstep::ServeOptions::default(),
         cancel.clone(),
     ));
-    // The runner declares an edition older than any the env runs.
     let refused = rlmesh::binding::model::LockstepEnv::connect(
         &address,
         ConnectOptions::default(),

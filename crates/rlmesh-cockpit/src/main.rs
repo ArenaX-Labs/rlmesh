@@ -7,9 +7,6 @@ use std::process::ExitCode;
 use clap::Parser;
 use rlmesh_cockpit::cli::{CockpitArgs, run};
 
-/// The RLMesh cockpit: live channels, declared vs measured rates, why each
-/// robot is or isn't moving, the lease and mode timeline, and arm and
-/// e-stop, for one session.
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Cli {

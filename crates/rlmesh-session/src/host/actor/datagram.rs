@@ -18,37 +18,19 @@ use crate::wire::{
     DatagramStats, PartSpec, ParticipantId, Role,
 };
 
-/// The control link counts as healthy while the robot's heartbeats arrive
-/// at least this often.
 const HEALTHY: Duration = Duration::from_millis(300);
-/// The path is broken one way when, with the control link healthy, the
-/// sending end sent at least [`BROKEN_SENT`] datagrams and for at least this
-/// long the other end opened none of them. Long enough that a stall of the
-/// whole link (a second or two on a weak Wi-Fi) is not mistaken for it.
 const BROKEN_AFTER: Duration = Duration::from_secs(2);
-/// See [`BROKEN_AFTER`]. Few: a robot whose chunks stop arriving goes safe
-/// within its hold, and its policy sends no more after that.
 const BROKEN_SENT: u64 = 3;
-/// After moving a robot's parts back to the session's links, the host
-/// tries the path again this long after (doubling each time it is broken
-/// again, up to [`RETRY_MAX`]), once the robot's probes arrive.
 const RETRY_FIRST: Duration = Duration::from_secs(5);
-/// See [`RETRY_FIRST`].
 const RETRY_MAX: Duration = Duration::from_secs(120);
-/// A path that has carried the parts this long starts its retries over
-/// from [`RETRY_FIRST`].
 const STABLE: Duration = Duration::from_secs(60);
-/// A robot's probes count as arriving while the newest is at most this old
-/// (it sends one a second).
 const PROBING: Duration = Duration::from_secs(3);
 
-/// The datagram path of one session's robots.
 pub(in crate::host) struct DatagramSession {
     pub(in crate::host) relay: Arc<DatagramRelay>,
     robots: BTreeMap<ParticipantId, Entry>,
 }
 
-/// One robot generation on the path.
 struct Entry {
     path: Arc<RobotPath>,
     downs: Vec<Arc<Down>>,
@@ -70,7 +52,6 @@ struct Entry {
 }
 
 impl Entry {
-    /// Both ways judged from now on.
     fn remark(&mut self, now: Instant, board: Option<DatagramStats>) {
         let host = self.path.counts();
         let board = board.unwrap_or_default();
@@ -78,7 +59,6 @@ impl Entry {
         self.up = Mark::new(now, board.sent, host.samples, host.probes);
     }
 
-    /// The way that is broken now, if one is.
     fn broken(
         &mut self,
         now: Instant,
@@ -97,9 +77,6 @@ impl Entry {
     }
 }
 
-/// One way of the path, since the receiving end last opened a datagram:
-/// what the sending end had sent then, and what the receiving end had
-/// opened.
 #[derive(Clone, Copy)]
 struct Mark {
     at: Instant,
@@ -119,24 +96,16 @@ impl Mark {
         }
     }
 
-    /// Whether this way is broken: nothing it sent opened at the other end,
-    /// though it sent enough over long enough to tell. A new count opened
-    /// moves the mark: ordinary loss never adds up to broken, and a way that
-    /// sends nothing (a policy that stopped) never is.
     fn broken(&mut self, now: Instant, sent: u64, opened: u64, probes: u64) -> bool {
         if opened > self.opened || sent < self.sent {
             *self = Self::new(now, sent, opened, probes);
             return false;
         }
-        // Up, the board's count holds its probes too: those that opened
-        // are no sample.
         let unanswered = (sent - self.sent).saturating_sub(probes.saturating_sub(self.probes));
         unanswered >= BROKEN_SENT && now.saturating_duration_since(self.at) >= BROKEN_AFTER
     }
 }
 
-/// Where a robot's realtime parts rode, from when it attached asking for
-/// the path: on the session's links until its first routes.
 struct Times {
     on_datagram: bool,
     since: Instant,
@@ -158,7 +127,6 @@ impl Times {
         }
     }
 
-    /// A move: counted as a fallback or a return when `counted`.
     fn switch(&mut self, now: Instant, on_datagram: bool, counted: bool) {
         if on_datagram == self.on_datagram {
             return;
@@ -219,8 +187,6 @@ fn drop_routes(relay: &DatagramRelay, entry: &mut Entry) {
     }
 }
 
-/// Why a part's chunks can't ride a datagram: the largest sealed chunk a
-/// binding of `state` sends it, over the limit, and whose binding.
 fn chunk_too_large(state: &AuthoritySnapshot, part: &PartSpec) -> Option<(usize, String, u32)> {
     let stride = part
         .command
@@ -248,16 +214,9 @@ fn chunk_too_large(state: &AuthoritySnapshot, part: &PartSpec) -> Option<(usize,
         .find(|(bound, _, _)| !datagram::fits(*bound))
 }
 
-/// The most a sealed envelope may take of one datagram.
 const ROOM: usize = MAX_DATAGRAM - HEADER_LEN;
 
 impl HostActor {
-    /// Keeps every robot's routes in step with the session: a robot that
-    /// attached asking for the path gets a probe route, its realtime parts
-    /// routes when it declares them (a part whose chunks or samples could
-    /// be larger than a datagram stays on the session), and a binding that
-    /// would send larger chunks moves that part back. A robot that left or
-    /// attached again loses its routes.
     pub(super) async fn sync_datagram(&mut self) {
         let Some(mut session) = self.datagram.take() else {
             return;
@@ -328,8 +287,6 @@ impl HostActor {
         self.datagram = Some(session);
     }
 
-    /// One robot's routes: made when its realtime parts first appear (or
-    /// change), and afterwards only taken away.
     async fn sync_routes(
         &mut self,
         session: &mut DatagramSession,
@@ -349,7 +306,6 @@ impl HostActor {
             .collect();
         let channels: Vec<ChannelId> = parts.iter().map(|p| p.channel).collect();
         if channels == entry.parts {
-            // A binding that would send a part larger chunks moves it back.
             let mut kept = Vec::with_capacity(entry.downs.len());
             for down in entry.downs.drain(..) {
                 let too_large = parts
@@ -476,12 +432,6 @@ impl HostActor {
         }
     }
 
-    /// Every tick: a chunk that turned out too large moves that part back to
-    /// TCP; a path shown broken one way (see [`Mark::broken`]) moves the
-    /// robot's realtime parts back, unless the session is strict
-    /// ([`crate::HostConfig::datagram_strict`]); and a robot moved back is
-    /// tried on the path again, without a new attach, once its probes
-    /// arrive and its retry time has come.
     pub(super) async fn check_datagram(&mut self) {
         let Some(mut session) = self.datagram.take() else {
             return;
@@ -506,13 +456,10 @@ impl HostActor {
                 continue;
             };
             if !lock_active(&entry.path) {
-                // Moved back: tried again once its retry time has come, its
-                // control link is healthy and its probes arrive.
                 let probing = entry.path.probe_age(now).is_some_and(|age| age <= PROBING);
                 if healthy && probing && entry.retry_at.is_some_and(|at| now >= at) {
                     entry.retry_at = None;
                     entry.path.reactivate();
-                    // Its routes anew, from the next sync.
                     entry.parts.clear();
                     entry.time.switch(now, true, true);
                     let time = entry.time.at(now);
@@ -556,7 +503,6 @@ impl HostActor {
                 );
                 changed = true;
             }
-            // A link that is down altogether proves nothing about the path.
             let (Some(board), true) = (board, healthy) else {
                 entry.remark(now, board);
                 continue;
@@ -589,8 +535,6 @@ impl HostActor {
         }
     }
 
-    /// Moves `robot`'s realtime parts back to the session's links, and sets
-    /// when the path is tried again.
     fn move_back(
         relay: &DatagramRelay,
         entry: &mut Entry,
@@ -618,7 +562,6 @@ impl HostActor {
         );
     }
 
-    /// `robot`'s routes, while it is on the path.
     pub(in crate::host) fn routes_of(&self, robot: &ParticipantId) -> Option<DatagramRoutes> {
         let entry = self.datagram.as_ref()?.robots.get(robot)?;
         if !lock_active(&entry.path) {
@@ -640,8 +583,6 @@ impl HostActor {
         })
     }
 
-    /// The path `robot`'s realtime parts ride, and the host's counters for
-    /// it on the datagram path.
     pub(in crate::host) fn data_path(
         &self,
         robot: &ParticipantId,
@@ -650,8 +591,6 @@ impl HostActor {
         (path, stats)
     }
 
-    /// [`Self::data_path`], with the time its realtime parts spent on each
-    /// path since it attached, and the moves between them.
     pub(in crate::host) fn data_path_time(
         &self,
         robot: &ParticipantId,
@@ -676,8 +615,6 @@ impl HostActor {
         (path, Some(stats), Some(entry.time.at(Instant::now())))
     }
 
-    /// How long `robot`'s chunks took through the relay, while it is
-    /// offered the path.
     pub(in crate::host) fn datagram_relay(
         &self,
         robot: &ParticipantId,
@@ -686,7 +623,6 @@ impl HostActor {
         Some(entry.path.relay_timing())
     }
 
-    /// Logs the path a robot that just attached takes.
     pub(super) fn log_data_path(&self, robot: &ParticipantId) {
         let Some(info) = self.authority.participant(robot) else {
             return;

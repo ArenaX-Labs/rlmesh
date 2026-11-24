@@ -1,4 +1,3 @@
-//! Remote clients delegate I/O and address/timeout rules to the facade.
 #![allow(unsafe_code)]
 use crate::abi::{
     sizing,

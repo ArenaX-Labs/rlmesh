@@ -1,17 +1,12 @@
 //! Deterministic, seedable sampling of values from a space spec.
 //!
-//! This is the single cross-language sampler. The Python bindings drive it
-//! through the same code path, so a given seed produces byte-identical samples
-//! in Rust and Python. The RNG is pinned to [`ChaCha12Rng`] (re-exported from
-//! the `chacha20` crate) rather than `rand`'s `StdRng`: the two are the same
-//! algorithm today, but `rand` reserves the right to change `StdRng` between
-//! releases, so pinning the concrete cipher freezes the seed->sample contract
-//! across `rand` upgrades.
+//! The Python bindings sample through the same code, so a given seed gives byte-identical
+//! samples in Rust and Python. The RNG is pinned to [`ChaCha12Rng`] rather than `rand`'s
+//! `StdRng`, which `rand` may change between releases.
 //!
-//! Sampling semantics mirror Gymnasium: integer Box elements are uniform over
-//! `[ceil(low), floor(high)]`, unbounded/half-bounded continuous elements fall
-//! back to exponential/normal tails, Text draws a length then characters from
-//! the charset, and composites recurse in declared order.
+//! As in Gymnasium, integer Box elements are uniform over `[ceil(low), floor(high)]`,
+//! unbounded or half-bounded continuous elements draw from exponential or normal tails, Text
+//! draws a length then characters from the charset, and composites recurse in declared order.
 
 use std::collections::BTreeMap;
 
@@ -27,18 +22,17 @@ use crate::types::{
     BoxSpec, DictSpec, MultiDiscreteSpec, SpaceKind, SpaceSpec, TextSpec, TupleSpec,
 };
 
-/// The pinned sampler RNG. Re-exported so callers (e.g. the Python bindings)
-/// hold and seed the same concrete type without depending on `chacha20`.
+/// The pinned sampler RNG.
 pub use chacha20::ChaCha12Rng;
 
 /// Sample a value from `spec`, drawing from `rng`.
 ///
-/// `rng` is advanced in place, so repeated calls on one RNG yield a stream of
-/// distinct samples (Gymnasium's seed-once-then-sample semantics). Use
-/// [`sample_seeded`] for a one-shot reproducible draw from a fresh stream.
+/// `rng` advances in place, so repeated calls on one RNG draw fresh samples. Use
+/// [`sample_seeded`] for a one-shot reproducible draw.
 ///
-/// Returns a [`SpaceError`] for specs that cannot be sampled (e.g. an empty
-/// `Discrete`, a non-positive `MultiDiscrete` dimension, or inverted bounds).
+/// # Errors
+/// [`SpaceError`] for a spec that cannot be sampled, such as an empty `Discrete`, a
+/// non-positive `MultiDiscrete` dimension or inverted bounds.
 pub fn sample_with<R: rand::Rng + ?Sized>(
     spec: &SpaceSpec,
     rng: &mut R,
@@ -74,9 +68,8 @@ pub fn sample_with<R: rand::Rng + ?Sized>(
 
 /// Sample a value from `spec` using a fresh [`ChaCha12Rng`] seeded with `seed`.
 ///
-/// Every call starts a new RNG stream, so the same `(spec, seed)` always yields
-/// the same value. For a stream of distinct samples, build one [`ChaCha12Rng`]
-/// and call [`sample_with`] repeatedly.
+/// The same `(spec, seed)` always yields the same value. For a stream of fresh samples,
+/// call [`sample_with`] repeatedly on one RNG.
 pub fn sample_seeded(spec: &SpaceSpec, seed: u64) -> Result<SpaceValue, SpaceError> {
     use rand::SeedableRng;
     let mut rng = ChaCha12Rng::seed_from_u64(seed);
@@ -89,10 +82,7 @@ fn sample_box<R: rand::Rng + ?Sized>(
     rng: &mut R,
 ) -> Result<Tensor, SpaceError> {
     let numel = numel(&space.shape);
-    // The sampler treats `Unspecified` specs as float32, matching the codecs.
     let dtype = normalize_dtype(space.dtype);
-    // Elements are drawn in order and encoded a block at a time, so a camera
-    // image costs its own bytes and not a bound and a scalar per element.
     let mut bytes = Vec::new();
     let mut block = Vec::with_capacity(numel.min(SAMPLE_BLOCK));
     let mut flush = |block: &mut Vec<Scalar>| -> Result<(), SpaceError> {
@@ -103,9 +93,7 @@ fn sample_box<R: rand::Rng + ?Sized>(
         Ok(())
     };
     if is_integer_dtype(space.dtype) {
-        // Integer elements sample in the dtype's exact domain: typed bounds
-        // decode to integers, never through `f64`, so `uint64` bounds above
-        // 2^63 and `int64` bounds beyond 2^53 are honoured exactly.
+        // Integer bounds are decoded as integers, never through f64.
         let (low, high) = integer_box_bounds(spec, numel.max(1), space.dtype);
         for index in 0..numel {
             let scalar =
@@ -126,18 +114,13 @@ fn sample_box<R: rand::Rng + ?Sized>(
         }
     }
     flush(&mut block)?;
-    // `from_slice` (not `from_vec`) so the buffer lands in 64-byte-aligned
-    // storage: the value codec hands a Box tensor over zero-copy, and the
-    // DLPack/numpy consumers downstream rely on that alignment.
+    // `from_slice` (not `from_vec`) lands the buffer in 64-byte-aligned storage, which zero-copy DLPack/numpy consumers rely on.
     Tensor::from_slice(&bytes, &space.shape, dtype)
         .map_err(|err| SpaceError::invalid("$", err.to_string()))
 }
 
-/// Elements sampled between encodes.
 const SAMPLE_BLOCK: usize = 4096;
 
-/// One side of a Box for every element: a single value shared by all of
-/// them, or one value each.
 #[derive(Debug, Clone, PartialEq)]
 enum Edges<T> {
     All(T),
@@ -145,7 +128,6 @@ enum Edges<T> {
 }
 
 impl<T: Copy> Edges<T> {
-    /// The edge of element `index`; `Each` holds one per element.
     fn at(&self, index: usize) -> T {
         match self {
             Edges::All(edge) => *edge,
@@ -154,7 +136,6 @@ impl<T: Copy> Edges<T> {
     }
 }
 
-/// Per-element `f64` bounds for the non-integer (float and bool) dtypes.
 fn box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Edges<f64>, Edges<f64>) {
     match &spec.bounds {
         Some(BoxBounds::Uniform(bounds)) => (Edges::All(bounds.low), Edges::All(bounds.high)),
@@ -162,7 +143,6 @@ fn box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Edges<f64>, Edges<
             elementwise_or_default(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
             elementwise_or_default(bounds.high.as_slice(), numel, f64::INFINITY),
         ),
-        // Typed byte bounds of a float or bool dtype are exact in `f64`.
         Some(BoxBounds::TypedUniform(bounds)) => {
             let low = decode_typed_one(&bounds.low, dtype).unwrap_or(f64::NEG_INFINITY);
             let high = decode_typed_one(&bounds.high, dtype).unwrap_or(f64::INFINITY);
@@ -193,12 +173,8 @@ fn decode_typed_many(bytes: &[u8], dtype: DType, numel: usize, default: f64) -> 
     }
 }
 
-/// One side of an integer Box element in the dtype's exact domain (`i128`
-/// holds every `i64` and `u64`); `None` is an open side.
 type IntEdge = Option<i128>;
 
-/// Per-element integer edges for an integer dtype. Float bounds round inward
-/// (`ceil(low)`, `floor(high)`, as Gymnasium); typed bounds decode exactly.
 fn integer_box_bounds(
     spec: &BoxSpec,
     numel: usize,
@@ -253,7 +229,6 @@ fn integer_box_bounds(
     }
 }
 
-/// A decoded typed bound as an exact integer: `Uint64` reads unsigned.
 fn scalar_to_int_edge(scalar: Scalar, dtype: DType) -> i128 {
     match scalar {
         Scalar::Int(_) if dtype == DType::Uint64 => i128::from(scalar.as_u64()),
@@ -262,8 +237,6 @@ fn scalar_to_int_edge(scalar: Scalar, dtype: DType) -> i128 {
     }
 }
 
-/// Validated elementwise bounds always carry one value per element; anything
-/// else falls back to the unbounded default for sampling purposes.
 fn elementwise_or_default(values: &[f64], len: usize, default: f64) -> Edges<f64> {
     if values.len() == len {
         Edges::Each(values.to_vec())
@@ -272,7 +245,6 @@ fn elementwise_or_default(values: &[f64], len: usize, default: f64) -> Edges<f64
     }
 }
 
-/// Sample one float or bool Box element.
 fn sample_box_scalar<R: rand::Rng + ?Sized>(
     rng: &mut R,
     low: f64,
@@ -286,8 +258,6 @@ fn sample_box_scalar<R: rand::Rng + ?Sized>(
     Ok(Scalar::Float(value))
 }
 
-/// Sample a continuous value within `[low, high]`, falling back to
-/// exponential/normal sampling for half- and un-bounded ranges.
 fn sample_continuous<R: rand::Rng + ?Sized>(
     rng: &mut R,
     low: f64,
@@ -311,18 +281,12 @@ fn sample_continuous<R: rand::Rng + ?Sized>(
     Ok(value)
 }
 
-/// Sample an integer-dtype Box element uniformly over its integer edges,
-/// matching Gymnasium instead of rounding a continuous uniform (which biases
-/// the endpoints). The draw stays in the dtype's domain: `i64` ranges draw on
-/// `i64`, and a range above `i64::MAX` (only `uint64` has one) draws on `u64`.
 fn sample_integer_box_scalar<R: rand::Rng + ?Sized>(
     rng: &mut R,
     low: IntEdge,
     high: IntEdge,
     dtype: DType,
 ) -> Result<Scalar, SpaceError> {
-    // Clamp the open ends to the dtype's representable range so an unbounded
-    // integer Box still samples a finite value.
     let (dtype_lo, dtype_hi) = integer_dtype_bounds(dtype);
     let lo = low.unwrap_or(dtype_lo);
     let hi = high.unwrap_or(dtype_hi);
@@ -336,10 +300,8 @@ fn sample_integer_box_scalar<R: rand::Rng + ?Sized>(
     if hi > i64_max && lo >= 0 {
         let hi = u64::try_from(hi).unwrap_or(u64::MAX);
         let lo = u64::try_from(lo).unwrap_or(u64::MAX).min(hi);
-        // Bit-cast back: the encoder writes a `Uint64` element as `as u64`.
         return Ok(Scalar::Int(rng.random_range(lo..=hi) as i64));
     }
-    // Saturate edges outside `i64` (a float bound beyond the 64-bit range).
     let lo = lo.clamp(i64_min, i64_max) as i64;
     let hi = hi.clamp(i64_min, i64_max) as i64;
     Ok(Scalar::Int(rng.random_range(lo..=hi)))
@@ -359,8 +321,6 @@ fn is_integer_dtype(dtype: DType) -> bool {
     )
 }
 
-/// Conservative finite sampling bounds for an unbounded integer Box element.
-/// 64-bit dtypes keep to +/-2^53 (as before), well inside `i64`.
 fn integer_dtype_bounds(dtype: DType) -> (i128, i128) {
     match dtype {
         DType::Bool => (0, 1),
@@ -431,9 +391,7 @@ fn sample_dict<R: rand::Rng + ?Sized>(
     spec: &DictSpec,
     rng: &mut R,
 ) -> Result<SpaceValue, SpaceError> {
-    // Draw in declared key order (the same order the value codec walks) so the
-    // RNG stream is stable; the BTreeMap stores them sorted, which does not
-    // affect the draw order.
+    // Draw in declared key order (the order the value codec walks) so the RNG stream is stable; the BTreeMap's sorted order is irrelevant.
     let mut values = BTreeMap::new();
     for (key, child) in spec.keys.iter().zip(spec.spaces.iter()) {
         values.insert(key.clone(), sample_with(child, rng)?);
@@ -457,7 +415,6 @@ fn numel(shape: &[i64]) -> usize {
     shape.iter().map(|dim| *dim as usize).product()
 }
 
-/// The sampler treats `Unspecified` specs as float32, matching the codecs.
 fn normalize_dtype(dtype: DType) -> DType {
     match dtype {
         DType::Unspecified => DType::Float32,
@@ -484,8 +441,6 @@ mod tests {
             })),
         }
     }
-
-    // --- Determinism: same seed -> identical value, across every space kind. ---
 
     #[test]
     fn same_seed_reproduces_identical_samples() {
@@ -525,7 +480,6 @@ mod tests {
             let b = sample_seeded(spec, 0xC0FFEE).unwrap();
             assert_eq!(a, b, "same seed must reproduce the same sample for {spec}");
 
-            // Every sample is a full member of its space.
             assert!(
                 contains(spec, &a).is_ok(),
                 "sample must be a member of {spec}"
@@ -535,13 +489,6 @@ mod tests {
 
     #[test]
     fn golden_samples_are_frozen() {
-        // Freeze-forward golden: a fixed seed must produce these exact bytes for
-        // all time. The chacha20 pin guarantees the RNG stream is stable across
-        // `rand`/`chacha20` upgrades; this locks the *sampling math* on top of it
-        // (integer/continuous Box draws, normal/exp tails, Text length+charset).
-        // Captured under rand 0.10 / chacha20 0.10. If this fails, the sampling
-        // algorithm changed — and the Python side, which runs this same code, has
-        // changed with it. That is a deliberate, breaking decision, not a fixup.
         const SEED: u64 = 0xC0FFEE;
 
         let unbounded = BoxSpaceBuilder::unbounded(vec![3])
@@ -607,10 +554,6 @@ mod tests {
 
     #[test]
     fn rng_stream_advances_across_calls() {
-        // Seed once, sample twice off the *same* RNG: the second draw must come
-        // from the advanced stream, not repeat the first (gym semantics). A
-        // continuous unbounded Box has effectively zero collision probability, so
-        // this also confirms the seed actually feeds the draw.
         let spec = BoxSpaceBuilder::unbounded(vec![4])
             .dtype(DType::Float64)
             .build()
@@ -621,16 +564,12 @@ mod tests {
         assert_ne!(first, second);
     }
 
-    // --- Degenerate specs sample a single forced value, RNG-independent. ---
-
     #[test]
     fn degenerate_specs_are_rng_independent() {
-        // Discrete(1): random_range(0..1) is always 0.
         assert_eq!(
             sample_seeded(&DiscreteBuilder::new(1).build().unwrap(), 1).unwrap(),
             SpaceValue::Discrete(0)
         );
-        // MultiDiscrete with all-1 categories: every element is forced to 0.
         assert_eq!(
             sample_seeded(
                 &MultiDiscreteBuilder::vector(vec![1, 1, 1]).build().unwrap(),
@@ -639,7 +578,6 @@ mod tests {
             .unwrap(),
             SpaceValue::MultiDiscrete(vec![0, 0, 0])
         );
-        // A zero-width Box [5.0, 5.0] always samples 5.0.
         let degenerate_box = sample_seeded(
             &BoxSpaceBuilder::scalar(5.0, 5.0, vec![1])
                 .dtype(DType::Float32)
@@ -657,8 +595,6 @@ mod tests {
         );
     }
 
-    // --- Box leaves must land in 64-byte-aligned storage (DLPack zero-copy). ---
-
     #[test]
     fn box_sample_storage_is_aligned() {
         let spec = BoxSpaceBuilder::scalar(-1.0, 1.0, vec![8])
@@ -674,8 +610,6 @@ mod tests {
             "sampled Box tensor must use 64-byte-aligned storage"
         );
     }
-
-    // --- Bound decoding for sampling (moved from the PyO3 sampler). ---
 
     #[test]
     fn uint64_max_bound_decodes_to_positive_for_sampling() {
@@ -713,7 +647,6 @@ mod tests {
             .collect()
     }
 
-    // SPC-P4: integer elements sample in the dtype's own domain.
     #[test]
     fn uint64_bounds_above_i64_max_sample_exactly() {
         let low = (1u64 << 63) + 10;
@@ -727,7 +660,6 @@ mod tests {
             samples.iter().all(|v| (low..=high).contains(v)),
             "{samples:?}"
         );
-        // Every value of the four-wide range is reachable (no saturation).
         for v in low..=high {
             assert!(samples.contains(&v), "{v} never sampled: {samples:?}");
         }
@@ -754,12 +686,9 @@ mod tests {
 
     #[test]
     fn scalar_to_f64_matches_dtype() {
-        // Uint64 -1 bits read as the large positive magnitude; Int64 stays -1.
         assert_eq!(Scalar::Int(-1).to_f64(DType::Uint64), u64::MAX as f64);
         assert_eq!(Scalar::Int(-1).to_f64(DType::Int64), -1.0);
     }
-
-    // --- Invalid specs surface a SpaceError instead of panicking. ---
 
     #[test]
     fn empty_discrete_is_an_error() {

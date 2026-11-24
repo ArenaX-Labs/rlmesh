@@ -1,5 +1,3 @@
-"""The editable-install stale-extension check in ``rlmesh._load_native``."""
-
 from __future__ import annotations
 
 import subprocess
@@ -16,7 +14,6 @@ MOVED = "bbbbbbbbbbbb"
 
 
 def _checkout(tmp_path: Path) -> Path:
-    """A fake rlmesh checkout holding an in-tree extension; return the .so path."""
     (tmp_path / "rlmesh.toml").write_text("")
     (tmp_path / ".git").write_text("gitdir: elsewhere\n")
     package = tmp_path / "python" / "rlmesh" / "src" / "rlmesh"
@@ -99,7 +96,6 @@ def test_quiet_when_current_or_not_a_source_build(
 def test_wheels_are_never_checked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Even a git-stamped wheel installed into a venv inside the checkout.
     calls = _head(monkeypatch, MOVED)
     (tmp_path / "rlmesh.toml").write_text("")
     (tmp_path / ".git").mkdir()

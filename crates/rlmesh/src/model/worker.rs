@@ -22,37 +22,30 @@ impl<H> ModelWorker<H> {
 
 /// Options for [`ModelWorker::run_local`] / [`ModelWorker::run_local_async`].
 ///
-/// Build with [`RunLocalOptions::new`] (or `RunLocalOptions::parse` from a
-/// string address) and the chaining setters covering the run axes:
-/// `for_episodes` (the episode count), `base_seed` /
-/// `episode_seeds` (deterministic env seeding), the episode caps, and
-/// `execution_horizon` (action chunking) with `prefetch_lead` (async
-/// inference over the chunk replay).
+/// Build with [`RunLocalOptions::new`] (or [`RunLocalOptions::parse`] from a string address) and
+/// the chaining setters: episode count, seeding, episode caps, and `execution_horizon` (action
+/// chunking) with `prefetch_lead` (async inference over the chunk replay).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunLocalOptions {
     /// Address of the environment server to connect to.
     pub env_address: ConnectAddress,
     /// The exact number of episodes the run executes (see
-    /// [`RunLocalOptions::episode_budget`]): `None` runs one episode, or one
-    /// per seed when `episode_seeds` is non-empty; `Some(0)` runs nothing
-    /// (the env is not even dialed); `Some(n)` with non-empty
-    /// `episode_seeds` must match the seed count. There is no "until the env
-    /// ends" budget.
+    /// [`RunLocalOptions::episode_budget`]): `None` runs one episode, or one per seed when
+    /// `episode_seeds` is non-empty; `Some(0)` runs nothing (the env is not even dialed);
+    /// `Some(n)` with non-empty `episode_seeds` must match the seed count.
     pub max_episodes: Option<u64>,
     /// Base seed threaded into the runtime session for deterministic env
     /// reset seeding; `None` leaves seeding to the env.
     pub base_seed: Option<i64>,
     /// Explicit per-episode reset seeds, consumed in episode-start order.
-    /// Overrides `base_seed` when non-empty; requires an env with autoreset
-    /// disabled (see `RuntimeSessionSpec::episode_seeds`). Non-empty seeds set
-    /// the episode budget when `max_episodes` is `None` (one episode per seed)
-    /// and must match it otherwise; empty means "no seeds given".
+    /// Overrides `base_seed` when non-empty and requires an env with autoreset
+    /// disabled. Non-empty seeds set the episode budget when `max_episodes` is
+    /// `None` and must match it otherwise; empty means no seeds.
     pub episode_seeds: Vec<i64>,
-    /// First trial ordinal this run's episodes walk; `None` walks from 0. The
-    /// runtime mints one ordinal per episode and delivers it as
-    /// `reset(options={"trial_index": k})` to an env that declared the option;
-    /// a non-zero base requires an env with autoreset disabled (see
-    /// `RuntimeSessionSpec::trial_index_base`).
+    /// First trial ordinal this run's episodes walk; `None` walks from 0.
+    /// Each episode's ordinal is delivered as `reset(options={"trial_index": k})`
+    /// to an env that declared the option; a non-zero base requires an env with
+    /// autoreset disabled.
     pub trial_index_base: Option<u64>,
     /// Truncate any episode after this many steps (reported `truncated`).
     /// Requires an env with autoreset disabled.
@@ -62,35 +55,26 @@ pub struct RunLocalOptions {
     pub max_episode_seconds: Option<f64>,
     /// Ask the env to close when the run ends.
     pub close_env: bool,
-    /// Fire the handler's `on_close` when the run ends. Off by default: a
-    /// run borrows the model and the caller closes it. Turn it on when the
-    /// run is the model's last use and should close it.
+    /// Fire the handler's `on_close` when the run ends. Off by default: a run borrows the
+    /// model and the caller closes it.
     pub close_model: bool,
-    /// How many actions of each predicted chunk the runtime executes before
-    /// re-planning (1 = no chunking). Pinned onto the route at resolve, exactly
-    /// as the served path pins it via `ResolveAdapter`.
+    /// How many actions of each predicted chunk the runtime executes before re-planning (1
+    /// = no chunking).
     pub execution_horizon: u32,
-    /// Async inference: with this many (or fewer) replay frames of the current
-    /// chunk left, the driver predicts the next chunk while they execute (see
-    /// `RuntimeDriver::with_prefetch`). The prefetched chunk is conditioned on
-    /// an observation up to `prefetch_lead` steps stale, and one prefetched
-    /// across an episode boundary is discarded. 0 = synchronous (predict only
-    /// when no frame is left to play).
+    /// Async inference: with this many (or fewer) replay frames of the current chunk left,
+    /// the driver predicts the next chunk while they execute (see
+    /// `RuntimeDriver::with_prefetch`). The prefetched chunk is conditioned on an observation up
+    /// to `prefetch_lead` steps stale, and one prefetched across an episode boundary is discarded.
+    /// 0 is synchronous.
     pub prefetch_lead: u32,
-    /// The workflow edition this run **declares** (its WANT): the runtime tier's
-    /// explicit pin, so the session runs at this edition even when this build
-    /// and the env could both go higher. `None` (the default) declares nothing
-    /// and wants this build's current edition, which is its own `max(can)` and
-    /// therefore caps no env.
-    ///
-    /// Any cohort spelling of an edition this build retains is accepted; a pin
-    /// no peer can run is refused by the env-leg negotiation before any Join
-    /// stream opens, naming every tier's WANT and CAN.
+    /// The workflow edition this run **declares** (its WANT): the runtime tier's explicit
+    /// pin, so the session runs at this edition even when this build and the env could both
+    /// go higher. `None` declares nothing and wants this build's current edition. A pin no peer
+    /// can run is refused before any stream opens, naming every tier's WANT and CAN.
     pub workflow_edition: Option<String>,
-    /// The env's session as a model served elsewhere reaches it, when that
-    /// differs from the address this driver dials (a model container joins
-    /// an env container's session over their shared network). `None`
-    /// invites it at the dialed session.
+    /// The env's session as a model served elsewhere reaches it, when that differs from the
+    /// address this driver dials (a model container joins an env container's session over
+    /// their shared network).
     pub invite_at: Option<String>,
 }
 
@@ -126,10 +110,10 @@ impl RunLocalOptions {
         self
     }
 
-    /// The exact number of episodes this run executes: one when neither
-    /// `max_episodes` nor `episode_seeds` is given, the seed count when only
-    /// seeds are, and `max_episodes` otherwise, which must then equal the
-    /// seed count (a seed per episode, no unseeded tail). Zero runs nothing.
+    /// The exact number of episodes this run executes: one when neither `max_episodes` nor
+    /// `episode_seeds` is given, the seed count when only seeds are, and `max_episodes`
+    /// otherwise, which must then equal the seed count (a seed per episode, no unseeded
+    /// tail).
     ///
     /// # Errors
     ///
@@ -139,15 +123,10 @@ impl RunLocalOptions {
         match self.max_episodes {
             None if seeds > 0 => Ok(seeds),
             None => Ok(1),
-            Some(episodes) if seeds > 0 && seeds != episodes => {
-                // Python raises ValueError here; the facade has no
-                // invalid-argument variant yet (see
-                // docs/specs/language-parity/rules.md R-21).
-                Err(Error::Internal(format!(
-                    "max_episodes={episodes} does not match len(episode_seeds)={seeds}: \
+            Some(episodes) if seeds > 0 && seeds != episodes => Err(Error::Internal(format!(
+                "max_episodes={episodes} does not match len(episode_seeds)={seeds}: \
                      pass one seed per episode, or only one of the two"
-                )))
-            }
+            ))),
             Some(episodes) => Ok(episodes),
         }
     }
@@ -165,10 +144,9 @@ impl RunLocalOptions {
         self
     }
 
-    /// Predict the next chunk while `prefetch_lead` (or fewer) replay frames
-    /// of the current one remain (0 = synchronous). The chunk sees an
-    /// observation up to `prefetch_lead` steps stale, so the run is not
-    /// comparable to the synchronous loop.
+    /// Predict the next chunk while `prefetch_lead` (or fewer) replay frames of the current
+    /// one remain (0 = synchronous). The chunk sees an observation up to `prefetch_lead` steps
+    /// stale, so the run is not comparable to the synchronous loop.
     pub fn prefetch_lead(mut self, prefetch_lead: u32) -> Self {
         self.prefetch_lead = prefetch_lead;
         self
@@ -231,9 +209,8 @@ impl From<ConnectAddress> for RunLocalOptions {
 impl<H: ModelHandler + 'static> ModelWorker<H> {
     /// Run the handler in-process against a remote environment (blocking).
     ///
-    /// Drives the model/env loop on a private Tokio runtime for the run's
-    /// episode budget (see [`RunLocalOptions::episode_budget`]; one episode by
-    /// default). Returns the session's [`RuntimeReport`].
+    /// Runs the episode budget ([`RunLocalOptions::episode_budget`]; one episode by default) on a
+    /// private Tokio runtime and returns the session's [`RuntimeReport`].
     ///
     /// # Panics
     ///
@@ -255,10 +232,10 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
             .await
     }
 
-    /// [`run_local_async`](ModelWorker::run_local_async) with an external
-    /// cancellation token: cancelling it aborts the run between operations
-    /// (the driver returns a cancellation error) with the close hook still
-    /// fired -- the seam a host binding uses to deliver e.g. Ctrl-C.
+    /// [`run_local_async`](ModelWorker::run_local_async) with an external cancellation
+    /// token: cancelling it aborts the run between operations (the driver returns a
+    /// cancellation error) with the close hook still fired -- the seam a host binding uses
+    /// to deliver e.g.
     pub async fn run_local_cancellable_async(
         self,
         options: impl Into<RunLocalOptions>,

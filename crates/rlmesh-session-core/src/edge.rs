@@ -1,21 +1,15 @@
-//! The sans-IO edge: what runs next to an embodiment and
-//! turns controllers' timed action chunks into one command per control
-//! tick, whatever the network does. No transport, clock reads or threads:
-//! `rlmesh-session` attaches it to a participant, and a device without
-//! `std` can drive it directly.
+//! The sans-IO edge: what runs next to an embodiment and turns controllers' timed action
+//! chunks into one command per control tick, whatever the network does. No transport, clock
+//! reads or threads, so a device without `std` can drive it directly.
 //!
-//! - [`queue`]: the timed action queue, splicing new chunks at their
-//!   `replace_from` (validated before anything is removed), with
-//!   [`Delivery::Once`] for delta commands.
-//! - [`command`]: command validation and limits: finite values, valid
-//!   rotations, clamping, norm bounds and the binary snap.
-//! - [`fallback`]: the per-tick mode ladder of one command group (Idle,
-//!   Driving, Hold, Safe, Estop) on edge-local deadlines, with
-//!   dispatch gated to the leased member and the handover rule.
-//! - [`core`]: [`EdgeCore`], the edge of one group: chunk fencing (epoch,
-//!   lease token, source, binding, seq, the clock rules and the transit
-//!   check), validation, the queues, the ladder, the applied stream and the
-//!   applied-action log with source attribution.
+//! - [`queue`]: the timed action queue, splicing new chunks at their `replace_from`
+//!   (validated before anything is removed), with [`Delivery::Once`] for delta commands.
+//! - [`command`]: command validation and limits: finite values, valid rotations, clamping,
+//!   norm bounds and the binary snap.
+//! - [`fallback`]: the per-tick mode ladder of one command group (Idle, Driving, Hold, Safe,
+//!   Estop) on edge-local deadlines.
+//! - [`core`]: [`EdgeCore`], the edge of one group: chunk fencing, validation, the queues,
+//!   the ladder, the applied stream and the applied-action log.
 
 pub mod command;
 pub mod core;

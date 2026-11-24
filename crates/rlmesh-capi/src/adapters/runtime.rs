@@ -1,4 +1,3 @@
-//! Shared callables, adapter protocol and facade execution.
 #![allow(unsafe_code)]
 use super::*;
 use a::AdapterBase;
@@ -278,8 +277,6 @@ impl AdapterBase for RLMeshAdapter {
         self.call(|a| a.explain())
     }
 }
-/// # Safety
-/// A non-NULL handle stays live for the returned reference's lifetime.
 unsafe fn require<'a>(p: *const RLMeshAdapter) -> Result<&'a RLMeshAdapter, CapiError> {
     unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null adapter"))
 }

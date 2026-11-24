@@ -1,4 +1,4 @@
-"""Run E-3's allocation gates and optional interleaved advisory timing batches."""
+"""Run the allocation gates and optional interleaved advisory timing batches."""
 
 import argparse
 import os

@@ -1,5 +1,5 @@
-//! Registry access through `docker buildx imagetools`, and reading what a
-//! tag holds: a manifest, a confirmed absence, or an unreadable state.
+//! Registry access through `docker buildx imagetools`, and reading what a tag
+//! holds: a manifest, a confirmed absence, or an unreadable state.
 
 use std::process::{Command, Stdio};
 
@@ -12,17 +12,9 @@ use super::tags::Existing;
 /// The registry operations publish needs, as `docker buildx imagetools`
 /// provides them; a test hands in canned responses instead.
 pub(crate) trait Imagetools {
-    /// The JSON `imagetools inspect REF --format '{{json .Manifest}}'` prints:
-    /// an index (with `manifests`) or a bare manifest descriptor.
     fn manifest(&self, reference: &str) -> Result<String>;
-    /// The OCI image config of a single-image reference
-    /// (`--format '{{json .Image}}'`).
     fn config(&self, reference: &str) -> Result<String>;
-    /// The manifest exactly as the registry stores it (`inspect REF --raw`),
-    /// every field included.
     fn raw(&self, reference: &str) -> Result<String>;
-    /// Run `imagetools create ARGS`, returning its stdout (the index JSON
-    /// under `--dry-run`).
     fn create(&self, args: &[String]) -> Result<String>;
 }
 
@@ -71,18 +63,12 @@ impl Imagetools for DockerImagetools {
 }
 
 /// Whether an inspect error is the registry saying `tag` does not exist, as
-/// opposed to failing to say. Only the shapes a missing manifest takes count:
-/// containerd's `REF: not found` (what a manifest 404 becomes), the
-/// distribution `MANIFEST_UNKNOWN`/`NAME_UNKNOWN` codes, and a 404 on the
-/// manifest URL itself. A 404 from a token endpoint, a credential helper
-/// that is "not found", a 401, a 5xx, or a transport error is not absence.
+/// opposed to failing to say.
 pub(crate) fn absent(tag: &str, error: &str) -> bool {
     let error = error.trim();
     if not_found_line(tag, error) {
         return true;
     }
-    // Past the exact form, a message naming credentials or a token is an
-    // access failure, whatever status it reports.
     let lower = error.to_ascii_lowercase();
     if [
         "credential",
@@ -111,9 +97,6 @@ pub(crate) fn absent(tag: &str, error: &str) -> bool {
         })
 }
 
-/// Whether the error ends with containerd's `REF: not found` for `tag`, the
-/// two compared as docker resolves them (`ubuntu:v1` reads
-/// `docker.io/library/ubuntu:v1`).
 fn not_found_line(tag: &str, error: &str) -> bool {
     let Some(reference) = error.strip_suffix(": not found") else {
         return false;
@@ -125,8 +108,8 @@ fn not_found_line(tag: &str, error: &str) -> bool {
     canonical_reference(reference) == canonical_reference(tag)
 }
 
-/// `reference` the way docker resolves it: a first path component that is
-/// not a host (no `.` or `:`, and not `localhost`) means Docker Hub, as do
+/// `reference` the way docker resolves it: a first path component that is not a
+/// host (no `.` or `:`, and not `localhost`) means Docker Hub, as do
 /// `index.docker.io` and `registry-1.docker.io`; a one-component Docker Hub
 /// name is under `library/`; no tag and no digest means `latest`.
 pub(crate) fn canonical_reference(reference: &str) -> String {
@@ -163,12 +146,7 @@ pub(crate) fn canonical_reference(reference: &str) -> String {
     canonical
 }
 
-/// What `tag` holds now. An error that is not a confirmed absence leaves it
-/// unreadable, never new: a version tag is not pushed over what could not be
-/// checked. The raw manifest is read by the digest the tag resolved to, not
-/// by the tag again, so a tag that moves between the two reads cannot pair
-/// one manifest's digest with another's contents. Only the tag's own read can
-/// say it is absent: once it resolved, failing to read that digest is not.
+/// What `tag` holds now.
 pub(super) fn existing_manifest(tools: &impl Imagetools, tag: &str) -> Existing {
     let resolve = || -> Result<String> {
         let view: Value = serde_json::from_str(&tools.manifest(tag)?)
@@ -205,15 +183,10 @@ pub(super) fn existing_manifest(tools: &impl Imagetools, tag: &str) -> Existing 
 mod tests {
     use super::*;
 
-    /// The messages `docker buildx imagetools inspect` (0.37) prints, each
-    /// as the wrapper reports it.
     fn inspect_error(message: &str) -> String {
         format!("docker buildx imagetools inspect failed: ERROR: {message}")
     }
 
-    /// A tag resolved to `sha256:old`, which then moves: reading by tag
-    /// would give the new index, while the old one is still readable by
-    /// digest; `raw` fails with `raw_error` when set.
     struct MovingTag {
         raw_error: Option<&'static str>,
         raws: std::cell::RefCell<Vec<String>>,
@@ -257,8 +230,6 @@ mod tests {
         );
         assert_eq!(*tools.raws.borrow(), ["reg.example/ns/pi0@sha256:old"]);
 
-        // Once the tag resolved, a digest the registry no longer knows is
-        // not the tag's absence.
         let tools = MovingTag {
             raw_error: Some("ERROR: manifest unknown: manifest unknown"),
             raws: Default::default(),
@@ -273,7 +244,6 @@ mod tests {
     fn only_a_confirmed_absence_reads_as_a_new_tag() {
         let tag = "localhost:5055/ns/pi0:v1";
         for message in [
-            // A manifest 404, and a 404 with a MANIFEST_UNKNOWN body.
             "localhost:5055/ns/pi0:v1: not found",
             "manifest unknown: manifest unknown",
             "unexpected status from HEAD request to http://localhost:5055/v2/ns/pi0/manifests/v1: \
@@ -281,7 +251,6 @@ mod tests {
         ] {
             assert!(absent(tag, &inspect_error(message)), "{message}");
         }
-        // docker normalizes a Docker Hub reference.
         assert!(absent(
             "ns/pi0:v1",
             &inspect_error("docker.io/ns/pi0:v1: not found")
@@ -300,12 +269,10 @@ mod tests {
              500 Internal Server Error",
             "pull access denied, repository does not exist or may require authorization: server \
              message: insufficient_scope: authorization failed",
-            // Another reference's absence is not this one's.
             "localhost:5055/ns/other:v1: not found",
         ] {
             assert!(!absent(tag, &inspect_error(message)), "{message}");
         }
-        // Not running docker at all is not absence either.
         assert!(!absent(
             tag,
             "running docker buildx imagetools (is docker with buildx installed?): No such file \
@@ -340,7 +307,6 @@ mod tests {
         ] {
             assert_eq!(canonical_reference(reference), canonical, "{reference}");
         }
-        // buildx 0.37 names every Docker Hub spelling by its canonical form.
         for tag in [
             "ubuntu:rl-none",
             "docker.io/ubuntu:rl-none",
@@ -360,7 +326,6 @@ mod tests {
             &inspect_error("docker.io/library/ubuntu:latest: not found")
         ));
         for (tag, reported) in [
-            // Another repository, tag, or registry is not this tag's absence.
             ("ns/pi0:v1", "docker.io/library/pi0:v1"),
             ("pi0:v1", "docker.io/ns/pi0:v1"),
             ("ubuntu:a", "docker.io/library/ubuntu:b"),

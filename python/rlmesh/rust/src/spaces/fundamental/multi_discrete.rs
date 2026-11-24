@@ -19,9 +19,6 @@ pub fn make_multidiscrete<'py>(
 
     let np = py.import("numpy")?;
     let dtype = dtype_to_py(py, space.dtype)?;
-    // `nvec` (and `start`) are flat (row-major); reshape them back to the
-    // logical `shape` so a rank-2 MultiDiscrete materializes as 2-D arrays for
-    // Gymnasium.
     let shaped = |values: &[i64]| -> PyResult<Bound<'py, PyAny>> {
         let flat = np.getattr("array")?.call1((values.to_vec(), &dtype))?;
         if space.shape.len() > 1 {

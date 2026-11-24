@@ -19,11 +19,6 @@ from pathlib import Path
 
 import tomllib
 
-# Match a `reserved` statement keyword at any statement boundary: line start
-# (after indentation) OR right after a `{`/`;`/`}` on the same line. `buf format`
-# normally puts `reserved` on its own line (the line-anchored case the C10
-# checklist names), but catch the inline form too so the clean-break gate cannot
-# be smuggled past on a single line.
 RESERVED_RE = re.compile(r"(?:^|[{};])\s*reserved\b")
 
 

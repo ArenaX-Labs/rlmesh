@@ -1,5 +1,5 @@
-//! Checking the children as one version: each package label, the set's row
-//! keys and kinds, and the index annotation.
+//! Checking the children as one version: each package label, the set's row keys
+//! and kinds, and the index annotation.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,8 +20,8 @@ pub(crate) struct VariantImage {
     pub key: String,
     pub kind: Option<Kind>,
     pub blocks: ComputeBlocks,
-    /// The requires the metadata records for the base row: declared, or
-    /// inferred from the image's markers.
+    /// The requires the metadata records for the base row: declared, or inferred
+    /// from the image's markers.
     pub requires: Requires,
     pub requires_inferred: bool,
     pub facets: BTreeMap<String, String>,
@@ -35,7 +35,6 @@ impl VariantImage {
     }
 }
 
-/// What the image serves: the describe label's kind, else the serve command's.
 fn image_kind(config: &ImageConfig) -> Option<Kind> {
     config
         .labels
@@ -55,11 +54,9 @@ pub(crate) fn default_row(variants: &[VariantImage]) -> Option<(usize, usize)> {
 }
 
 /// Read and check each child's package label, and the set as a whole: every
-/// child needs a label with a `variant.key` (a lone child may leave it out,
-/// and is keyed `default`), its declaration must pass the
-/// validation checks, row keys are unique, kinds agree, and at least one
-/// child is `linux/amd64`. Returns the variants, the warnings worth printing,
-/// and every error found (all of them, so one run reports everything to fix).
+/// child needs a label with a `variant.key` (a lone child may leave it out, and
+/// is keyed `default`), its declaration must pass the validation checks, row
+/// keys are unique, kinds agree, and at least one child is `linux/amd64`.
 pub(crate) fn check_variants(
     children: Vec<Child>,
 ) -> (Vec<VariantImage>, Vec<String>, Vec<String>) {
@@ -77,9 +74,6 @@ pub(crate) fn check_variants(
     (variants, warnings, errors)
 }
 
-/// Check one child on its own, appending its problems in order; `None` when
-/// it has no usable `variant.key`. A `lone` child without a variant block is
-/// keyed `default`, and its profiles' rows are their bare keys.
 fn check_child(
     child: Child,
     lone: bool,
@@ -101,7 +95,6 @@ fn check_child(
     let (blocks, _) = variant::parse_compute_blocks(&package);
     let key = match blocks.variant.as_ref().map(|v| v.key.clone()) {
         Some(Some(key)) => key,
-        // A malformed key is already reported by the declaration checks.
         Some(None) => return None,
         None if lone => variant::DEFAULT_VARIANT_KEY.to_owned(),
         None => {
@@ -115,7 +108,6 @@ fn check_child(
     Some(variant_image(child, key, kind, blocks))
 }
 
-/// Each child carries a non-empty package label holding a JSON object.
 fn package_object(child: &Child) -> Result<Map<String, Value>, String> {
     let source = &child.source;
     let Some(raw) = child
@@ -138,7 +130,6 @@ fn package_object(child: &Child) -> Result<Map<String, Value>, String> {
     }
 }
 
-/// The package label is `schemaVersion` 1.
 fn unsupported_schema_version(source: &str, package: &Map<String, Value>) -> Option<String> {
     (package.get("schemaVersion").and_then(Value::as_u64) != Some(1)).then(|| {
         format!(
@@ -148,8 +139,6 @@ fn unsupported_schema_version(source: &str, package: &Map<String, Value>) -> Opt
     })
 }
 
-/// Each child declares a `variant` block; a block without a valid key is
-/// already reported by the declaration checks.
 fn missing_variant_block(source: &str, blocks: &ComputeBlocks) -> Option<String> {
     blocks.variant.is_none().then(|| {
         format!(
@@ -159,8 +148,6 @@ fn missing_variant_block(source: &str, blocks: &ComputeBlocks) -> Option<String>
     })
 }
 
-/// Warn when neither the describe label nor the command says what the image
-/// serves.
 fn unknown_kind(source: &str, kind: Option<Kind>) -> Option<String> {
     kind.is_none().then(|| {
         format!(
@@ -170,7 +157,6 @@ fn unknown_kind(source: &str, kind: Option<Kind>) -> Option<String> {
     })
 }
 
-/// Warn that a child the fleet cannot run is recorded but never selected.
 fn excluded_platform(child: &Child) -> Option<String> {
     (!child.selectable()).then(|| {
         format!(
@@ -181,8 +167,6 @@ fn excluded_platform(child: &Child) -> Option<String> {
     })
 }
 
-/// The variant a checked child records: its requires and facets as the
-/// parser derives them, and its row keys.
 fn variant_image(
     child: Child,
     key: String,
@@ -208,7 +192,6 @@ fn variant_image(
     }
 }
 
-/// `variant.key`s are unique within a version.
 fn duplicate_keys(variants: &[VariantImage]) -> Vec<String> {
     let mut by_key: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for variant in variants {
@@ -229,8 +212,6 @@ fn duplicate_keys(variants: &[VariantImage]) -> Vec<String> {
         .collect()
 }
 
-/// Derived row keys are unique within a version: a profile row must not
-/// collide with another child's key or row.
 fn colliding_rows(variants: &[VariantImage]) -> Vec<String> {
     let mut by_row: BTreeMap<&str, Vec<&VariantImage>> = BTreeMap::new();
     for variant in variants {
@@ -242,8 +223,6 @@ fn colliding_rows(variants: &[VariantImage]) -> Vec<String> {
         .iter()
         .filter_map(|(row, owners)| {
             let keys: BTreeSet<&str> = owners.iter().map(|v| v.key.as_str()).collect();
-            // A shared variant.key is reported by `duplicate_keys`; this is a
-            // profile row colliding with another child's key or row.
             (owners.len() > 1 && keys.len() > 1).then(|| {
                 format!(
                     "row key {row:?} is derived by {}; rows are <variant.key>-<profile.key>, so \
@@ -259,7 +238,6 @@ fn colliding_rows(variants: &[VariantImage]) -> Vec<String> {
         .collect()
 }
 
-/// Every variant of a version serves the same kind (unknown kinds aside).
 fn mixed_kinds(variants: &[VariantImage]) -> Option<String> {
     let mut by_kind: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for variant in variants {
@@ -282,16 +260,12 @@ fn mixed_kinds(variants: &[VariantImage]) -> Option<String> {
     })
 }
 
-/// At least one child is `linux/amd64`, so the version has a default row.
 fn unschedulable(variants: &[VariantImage]) -> Option<String> {
     (!variants.is_empty() && default_row(variants).is_none())
         .then(|| "no child is linux/amd64, so nothing in this version can be scheduled".to_owned())
 }
 
 /// Read `--index-package`: a JSON object of version-level package data.
-/// `schemaVersion` defaults to 1. The parser reads only the version-level
-/// keys off the index ([`variant::VERSION_PACKAGE_KEYS`]); anything else is
-/// kept as written but warned about. Returns compact JSON and the warnings.
 pub(crate) fn index_package(raw: &str, origin: &str) -> Result<(String, Vec<String>)> {
     let mut value: Value =
         serde_json::from_str(raw).with_context(|| format!("{origin} is not valid JSON"))?;
@@ -312,8 +286,8 @@ pub(crate) fn index_package(raw: &str, origin: &str) -> Result<(String, Vec<Stri
     Ok((serde_json::to_string(&value)?, warnings))
 }
 
-/// Warn for each child that sets a version-level key differently from the
-/// index annotation, which wins on the platform.
+/// Warn for each child that sets a version-level key differently from the index
+/// annotation, which wins on the platform.
 pub(super) fn index_disagreements(annotation: &str, variants: &[VariantImage]) -> Vec<String> {
     let Ok(Value::Object(index)) = serde_json::from_str::<Value>(annotation) else {
         return Vec::new();
@@ -369,7 +343,6 @@ mod tests {
     #[test]
     fn every_problem_is_reported_before_anything_is_created() {
         let mut registry = three_variants();
-        // Same key as the CUDA build.
         registry.add(
             "reg.example/ns/pi0:dup",
             None,
@@ -380,7 +353,6 @@ mod tests {
                 Some(json!({"schemaVersion": 1, "variant": {"key": "torch-cuda12"}})),
             ),
         );
-        // An env among models.
         registry.add(
             "reg.example/ns/pi0:env",
             None,
@@ -397,7 +369,6 @@ mod tests {
             'n',
             oci_config(&[], MODEL, None),
         );
-        // An empty label (`--build-arg RLMESH_PACKAGE=` left unset) reads as none.
         let mut empty: Value = serde_json::from_str(&oci_config(&[], MODEL, None)).unwrap();
         empty["config"]["Labels"][PACKAGE_LABEL] = Value::from("");
         registry.add("reg.example/ns/pi0:empty", None, 'm', empty.to_string());
@@ -461,7 +432,6 @@ mod tests {
         ] {
             assert!(error.contains(needle), "{needle:?} not in:\n{error}");
         }
-        // The variants that did resolve are still summarized.
         assert!(out.lines().any(|l| l.starts_with("sim ")), "{out}");
     }
 
@@ -551,7 +521,6 @@ mod tests {
     #[test]
     fn rows_are_unique_across_the_version_and_one_child_must_be_schedulable() {
         let mut registry = FakeRegistry::default();
-        // "cuda12" with profile "egl" derives "cuda12-egl", another child's key.
         registry.add(
             "r/x:a",
             None,
@@ -580,7 +549,6 @@ mod tests {
             "{error}"
         );
 
-        // Only an arm64 child: excluded, so nothing can be scheduled.
         let mut arm: Value = serde_json::from_str(&oci_config(
             &[],
             MODEL,
@@ -621,8 +589,6 @@ mod tests {
         );
     }
 
-    /// `config` (with its package label replaced by `label` when set) as the
-    /// one image of `reference`, resolved.
     fn child(
         registry: &mut FakeRegistry,
         reference: &str,
@@ -675,7 +641,6 @@ mod tests {
                 error
             );
         }
-        // A bad schemaVersion is reported, and the child still checked.
         let child = child(
             &mut registry,
             "r/x:a",
@@ -701,7 +666,6 @@ mod tests {
                     "profiles": [{"key": "egl", "default": true}]})),
             )
         };
-        // Two children sharing a key share its rows: one duplicate-key error.
         let a = child(&mut registry, "r/x:a", profiles("a"), None);
         let b = child(&mut registry, "r/x:b", profiles("a"), None);
         let (variants, _, errors) = check_variants(vec![a, b]);
@@ -713,7 +677,6 @@ mod tests {
             ]
         );
         assert!(colliding_rows(&variants).is_empty());
-        // An unknown kind agrees with any other.
         let custom = child(
             &mut registry,
             "r/x:c",
@@ -737,7 +700,6 @@ mod tests {
         let (variants, _, errors) = check_variants(vec![custom, env]);
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(mixed_kinds(&variants), None);
-        // No children, nothing unschedulable to report.
         assert_eq!(unschedulable(&[]), None);
     }
 }

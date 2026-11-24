@@ -12,15 +12,11 @@ use super::handler::ModelHandler;
 use crate::lockstep::GymError;
 use crate::{Error, Result, binding::spaces};
 
-/// One native run's resolved inputs.
 pub(crate) struct LocalRun {
     pub(crate) address: String,
-    /// The resolved budget (at least 1).
     pub(crate) episodes: u64,
     pub(crate) base_seed: Option<i64>,
-    /// What a `base_seed` keys on; `None` is the env's own id.
     pub(crate) seed_key: Option<String>,
-    /// A multi-route run's start: connect retry and the start barrier.
     pub(crate) start: Option<crate::run::routes::RouteStart>,
     pub(crate) seeds: Vec<i64>,
     pub(crate) trial_index_base: Option<u64>,
@@ -33,9 +29,6 @@ pub(crate) struct LocalRun {
     pub(crate) invite_at: Option<String>,
 }
 
-/// Connect to the env, resolve the handler's route, and drive the runtime
-/// loop to completion (the binding's run path). The run borrows the handler;
-/// a zero-episode budget never dials the env.
 pub(super) async fn run_local<H>(
     handler: &mut H,
     options: super::worker::RunLocalOptions,
@@ -45,9 +38,6 @@ pub(super) async fn run_local<H>(
 where
     H: ModelHandler + 'static,
 {
-    // Python's budget (`resolve_episode_budget`): one episode by default, one
-    // per seed when only seeds are given. Zero runs nothing, so the env is
-    // never dialed -- exactly Python's `run(episodes=0)`.
     let episodes = options.episode_budget()?;
     if episodes == 0 {
         return Ok(empty_report());
@@ -71,13 +61,6 @@ where
     drive_local(handler, run, cancellation, hooks, &|_| {}).await
 }
 
-/// Connect to the env, resolve the handler's route, and drive the runtime
-/// loop to completion. The route resolves before driving, exactly as the
-/// served path does at `ResolveAdapter`: that arms the spec'd engine path
-/// (adapter, per-episode frame buffers, batched/chunked predict corners) and
-/// pins the execution horizon -- without it every predict would fall into the
-/// spec-less branch. `connected` sees the env's contract once the handshake
-/// answered, before the route resolves.
 pub(crate) async fn drive_local<H>(
     handler: &mut H,
     mut options: LocalRun,
@@ -88,9 +71,6 @@ pub(crate) async fn drive_local<H>(
 where
     H: ModelHandler + 'static,
 {
-    // A route of a multi-route run retries its connect (its env may still
-    // be coming up) and holds at the start barrier once it is ready; leaving
-    // early, on any error below, counts it as arrived.
     let start = options.start.take();
     let ConnectedEnv {
         env,
@@ -108,8 +88,6 @@ where
         }
         None => connect_env(&options).await?,
     };
-    // The handler returns typed actions the runtime encodes against this space;
-    // a missing one would fail every predict, so reject at connect, not mid-run.
     if env_contract.action_space.is_none() {
         return Err(Error::Internal(
             "env contract has no action_space; a model cannot encode actions without it"
@@ -117,15 +95,9 @@ where
         ));
     }
     connected(&env_contract);
-    // The runtime is the env-id authority (R1); for the in-process path mint a
-    // UUIDv7 container id. The human env name lives on the SDK's own contract.
     let env_id = crate::mint_id();
     let session_id = format!("local-{}", std::process::id());
 
-    // Action chunking across a lockstep vector env would replay one whole-batch
-    // chunk for every lane, and a lane that ends mid-chunk invalidates the buffer
-    // for all of them. A lane endpoint replays per lane, so it is fine there.
-    // The options and the env decide it together: ValueError at connect (RUN-P1).
     if num_envs > 1 && !subset_step && options.execution_horizon > 1 {
         return Err(Error::invalid_argument(format!(
             "execution_horizon={} cannot be combined with a lockstep vector env (num_envs={num_envs}): \
@@ -135,7 +107,6 @@ where
         )));
     }
 
-    // A model served elsewhere answers in the env's session.
     if let Some(session) = options.invite_at.as_ref().or(session.as_ref()) {
         handler.join(session).await?;
     }
@@ -143,9 +114,6 @@ where
         .with_model(handler, options.workflow_edition.as_deref())
         .await?;
 
-    // The driver delivers every replayed step as a history row, so a stacked
-    // adapter's window advances on every step at any horizon; the route answers
-    // whether it needs that, and the driver only buffers rows when it does.
     let mut wants_history = false;
     let mut advisories = Vec::new();
     if let Some(route_setup) = handler.route_setup() {
@@ -173,8 +141,6 @@ where
         env_contract: env_contract_to_proto(&env_contract),
         num_envs,
         base_seed: options.base_seed,
-        // The env's own id unless the route names one: what no model can
-        // change, so models pair.
         seed_key: options.seed_key.unwrap_or_else(|| env_contract.id.clone()),
         episode_seeds: options.seeds,
         max_episodes: Some(options.episodes),
@@ -182,11 +148,7 @@ where
         max_episode_steps: options.max_episode_steps,
         max_episode_seconds: options.max_episode_seconds,
         close_env_on_end: options.close_env,
-        // `Model.run` closes its own model after the run.
         close_model_on_end: false,
-        // A lane endpoint is driven one group per lane; the grouped predicts
-        // reach the handler's `predict_grouped` (one fused forward for a model
-        // with a batched corner).
         subset_step,
         limits: Default::default(),
     };
@@ -221,7 +183,6 @@ pub struct ConnectedEnv {
     /// The session the env is in, with its key (a credential): where a
     /// model served elsewhere is invited ([`ModelHandler::join`]).
     pub session: Option<String>,
-    /// The edition negotiated with the env.
     edition: RunEdition,
 }
 
@@ -243,7 +204,6 @@ impl ConnectedEnv {
     }
 }
 
-/// Connect to a session env and negotiate its declared edition.
 async fn connect_env(options: &LocalRun) -> Result<ConnectedEnv> {
     {
         if let Some(why) = crate::address::bare_port(&options.address) {
@@ -275,28 +235,19 @@ async fn connect_env(options: &LocalRun) -> Result<ConnectedEnv> {
     }
 }
 
-/// The edition a connection to an env negotiated, and the env's offer.
 pub(crate) struct RunEdition {
-    /// The edition selected with the env, as spelled on the wire.
     selected: String,
-    /// The env's offer, on the v2 path.
     env: Option<rlmesh_proto::SessionOffer>,
 }
 
 impl RunEdition {
-    /// The edition a run executes at: the env's, or with a model served
-    /// elsewhere that declared its editions, the floor across the env, the
-    /// model and the driver's `declared` WANT (pinned on the model's route).
     pub(crate) async fn with_model<H: ModelHandler + ?Sized>(
         &self,
         handler: &mut H,
         declared: Option<&str>,
     ) -> Result<rlmesh_proto::Edition> {
         let selected = match (&self.env, handler.workflow_editions().await?) {
-            // TODO: pin the env to the floor on reset once an edition changes
-            // what an env does; while every retained edition's defaults row is
-            // equal, the floor is the env's (guarded by rlmesh-proto's
-            // `retained_edition_rows_stay_equal_until_an_env_is_pinned_to_the_floor`).
+            // TODO: pin the env to the floor on reset once an edition changes what an env does.
             (Some(env), Some(model)) => {
                 crate::floor::env_floor(env, &model, declared)?.selected_workflow_edition
             }
@@ -306,7 +257,6 @@ impl RunEdition {
     }
 }
 
-/// The env a local run drives.
 #[derive(Clone)]
 pub(crate) enum DrivenEnv {
     Lockstep(LockstepEnv),
@@ -352,19 +302,15 @@ impl LockstepEnv {
         Self { client }
     }
 
-    /// The client driving the env.
     pub(crate) fn client(&self) -> &crate::lockstep::LockstepClient {
         &self.client
     }
 
-    /// Connects to the lockstep env at the participant address `address`
-    /// for the runtime driver, checking what `Model.run` checks before it
-    /// drives one: an autoreset mode and spaces the driver represents, and a
-    /// workflow edition the env and this build share, negotiated against
-    /// `declared` (the runner's own declaration; `None`: this build's
-    /// current). The path for a runner that builds its own
-    /// [`RuntimeDriver`]; [`LockstepEnv::new`] over a bare
-    /// [`crate::lockstep::connect`] skips these checks.
+    /// Connects to the lockstep env at the participant address `address` for the runtime
+    /// driver, checking what `Model.run` checks before it drives one: an autoreset mode and
+    /// spaces the driver represents, and a workflow edition the env and this build share,
+    /// negotiated against `declared` (the runner's own declaration; `None`: this build's
+    /// current).
     ///
     /// # Errors
     /// [`ErrorExt::is_transient`](crate::ext::ErrorExt::is_transient) says
@@ -387,7 +333,6 @@ impl LockstepEnv {
                  it with NEXT_STEP or DISABLED autoreset, or drive it with RemoteVectorEnv",
             ));
         }
-        // The driver checks the env's contract as a v1 handshake did.
         crate::data::validate_driver_contract(&info.contract)
             .map_err(|err| Error::invalid_argument(err.to_string()))?;
         let (env, selected, _) =
@@ -405,7 +350,6 @@ impl LockstepEnv {
         })
     }
 
-    /// The env's timing of its last answer, as the driver records it.
     fn timing(&self) -> (Option<u64>, rlmesh_proto::EndpointPhases) {
         let Some(timing) = self.client.last_timing() else {
             return (None, rlmesh_proto::EndpointPhases::default());
@@ -477,7 +421,6 @@ impl RuntimeEnv for LockstepEnv {
     }
 }
 
-/// Preserve a session failure's class and recoverability in the driver.
 fn lockstep_runtime_error(operation: &'static str, error: GymError) -> RuntimeError {
     let recoverable = error.is_recoverable();
     let source = match error {
@@ -489,7 +432,6 @@ fn lockstep_runtime_error(operation: &'static str, error: GymError) -> RuntimeEr
     RuntimeError::env_rpc_with_recoverability(operation, 0, recoverable, source)
 }
 
-/// The report of a zero-episode run: nothing ran, nothing was measured.
 pub(crate) fn empty_report() -> RuntimeReport {
     RuntimeReport {
         session_id: format!("local-{}", std::process::id()),
@@ -505,11 +447,6 @@ pub(crate) fn empty_report() -> RuntimeReport {
     }
 }
 
-/// Map the driver's error back onto the facade taxonomy. Flattening every
-/// failure to [`Error::Internal`] made a model decline, an env fault, a dropped
-/// connection and a timeout indistinguishable to the caller (and always
-/// non-recoverable); the structured `#[source]` each RPC variant carries is the
-/// original error, so unwrap it when it is one of ours.
 fn run_error(error: RuntimeError) -> Error {
     let recoverable = error.is_recoverable();
     let message = error.to_string();
@@ -526,8 +463,6 @@ fn run_error(error: RuntimeError) -> Error {
                 },
                 |error| *error,
             ),
-        // Keep the driver's message (it names the op and the step) and take only
-        // the classification from the structured source.
         RuntimeError::EnvRpc { source, .. } => match source
             .and_then(|source| source.downcast::<Error>().ok())
             .map(|error| *error)
@@ -546,8 +481,6 @@ fn run_error(error: RuntimeError) -> Error {
         },
         RuntimeError::OperationTimeout { timeout, .. } => Error::Timeout(timeout),
         RuntimeError::Protocol(_) => Error::Protocol(message),
-        // A spec the options and the env cannot run together (autoreset,
-        // vector-env refusals): ValueError at connect (RUN-P1).
         RuntimeError::InvalidSpec(_) => Error::invalid_argument(message),
         _ => Error::Internal(message),
     }

@@ -1,9 +1,3 @@
-//! PyO3 bindings for the lockstep clock: a v2 robot that
-//! serves the lockstep exchange from Python callbacks
-//! (`rlmesh.realtime.Robot(..., clock="lockstep")` wraps it). Gym envs, models and
-//! `RemoteEnv` (a Gym env, or any robot through its Gym view) reach lockstep
-//! through their own servers, runs and clients (participant addresses).
-
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -30,8 +24,6 @@ pub(crate) fn gym_err(err: GymError) -> PyErr {
     SessionException::new_err(err.to_string())
 }
 
-/// One part's fields as a Python value: the array of a single-field part,
-/// else a dict of arrays.
 fn fields_value(fields: &[FieldSpec], values: &[Bytes]) -> Value {
     let tensor = |f: &FieldSpec, b: &Bytes| Tensor {
         dtype: f.dtype,
@@ -50,7 +42,6 @@ fn fields_value(fields: &[FieldSpec], values: &[Bytes]) -> Value {
     }
 }
 
-/// The robot's Python callbacks, and the frame they publish into.
 struct Callbacks {
     step: Py<PyAny>,
     reset: Py<PyAny>,
@@ -59,7 +50,6 @@ struct Callbacks {
 }
 
 impl Callbacks {
-    /// Runs one callback with a fresh frame, then takes the frame back.
     fn run(
         &self,
         call: impl FnOnce(Python<'_>) -> PyResult<(f64, bool, bool, String)>,
@@ -163,7 +153,6 @@ impl PyLockstepRobot {
             &robot_json,
         )
         .map_err(|e| PyValueError::new_err(e.message))?;
-        // The session address with the robot: its participant address.
         let address = match address {
             "" => name.to_string(),
             address => format!("{address}/{name}"),
@@ -252,7 +241,6 @@ impl PyLockstepRobot {
                     Err(_) => Err(SessionException::new_err(
                         "the robot did not declare in time",
                     )),
-                    // The serve task ended before serving: its own error says why.
                     Ok(Err(_)) => Err(match task.await {
                         Ok(Err(err)) => gym_err(err),
                         Ok(Ok(())) => SessionException::new_err("the robot stopped before serving"),
@@ -319,7 +307,6 @@ impl PyLockstepRobot {
                 Ok(())
             })?;
         }
-        // A robot that never served still holds its binding.
         let binding = self.binding.lock().ok().and_then(|mut b| b.take());
         if let Some(binding) = binding {
             block_on(py, async move {

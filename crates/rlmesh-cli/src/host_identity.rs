@@ -1,6 +1,6 @@
-//! `rlmesh host-identity`: the keys a launcher starts a session host under
-//! in another process (a container), and the address it dials it by, for
-//! launchers that are not written in Rust.
+//! `rlmesh host-identity`: the keys a launcher starts a session host under in
+//! another process (a container), and the address it dials it by, for launchers
+//! that are not written in Rust.
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -85,14 +85,12 @@ fn read_identity(file: &Path) -> Result<Zeroizing<String>> {
     Ok(text)
 }
 
-/// The keyed address `args` asks for, if any.
 fn keyed_address(identity: &str, args: &LaunchAddressArgs) -> Result<Option<String>> {
     let Some(session) = &args.address else {
         return Ok(None);
     };
     let mut address = launched_address(identity, session)?;
     address.participant.clone_from(&args.participant);
-    // Parsed back so a bad participant name is refused here, not at dial.
     let invite = address.invite();
     match &args.participant {
         Some(_) => rlmesh_session::address::Address::participant(&invite)?,

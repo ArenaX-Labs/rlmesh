@@ -1,21 +1,16 @@
-//! A literal rotation constant authored on a model state part.
-
 use serde::{Deserialize, Serialize};
 
 use rlmesh_session_core::spec::rotation::{self, Matrix};
 
 use crate::spec::RotationEncoding;
 
-/// Tolerance on an authored rotation's orthonormality (and on `|det - 1|`).
 const ORTHONORMAL_TOL: f64 = 1e-4;
 
 /// A fixed rotation authored on a model state part's `post_rotate`.
 ///
-/// `R_out = R_in @ R(post_rotate)`: the rigid re-frame a checkpoint was trained
-/// against (a tool/grip offset), right-multiplied onto the env's rotation after
-/// it is decoded and before it is re-encoded into the model's encoding. The
-/// authored value must already *be* a rotation -- it is validated orthonormal
-/// (with `|det - 1| <= 1e-4`) at the codec rather than silently re-orthonormalized.
+/// Applied as `R_out = R_in @ R(post_rotate)` after the env's rotation is decoded and before it
+/// is re-encoded. The value must be a rotation: it is validated orthonormal (`|det - 1| <= 1e-4`)
+/// at deserialization, not re-orthonormalized.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RotationLiteralWire")]
 pub struct RotationLiteral {
@@ -23,7 +18,6 @@ pub struct RotationLiteral {
     pub value: Vec<f64>,
 }
 
-/// Wire form of [`RotationLiteral`], validated via [`TryFrom`].
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RotationLiteralWire {
@@ -31,9 +25,6 @@ struct RotationLiteralWire {
     value: Vec<f64>,
 }
 
-/// A matrix from two authored columns, third = `c0 x c1`. Unlike the apply-side
-/// 6D decode this does *not* Gram-Schmidt: the authored basis is checked, not
-/// repaired.
 fn from_columns(c0: [f64; 3], c1: [f64; 3]) -> Matrix {
     let c2 = [
         c0[1] * c1[2] - c0[2] * c1[1],
@@ -69,8 +60,6 @@ impl TryFrom<RotationLiteralWire> for RotationLiteral {
     type Error = String;
 
     fn try_from(wire: RotationLiteralWire) -> Result<Self, Self::Error> {
-        // A sink encoding is a direction, not a rotation: there is no matrix
-        // to right-multiply (the direction law).
         if wire.encoding.is_sink() {
             return Err(format!(
                 "post_rotate: encoding {:?} is a direction, not a rotation; only a rotation \
@@ -95,7 +84,6 @@ impl TryFrom<RotationLiteralWire> for RotationLiteral {
         };
         let matrix = literal.matrix();
         let entry = |row: usize, col: usize| matrix[row][col];
-        // R^T R = I (columns orthonormal) and det = +1 (right-handed).
         for left in 0..3 {
             for right in 0..3 {
                 let dot: f64 = (0..3).map(|row| entry(row, left) * entry(row, right)).sum();
@@ -131,7 +119,6 @@ mod tests {
 
     #[test]
     fn accepts_a_rot6d_quarter_turn_and_round_trips() {
-        // Rz(-90 deg) as its first two columns: the LIBERO hand->grip offset.
         let literal: RotationLiteral = serde_json::from_str(
             r#"{"encoding": "rot6d", "value": [0.0, -1.0, 0.0, 1.0, 0.0, 0.0]}"#,
         )

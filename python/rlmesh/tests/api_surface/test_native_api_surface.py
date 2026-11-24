@@ -79,7 +79,6 @@ def test_c_prototype_and_callback_parameters_are_named() -> None:
         "rlmesh_box_high",
     ):
         assert "capacity" in functions[name]
-    # Output names follow the order the library writes them in.
     assert functions["rlmesh_text_limits"] == [
         "space",
         "out_min_length",
@@ -108,7 +107,6 @@ def test_c_prototype_and_callback_parameters_are_named() -> None:
     assert functions["rlmesh_model_vtable_describe"][0] == "vtable"
     assert functions["rlmesh_model_describe"][0] == "model"
     assert functions["rlmesh_env_factory_describe"][0] == "env_factory"
-    # Deleters name the object they free; user_data/ctx are not exempt here.
     declarations = [
         cursor
         for cursor in tu.cursor.walk_preorder()
@@ -140,7 +138,6 @@ def test_rust_glob_reexports_include_private_module_contents(
         **data["index"]["3"],
         "id": 4,
     }
-    # A recursive glob must terminate and must not duplicate the module page.
     data["index"]["1"]["inner"]["module"]["items"].append(5)
     data["index"]["5"] = {
         **data["index"]["3"],
@@ -163,8 +160,6 @@ def test_rust_glob_reexports_include_private_module_contents(
 
 
 def test_c_field_keeps_its_own_trailing_comment() -> None:
-    # The previous field's trailing comment must not read as the end of a block
-    # comment and drag the struct's docs (and source lines) onto this field.
     _, exports = _header("rlmesh.h", "c", "c11", None)
     fields = {member.name: member for member in exports["RLMeshRunOptions"].members}
     assert fields["instruction"].documentation == "NULL = None; copied."
@@ -176,13 +171,11 @@ def test_c_field_keeps_its_own_trailing_comment() -> None:
 
 @pytest.mark.parametrize("standard", ["c++17", "c++20"])
 def test_cpp_signatures_read_past_a_truncated_extent(standard: str) -> None:
-    # libclang ends this template's extent at its name when skipping bodies.
     _, exports = _header("rlmesh.hpp", "c++", standard, "rlmesh")
     (from_config,) = [m for m in exports["Model"].members if m.name == "from_config"]
     assert from_config.signature == (
         "template <class P> static Model from_config(const Kwargs& config)"
     )
-    # A constructor stops before its member-initializer list.
     (error,) = [m for m in exports["RuntimeError"].members if m.kind == "constructor"]
     assert error.signature == ("explicit RuntimeError(const std::string& message)")
     constructors = [
@@ -295,7 +288,6 @@ def test_c_header_sections_and_declarations() -> None:
         exports["rlmesh_last_error_message"].signature
         == "const char* rlmesh_last_error_message(void)"
     )
-    # One comment documents the run of declarations below it.
     assert exports["rlmesh_last_error_is_recoverable"].documentation.startswith(
         "Most recent failing call"
     )
@@ -319,7 +311,6 @@ def test_c_header_sections_and_declarations() -> None:
         sections["RLMeshRunOptions"]
         == "rlmesh.h: Running: facade targets, observers and results"
     )
-    # Header plumbing stays out of the reference.
     assert "RLMESH_API" not in exports
     assert "RLMESH_H" not in exports
 
@@ -357,7 +348,6 @@ def test_cpp_header_classes_and_members(standard: str) -> None:
     assert exports["adapters::ROTATION_DIMS"].kind == "function"
     assert "Result" not in exports
     assert "Error" not in exports
-    # Internal namespaces stay out, including those reopened later in the header.
     assert not any(
         part.startswith("detail") for name in exports for part in name.split("::")
     )
@@ -427,7 +417,6 @@ def test_rust_signatures_render_like_source() -> None:
         _function_signature("connect", connect)
         == "async fn connect(address: &str) -> Result<Self>"
     )
-    # A path relative to an internal crate renders as its name.
     assert (
         _ty({"resolved_path": {"path": "crate::dtype::DType", "id": 2, "args": None}})
         == "DType"
@@ -552,7 +541,6 @@ def test_rust_snapshot_envelope_is_early_access(tmp_path: Path) -> None:
     assert snapshot["kind"] == "rlmesh.rust-api-surface"
     assert snapshot["access"]["level"] == "early-access"
     assert snapshot["access"]["stability"] == "Preview"
-    # The root re-export is an alias, not a second page; the empty root is dropped.
     assert [module["name"] for module in snapshot["surface"]["modules"]] == [
         "rlmesh::env"
     ]

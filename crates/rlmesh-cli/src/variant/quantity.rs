@@ -1,7 +1,5 @@
 //! Byte quantities: `16Gi`, `24G`, `1.5Gi`, `80000000000`.
 
-/// The quantity suffixes, largest first: binary ones are powers of 1024,
-/// decimal ones powers of 1000.
 const UNITS: [(&str, u64); 8] = [
     ("Ti", 1 << 40),
     ("T", 1_000_000_000_000),
@@ -26,8 +24,6 @@ pub enum QuantityError {
     TooLarge,
 }
 
-/// Split a quantity into its whole digits, its fraction digits, and its
-/// unit's multiplier (1 without a suffix).
 fn split_quantity(raw: &str) -> Option<(&str, &str, u64)> {
     let (number, multiplier) = UNITS
         .iter()
@@ -40,8 +36,6 @@ fn split_quantity(raw: &str) -> Option<(&str, &str, u64)> {
         .then_some((whole, fraction, multiplier))
 }
 
-/// The exact byte count of `whole.fraction × multiplier`, bounded to the
-/// signed 64-bit range.
 fn quantity_bytes(whole: &str, fraction: &str, multiplier: u64) -> Result<u64, QuantityError> {
     let fraction = fraction.trim_end_matches('0');
     let scale = u32::try_from(fraction.len())
@@ -73,8 +67,7 @@ fn quantity_bytes(whole: &str, fraction: &str, multiplier: u64) -> Result<u64, Q
 
 /// Parse a byte quantity: digits with an optional fraction and an optional
 /// `Ki`, `Mi`, `Gi`, `Ti` (powers of 1024) or `K`, `M`, `G`, `T` (powers of
-/// 1000) suffix, no suffix meaning bytes. It must be a positive whole number
-/// of bytes within the signed 64-bit range.
+/// 1000) suffix, no suffix meaning bytes.
 pub fn parse_quantity(raw: &str) -> Result<u64, QuantityError> {
     let (whole, fraction, multiplier) = split_quantity(raw).ok_or(QuantityError::Syntax)?;
     quantity_bytes(whole, fraction, multiplier)

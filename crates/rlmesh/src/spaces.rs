@@ -1,9 +1,14 @@
 //! Spaces and their samplers.
 //!
-//! A [`SpaceSpec`] is immutable data describing a space. A [`Space`] is a
-//! spec plus its sampler, a shared handle whose clones drive one RNG.
-//! [`Box`], [`Discrete`] and [`Dict`] are typed views of a [`Space`] (they
-//! deref to it) that add their kind's accessors.
+//! A [`SpaceSpec`] is immutable data describing a space. A [`Space`] is a spec
+//! plus its sampler, a shared handle whose clones drive one RNG. [`Box`],
+//! [`Discrete`] and [`Dict`] are typed views of a [`Space`] (they deref to it)
+//! that add their kind's accessors. Samples are [`Value`]s: a Box samples a
+//! `Tensor`, a Discrete an `Int`, a Dict a dict in its declaration order, a
+//! Text a `Text`.
+//!
+//! This module is not in the prelude: [`spaces::Box`](Box) shadows `std`'s
+//! `Box`.
 //!
 //! ```
 //! use rlmesh::spaces::{Box, BoxOptions, Dict, Discrete, DiscreteOptions, SpaceSpec};
@@ -18,12 +23,6 @@
 //! # Ok(())
 //! # }
 //! ```
-//!
-//! This module is not in the prelude: [`spaces::Box`](Box) shadows `std`'s
-//! `Box`.
-//!
-//! Values are [`Value`]s: a Box samples a `Tensor`, a Discrete an `Int`, a
-//! Dict a dict in its declaration order, a Text a `Text`.
 
 use std::fmt;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -104,8 +103,8 @@ impl fmt::Display for SpaceKind {
 /// Immutable data describing a space. Clones share storage.
 ///
 /// Get one from a space (`SpaceSpec::from(&space)`), a remote contract, or
-/// [`Space::spec`]; [`to_space`](Self::to_space) makes a fresh space from
-/// it. There is no `PartialEq`; compare spaces instead.
+/// [`Space::spec`]; [`to_space`](Self::to_space) makes a fresh space from it.
+/// There is no `PartialEq`; compare spaces instead.
 #[derive(Clone)]
 pub struct SpaceSpec(Arc<WireSpec>);
 
@@ -139,7 +138,6 @@ impl SpaceSpec {
     }
 }
 
-/// Gymnasium-style text: `Box(-1.0, 1.0, (3,), float32)`.
 impl fmt::Display for SpaceSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&*self.0, f)
@@ -155,15 +153,10 @@ impl fmt::Debug for SpaceSpec {
 struct Inner {
     spec: SpaceSpec,
     rng: Mutex<ChaCha12Rng>,
-    /// A Dict's child spaces, built on first access and shared by every
-    /// handle of this space.
     children: OnceLock<DictSpaces>,
 }
 
 /// A space: a spec plus its sampler.
-///
-/// Clones share one handle, so two names drive one RNG. `seed`, `sample` and
-/// `contains` may run concurrently.
 #[derive(Clone)]
 pub struct Space(Arc<Inner>);
 
@@ -262,14 +255,10 @@ impl Space {
     }
 }
 
-/// The ValueError a `from_spec` raises for a spec of another kind.
 fn wrong_kind(expected: SpaceKind, actual: SpaceKind) -> Error {
-    // Python's text: `expected dict SpaceSpec, got 'box'`.
     Error::invalid_argument(format!("expected {expected} SpaceSpec, got '{actual}'"))
 }
 
-/// Normalized spec equality: Dict children compare by key, whatever their
-/// order.
 fn spec_eq(a: &WireSpec, b: &WireSpec) -> bool {
     if a.shape != b.shape || DType::from_core(a.dtype) != DType::from_core(b.dtype) {
         return false;
@@ -292,7 +281,6 @@ fn spec_eq(a: &WireSpec, b: &WireSpec) -> bool {
     }
 }
 
-/// Spaces compare by spec; there is no `Hash`.
 impl PartialEq for Space {
     fn eq(&self, other: &Self) -> bool {
         spec_eq(self.0.spec.wire(), other.0.spec.wire())
@@ -334,8 +322,6 @@ pub fn space_from_spec(spec: SpaceSpec) -> Result<Space> {
     Ok(Space::new(spec))
 }
 
-/// The newtype pattern shared by `Box`, `Discrete` and `Dict`: deref to
-/// `Space`, delegate the traits, convert both ways.
 macro_rules! space_newtype {
     ($ty:ident, $kind:ident) => {
         impl std::ops::Deref for $ty {
@@ -394,8 +380,6 @@ macro_rules! space_newtype {
             }
         }
 
-        /// Downcast, keeping the handle and its RNG; another kind is the
-        /// ValueError class.
         impl TryFrom<crate::spaces::Space> for $ty {
             type Error = crate::Error;
 

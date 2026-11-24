@@ -21,13 +21,10 @@ use crate::spaces::{
 use crate::telemetry::{ProfileCollector, init_tracing, profiling_enabled};
 use crate::types::{space_value_size, to_py_err};
 
-/// Interval for polling Python signals during blocked RPCs.
 const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// The signal poll for a blocked call, first due one interval from now. A plain
-/// `interval` ticks at once, and that tick waits for the timer wheel's next
-/// millisecond: awaited before the call is first polled, it delayed every
-/// request by about 1 ms.
+/// The signal poll for a blocked call, first due one interval from now: a plain `interval`
+/// ticks at once and that tick waits for the timer wheel, delaying every request.
 pub(crate) fn signal_poll() -> tokio::time::Interval {
     tokio::time::interval_at(
         tokio::time::Instant::now() + SIGNAL_POLL_INTERVAL,
@@ -35,15 +32,10 @@ pub(crate) fn signal_poll() -> tokio::time::Interval {
     )
 }
 
-/// A Ctrl-C that Python code run from native code took, waiting for the next
-/// signal poll (see [`defer_interrupt`]).
 static DEFERRED_INTERRUPT: std::sync::Mutex<Option<PyErr>> = std::sync::Mutex::new(None);
 
-/// Hand `interrupt`, a `KeyboardInterrupt` raised in a callback native code
-/// cannot fail, to the next [`check_signals`]. Python runs its SIGINT handler
-/// in whatever Python code the main thread runs next, so a Ctrl-C that lands
-/// while a serve calls back into Python (its ready hook) is raised there, not
-/// at the serve's poll, which would otherwise never see it.
+/// Hand `interrupt`, a `KeyboardInterrupt` raised in a callback native code cannot fail,
+/// to the next [`check_signals`]; the SIGINT handler runs in whatever Python code runs next.
 pub(crate) fn defer_interrupt(interrupt: PyErr) {
     let mut deferred = DEFERRED_INTERRUPT
         .lock()
@@ -51,10 +43,8 @@ pub(crate) fn defer_interrupt(interrupt: PyErr) {
     deferred.get_or_insert(interrupt);
 }
 
-/// Poll for a pending Python signal from a thread blocked in native code,
-/// first raising a deferred interrupt (see [`defer_interrupt`]).
-/// A daemon thread can outlive the interpreter; once it has finalized there is
-/// no signal to see, and attaching would crash the exiting process.
+/// Poll for a pending Python signal from a thread blocked in native code, first raising a
+/// deferred interrupt (see [`defer_interrupt`]). Skipped once the interpreter has finalized.
 pub(crate) fn check_signals() -> PyResult<()> {
     let deferred = DEFERRED_INTERRUPT
         .lock()
@@ -66,8 +56,6 @@ pub(crate) fn check_signals() -> PyResult<()> {
     Python::try_attach(|py| py.check_signals()).unwrap_or(Ok(()))
 }
 
-/// pyo3 answers a re-entrant `&mut self` call with a bare
-/// `RuntimeError: Already borrowed`; say what actually happened instead.
 fn single_caller_error(class: &str) -> PyErr {
     pyo3::exceptions::PyRuntimeError::new_err(format!(
         "{class} is already in a call on another thread: an RLMesh client owns one wire session \
@@ -75,7 +63,6 @@ fn single_caller_error(class: &str) -> PyErr {
     ))
 }
 
-/// Process-wide Tokio runtime shared by Python env clients.
 fn shared_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RUNTIME.get_or_init(|| {
@@ -102,9 +89,6 @@ impl PyEditionCell {
     }
 }
 
-/// Shared core for single and vector env facades: the facade's any-arity
-/// client (timeouts, reserved info keys, the closed state and the bounded
-/// close live there), driven with the GIL released and signals polled.
 struct ClientCore {
     client: EnvClientCore,
     runtime: &'static tokio::runtime::Runtime,
@@ -187,7 +171,6 @@ impl ClientCore {
         })
     }
 
-    /// Payload size when profiling is active.
     fn measure(&self, value: Option<&rlmesh_spaces::SpaceValue>) -> usize {
         if self.profiler.is_enabled() {
             value.map_or(0, space_value_size)
@@ -212,8 +195,6 @@ impl ClientCore {
         env_contract_to_py(py, self.client.env_contract())
     }
 
-    /// Run one RPC with the GIL released, polling Python signals so Ctrl-C
-    /// abandons it (RMT-6). Deadlines are the facade client's.
     fn run_rpc<F, T>(&mut self, py: Python<'_>, make: F) -> PyResult<T>
     where
         F: for<'a> FnOnce(
@@ -236,7 +217,6 @@ impl ClientCore {
                     tokio::select! {
                         result = &mut rpc => return RpcOutcome::Done(result),
                         _ = poll.tick() => {
-                            // Re-acquire the GIL only to check for pending signals.
                             if let Err(err) = check_signals() {
                                 return RpcOutcome::Signal(err);
                             }
@@ -263,7 +243,6 @@ impl ClientCore {
                 seeds,
                 options,
                 timeout_ms: 0,
-                // Whole-vector reset; partial reset is not exposed on this path.
                 env_indices: Vec::new(),
             }))
         })
@@ -295,7 +274,6 @@ impl ClientCore {
     }
 
     fn close_rpc(&mut self, py: Python<'_>) -> PyResult<()> {
-        // Bounded and detaching on a lost peer inside the facade (RMT-4).
         self.run_rpc(py, |client| Box::pin(client.close()))?;
         self.profiler.log_summary_once();
         Ok(())
@@ -307,10 +285,6 @@ enum RpcOutcome<T> {
     Signal(PyErr),
 }
 
-/// Emits a `PyEnvClient`/`PyVectorEnvClient` pyclass: the struct, the methods
-/// shared by both facades (connect/handshake/spaces/render/close/shutdown), and
-/// the `$extra` methods that differ (reset/step, plus `num_envs` on the vector
-/// facade).
 macro_rules! client_class {
     ($Class:ident, $role:literal, $public:literal, { $($extra:tt)* }) => {
         #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
@@ -409,12 +383,10 @@ macro_rules! client_class {
                 this.core.close_rpc(py)
             }
 
-
             $($extra)*
         }
 
         impl $Class {
-            /// Borrow the client for one call, or report the single-caller rule.
             fn lock<'py>(slf: &Bound<'py, Self>) -> PyResult<PyRefMut<'py, Self>> {
                 slf.try_borrow_mut().map_err(|_| single_caller_error($public))
             }

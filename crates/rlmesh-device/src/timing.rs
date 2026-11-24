@@ -1,9 +1,3 @@
-//! What the session's crypto costs on a board, measured on the board's own
-//! clock: a robot's attach handshake, the host-signed authority state it
-//! verifies on every change, and the chunks it opens and samples it seals
-//! on every control tick. The inputs are the sizes of a small robot's
-//! messages ([`STATE_LEN`], [`CHUNK_LEN`], [`SAMPLE_LEN`]).
-
 use alloc::vec::Vec;
 
 use rlmesh_session_core::crypto::handshake::{self, IkInitiator, IkResponder};
@@ -47,20 +41,15 @@ pub struct Timing {
 /// Why a run failed: the RNG, or the crypto disagreeing with itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimingError {
-    /// The caller's RNG failed.
     Rng,
-    /// An operation that should succeed failed.
     Crypto,
 }
 
 /// Runs every measurement once; `now_us` is the board's microsecond clock.
-/// Takes about a second on a classic ESP32, most of it signing the states
-/// it then verifies (signing isn't a robot's job, so it isn't timed).
 ///
 /// # Errors
 /// [`TimingError`].
 pub fn run(now_us: &mut dyn FnMut() -> u64, rng: &mut dyn Rng) -> Result<Timing, TimingError> {
-    // Each step out of line, so their frames don't add up on a board's stack.
     let mut out = Timing::default();
     handshakes(now_us, rng, &mut out)?;
     states(now_us, rng, &mut out)?;
@@ -150,7 +139,6 @@ fn open_chunks(
             .open(CHUNK_KEY, &mut msg)
             .map_err(|_| TimingError::Crypto)?;
         total += now_us() - t;
-        // The level measured is the level asked for.
         if opened.encrypted() != (security == Security::Seal) {
             return Err(TimingError::Crypto);
         }
@@ -178,7 +166,6 @@ fn seal_samples(now_us: &mut dyn FnMut() -> u64, rng: &mut dyn Rng) -> Result<u3
     Ok(mean(total, MESSAGES))
 }
 
-/// A sender and receiver sharing a fresh key for `kind`.
 fn pair(
     rng: &mut dyn Rng,
     kind: Kind,
@@ -208,7 +195,6 @@ mod tests {
 
     use super::*;
 
-    /// SplitMix64: a fixed stream that never repeats a key.
     struct SplitMix(u64);
 
     impl Rng for SplitMix {
@@ -235,7 +221,6 @@ mod tests {
 
     #[test]
     fn every_measurement_runs_and_is_the_mean() {
-        // Each clock read is 10 µs after the last: every timed span is one.
         let mut clock = 0;
         let mut now = || {
             clock += 10;

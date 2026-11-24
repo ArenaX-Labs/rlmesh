@@ -1,19 +1,14 @@
 //! Docker-backed packaging for RLMesh environments, and its Python functions
-//! (`sandbox_start_env`, `sandbox_stop_env`, `sandbox_reap_orphans`,
-//! `sandbox_session_port`, `sandbox_host_identity`).
+//! (`sandbox_start_env`, `sandbox_stop_env`, `sandbox_reap_orphans`, `sandbox_session_port`,
+//! `sandbox_host_identity`).
 //!
-//! [`start_env`] resolves an [`EnvironmentSourceRef`] (a gymnasium env id or an
-//! `hf://` HuggingFace repo), builds a sandbox image around it, and starts a
-//! container that serves the env in a realtime session. The image bundles a pinned `rlmesh`
-//! wheel (selected for the base image's Python version and libc) alongside the
-//! env's own dependencies. Runtime-only options (`gym.make` kwargs, env count,
-//! vectorization mode) ride in a run-time bootstrap payload rather than the
-//! image, so changing them never triggers a rebuild.
-//!
-//! Image identity is a content hash of the build inputs, so an unchanged spec
-//! reuses its cached image. `hf://` sources execute remote code and are gated by
-//! default behind explicit `trust_remote_code` and full-SHA revision pinning.
-//! [`reap_orphaned_containers`] removes containers whose owner process is gone.
+//! [`start_env`] resolves an [`EnvironmentSourceRef`] (a gymnasium env id or an `hf://` repo),
+//! builds a sandbox image around it with a pinned `rlmesh` wheel, and starts a container that
+//! serves the env in a realtime session. Runtime-only options (`gym.make` kwargs, env count,
+//! vectorization mode) ride in a run-time bootstrap payload, so changing them never rebuilds.
+//! Image identity is a content hash of the build inputs, so an unchanged spec reuses its image.
+//! `hf://` sources execute remote code and are gated behind explicit `trust_remote_code` and,
+//! unless `allow_unpinned_hf` is set, a full-SHA revision. [`reap_orphaned_containers`] removes containers whose owner is gone.
 
 mod docker;
 mod error;
@@ -51,11 +46,9 @@ pub struct SandboxOptions {
     pub vectorization_mode: VectorizationMode,
     pub trust_remote_code: bool,
     pub allow_unpinned_hf: bool,
-    /// Opt-in memory ceiling for the build. `None` builds via the default docker
-    /// builder (today's behaviour). A docker size string (e.g. `"20g"`) or the
-    /// literal `"auto"` routes the build through a bounded `docker-container`
-    /// buildx builder so an OOM is a clean cgroup-local build failure instead of
-    /// a host freeze. Host-relative, never baked, so it stays out of the build
+    /// Opt-in memory ceiling for the build: a docker size string (e.g. `"20g"`) or `"auto"` routes
+    /// the build through a bounded buildx builder, so an OOM fails the build instead of freezing the
+    /// host. `None` uses the default docker builder. Host-relative, so it stays out of the build
     /// hash.
     pub build_memory: Option<String>,
 }
@@ -112,11 +105,9 @@ impl SandboxOptions {
             .unwrap_or_else(|| DEFAULT_BASE_IMAGE.to_string())
     }
 
-    /// The requested build memory ceiling: field, else
-    /// `RLMESH_SANDBOX_BUILD_MEMORY`, else `None`. The raw value (a docker size
-    /// string or the literal `"auto"`/`"off"`) is interpreted by the docker
-    /// backend; this only applies the field-over-env precedence, mirroring
-    /// [`resolved_base_image`](Self::resolved_base_image).
+    /// The requested build memory ceiling: field, else `RLMESH_SANDBOX_BUILD_MEMORY`, else `None`.
+    /// The raw value (a docker size string, `"auto"` or `"off"`) is interpreted by the docker
+    /// backend.
     pub fn resolved_build_memory(&self) -> Option<String> {
         self.build_memory
             .clone()
@@ -142,11 +133,6 @@ impl SandboxOptions {
 
 /// Details of a started sandbox container, returned by [`start_env`] and
 /// [`start_env_async`].
-///
-/// Dropping this without recording `container_id` leaks a running container, so
-/// it is `#[must_use]`. It is `#[non_exhaustive]` so future fields (extra
-/// container metadata, ports) can be added without breaking callers that read
-/// fields by name.
 #[derive(Clone)]
 #[must_use = "dropping a RunResult without its container_id leaks the started container"]
 #[non_exhaustive]
@@ -157,7 +143,6 @@ pub struct RunResult {
     pub container_id: String,
 }
 
-// The address carries the sandbox's key: `Debug` leaves it out.
 impl std::fmt::Debug for RunResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RunResult")
@@ -325,11 +310,12 @@ fn resolve_source(source: &EnvironmentSourceRef) -> Result<source::ResolvedEnvir
 
 /// Build the sandbox image and start a container for `source`.
 ///
-/// This is a synchronous convenience wrapper around [`start_env_async`]. It
-/// must not be called from within an existing tokio runtime: it creates its
-/// own runtime internally and will panic ("Cannot start a runtime from within
-/// a runtime") if one is already active. From async code, call
-/// [`start_env_async`] directly.
+/// A blocking wrapper around [`start_env_async`].
+///
+/// # Panics
+///
+/// Builds its own Tokio runtime, so calling it from inside one panics; call [`start_env_async`]
+/// from async code.
 pub fn start_env(
     source: EnvironmentSourceRef,
     options: SandboxOptions,
@@ -340,19 +326,14 @@ pub fn start_env(
     runtime.block_on(start_env_async(source, options))
 }
 
-/// Build the sandbox image and start a container for `source`.
-///
-/// This is the async-first entry point; it is safe to call from inside a tokio
-/// runtime. The synchronous [`start_env`] wrapper is provided for convenience
-/// and must not be called from an async context.
+/// Build the sandbox image and start a container for `source`. Safe to call from inside a Tokio
+/// runtime.
 pub async fn start_env_async(
     source: EnvironmentSourceRef,
     options: SandboxOptions,
 ) -> std::result::Result<RunResult, SandboxError> {
     let spec = EffectiveSandboxSpec::resolve(source, options)?;
-    // Best-effort: sweep containers orphaned by a prior hard kill before
-    // starting a new one. Label-keyed and env-agnostic, so this also reclaims
-    // orphaned model containers. A reaper failure must never fail the start.
+    // A reaper failure must never fail the start.
     if let Err(err) = docker::reap_orphaned_containers() {
         tracing::debug!("orphan reap before sandbox start failed: {err:#}");
     }
@@ -387,9 +368,8 @@ pub fn discard_container(container_id: &str) -> std::result::Result<(), SandboxE
 
 /// Best-effort reap of orphaned rlmesh-owned sandbox containers.
 ///
-/// Only containers whose owner process has exited are removed, so this is safe
-/// to call while other live rlmesh processes hold running sessions. Returns the
-/// ids that were removed.
+/// Only containers whose owner process has exited are removed, so it is safe while other rlmesh
+/// processes hold running sessions. Returns the removed container ids.
 pub fn reap_orphaned_containers() -> std::result::Result<Vec<String>, SandboxError> {
     docker::reap_orphaned_containers()
         .map_err(|err| SandboxError::from_docker_op(err, |m| SandboxError::Docker { message: m }))
@@ -545,7 +525,6 @@ mod tests {
 
     #[test]
     fn public_errors_are_typed_and_discriminable() {
-        // num_envs == 0 must surface as a typed InvalidOption, not a stringly error.
         let err = EffectiveSandboxSpec::resolve(
             EnvironmentSourceRef::parse("CartPole-v1").unwrap(),
             SandboxOptions {
@@ -556,7 +535,6 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, SandboxError::InvalidOption { .. }));
 
-        // Unpinned hf source surfaces as a HuggingFacePolicy error.
         let err = EffectiveSandboxSpec::resolve(
             EnvironmentSourceRef::parse("hf://org/repo@main").unwrap(),
             SandboxOptions {
@@ -567,20 +545,15 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, SandboxError::HuggingFacePolicy { .. }));
 
-        // vectorization_mode parse failures are typed too.
         let err = VectorizationMode::parse(Some("parallel")).unwrap_err();
         assert!(matches!(err, SandboxError::InvalidOption { .. }));
 
-        // Source parse failures are typed.
         let err = EnvironmentSourceRef::parse("ftp://nope").unwrap_err();
         assert!(matches!(err, SandboxError::InvalidSource { .. }));
     }
 
     #[test]
     fn build_hash_is_stable_across_runtime_only_params() {
-        // kwargs, num_envs, and vectorization_mode are delivered at run time
-        // and must not change the image tag, otherwise every gym.make kwarg
-        // tweak rebuilds the image and re-downloads the pip layers.
         let source = EnvironmentSourceRef::parse("CartPole-v1").unwrap();
         let base =
             EffectiveSandboxSpec::resolve(source.clone(), SandboxOptions::default()).unwrap();

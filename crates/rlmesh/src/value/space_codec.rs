@@ -1,9 +1,5 @@
 //! Space values as [`Value`]s: the wire `SpaceValue` a space samples and
 //! checks, read and written against its spec.
-//!
-//! Box → `Tensor` (shape `()` too), Discrete → `Int`, Dict → dict in the
-//! space's declaration order, MultiBinary / MultiDiscrete → `Tensor`, Text →
-//! `Text`, Tuple → `Tuple`.
 
 use rlmesh_spaces::spaces::SpaceKind as WireKind;
 use rlmesh_spaces::{
@@ -14,7 +10,6 @@ use rlmesh_spaces::{
 use super::{Metadata, Value};
 use crate::{Error, Result, Tensor};
 
-/// The [`Value`] for `value`, a value of the space `spec`.
 pub(crate) fn value_from_space(spec: &WireSpec, value: SpaceValue) -> Result<Value> {
     if let rlmesh_spaces::Conformance::Structural(err) = rlmesh_spaces::conform(spec, &value) {
         return Err(Error::Protocol(err.to_string()));
@@ -55,7 +50,6 @@ fn value_from_space_unchecked(spec: &WireSpec, value: SpaceValue) -> Value {
     }
 }
 
-/// The [`Value`] for a space value read without its spec.
 fn value_from_unspecced(value: SpaceValue) -> Value {
     match value {
         SpaceValue::Box(tensor) => Value::Tensor(Tensor::wrap(tensor)),
@@ -78,8 +72,6 @@ fn value_from_unspecced(value: SpaceValue) -> Value {
     }
 }
 
-/// A tensor of `ints` in `dtype`, shaped `shape` when it holds that many
-/// elements, flat otherwise.
 fn int_tensor(ints: &[i64], shape: &[i64], dtype: CoreDType) -> Value {
     let numel: i64 = shape.iter().product();
     let shape = if !shape.is_empty() && usize::try_from(numel).ok() == Some(ints.len()) {
@@ -102,17 +94,12 @@ fn resolved(dtype: CoreDType, default: CoreDType) -> CoreDType {
     }
 }
 
-/// Whether `value` encodes against `spec` and conforms to it, including its
-/// range.
 pub(crate) fn space_contains(spec: &WireSpec, value: &Value) -> bool {
     shapes_match(value, spec)
         && value_to_space(spec, value)
             .is_ok_and(|encoded| rlmesh_spaces::contains(spec, &encoded).is_ok())
 }
 
-/// Every Box value inside `value` has its space's exact shape: a `(6,)`
-/// value is not in a `(2, 3)` Box, and a bare number is a member only of a
-/// shape-`()` Box. Anything the encoder refuses anyway reads as matching.
 fn shapes_match(value: &Value, spec: &WireSpec) -> bool {
     match (spec.spec.as_ref(), value) {
         (Some(WireKind::Box(_)), value) => {
@@ -131,8 +118,6 @@ fn shapes_match(value: &Value, spec: &WireSpec) -> bool {
     }
 }
 
-/// A Box input's shape: a tensor's, the nesting of a list or tuple (`None`
-/// when ragged), or `()` for anything else.
 fn input_shape(value: &Value) -> Option<Vec<i64>> {
     match value {
         Value::Tensor(tensor) => Some(tensor.core().shape().to_vec()),
@@ -154,7 +139,6 @@ fn input_shape(value: &Value) -> Option<Vec<i64>> {
     }
 }
 
-/// Encode `value` as a value of `spec`, rejecting structural deviations.
 pub(crate) fn value_to_space(spec: &WireSpec, value: &Value) -> Result<SpaceValue> {
     let encoded = value_to_space_unchecked(spec, value)?;
     if let rlmesh_spaces::Conformance::Structural(err) = rlmesh_spaces::conform(spec, &encoded) {
@@ -237,8 +221,6 @@ fn scalars(bytes: &[u8], dtype: CoreDType) -> Result<Vec<Scalar>> {
     decode_scalars(bytes, dtype).map_err(|err| Error::invalid_argument(err.to_string()))
 }
 
-/// A Discrete member: `Int`, `Bool` (0/1), an integral finite `Float`, or a
-/// one-element `Tensor` of one of these.
 fn discrete(value: &Value) -> Result<i64> {
     match value {
         Value::Int(number) => Ok(*number),
@@ -269,9 +251,6 @@ fn integral(number: f64) -> Result<i64> {
     Ok(number as i64)
 }
 
-/// The element bytes of an array-like value in `dtype`: a tensor of exactly
-/// that dtype (a whole number of space elements), or a number or nested list
-/// or tuple of numbers.
 fn array_bytes(value: &Value, spec: &WireSpec, dtype: CoreDType) -> Result<Vec<u8>> {
     if let Value::Tensor(tensor) = value {
         let core = tensor.core();
@@ -320,9 +299,6 @@ fn flatten<'a>(value: &'a Value, out: &mut Vec<&'a Value>) -> Result<()> {
     }
 }
 
-/// One element in `dtype`: integer dtypes take `Int` or `Bool` in range,
-/// never `Float`; `bool` takes any number, true when nonzero; float dtypes
-/// take any number, rounded to the dtype.
 fn pack(value: &Value, dtype: CoreDType, out: &mut Vec<u8>) -> Result<()> {
     let refused = || {
         Error::Type(format!(

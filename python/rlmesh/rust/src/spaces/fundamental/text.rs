@@ -95,7 +95,6 @@ fn iterable_text_charset(value: &Bound<'_, PyAny>, sort: bool) -> PyResult<Optio
 }
 
 fn rlmesh_text_charset(charset: String) -> Option<String> {
-    // Gymnasium's default Text charset is alphanumeric-only; RLMesh treats it as generic text.
     if charset.is_empty() || is_gymnasium_default_text_charset(&charset) {
         None
     } else {

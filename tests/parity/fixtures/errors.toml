@@ -1,5 +1,3 @@
-# Each failure crosses a real policy call and a binding's step.
-
 [[scenario]]
 id = "error_RLMeshException"
 family = "Errors"

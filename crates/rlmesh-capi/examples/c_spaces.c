@@ -1,5 +1,3 @@
-/* The spaces C API: build, seed, sample and check a Dict of a Box and a Discrete, read
- * typed bounds back, and hit the error paths. Exits nonzero on the first failed check. */
 #include <math.h>
 #include <rlmesh.h>
 #include <stdio.h>
@@ -20,7 +18,6 @@ static int str_eq(RLMeshStr s, const char* expected) {
   return s.len == strlen(expected) && memcmp(s.data, expected, s.len) == 0;
 }
 
-/* The space encoder accepts facade Values that the strict wire validator rejects. */
 static void check_contains_acceptance(void) {
   RLMeshDiscreteOptions options = RLMESH_DISCRETE_OPTIONS_INIT;
   options.start = 2;
@@ -68,7 +65,6 @@ static void check_contains_acceptance(void) {
   rlmesh_space_free(discrete);
 }
 
-/* Sampling follows the spec and keys carry their byte lengths. */
 static void check_dict_key_bytes(void) {
   const char embedded[] = {'k', '\0', 'v'};
   const RLMeshStr keys[] = {{embedded, sizeof(embedded)}, {"k", 1}};
@@ -80,7 +76,6 @@ static void check_dict_key_bytes(void) {
   const RLMeshSpace* child = NULL;
   CHECK(rlmesh_dict_get(dict, keys[0], &child) == RLMESH_OK && child != NULL);
   CHECK(rlmesh_dict_get(dict, keys[1], &child) == RLMESH_OK && child != NULL);
-  /* An explicit length distinguishes longer keys sharing the same prefix. */
   const char missing_bytes[] = "k\0not-the-same";
   const RLMeshStr missing = {missing_bytes, sizeof(missing_bytes) - 1};
   CHECK(rlmesh_dict_get(dict, missing, &child) == RLMESH_OK && child == NULL);
@@ -121,7 +116,6 @@ static void check_dict_key_bytes(void) {
   rlmesh_space_free(leaf);
 }
 
-/* An extracted/cloned tensor owns storage independently from its source Value. */
 static void check_tensor_reference_lifetime(void) {
   const int64_t elements[] = {7, 11};
   const size_t shape[] = {2};
@@ -147,7 +141,6 @@ int main(void) {
   check_contains_acceptance();
   check_dict_key_bytes();
   check_tensor_reference_lifetime();
-  /* The spec's Shape example. */
   RLMeshBox* pos = NULL;
   const int64_t shape[] = {3};
   CHECK(rlmesh_box_new(rlmesh_bound_float(-1.0), rlmesh_bound_float(1.0), shape, 1, NULL, &pos) ==
@@ -174,7 +167,6 @@ int main(void) {
   CHECK(!rlmesh_space_contains(NULL, x));
   rlmesh_value_free(x);
 
-  /* Same seed, same sample, from a clone that shares the sampler. */
   RLMeshSpace* again = rlmesh_space_clone(obs);
   RLMeshValue* a = NULL;
   RLMeshValue* b = NULL;
@@ -187,7 +179,6 @@ int main(void) {
   rlmesh_value_free(b);
   rlmesh_space_free(again);
 
-  /* Keys sort at construction; children are borrowed. */
   size_t len = 0;
   CHECK(rlmesh_dict_len(obs, &len) == RLMESH_OK && len == 2);
   RLMeshStr key = {NULL, 0};
@@ -202,11 +193,9 @@ int main(void) {
   CHECK(rlmesh_dict_contains_key(obs, rlmesh_str("id"), &present) == RLMESH_OK && present);
   CHECK(rlmesh_dict_contains_key(obs, rlmesh_str("nope"), &present) == RLMESH_OK && !present);
   CHECK(rlmesh_dict_contains_key(pos, rlmesh_str("id"), &present) == RLMESH_ERR_TYPE);
-  /* Past the end reads as absent. */
   CHECK(rlmesh_dict_key_at(obs, 2, &key) == RLMESH_OK && key.data == NULL && key.len == 0);
   CHECK(rlmesh_dict_value_at(obs, 2, &child) == RLMESH_OK && child == NULL);
 
-  /* Typed bounds read back in the dtype's domain, by the buffer rule. */
   RLMeshBox* u = NULL;
   RLMeshBoxOptions bopt = RLMESH_BOX_OPTIONS_INIT;
   bopt.dtype = RLMESH_DTYPE_UINT64;
@@ -231,7 +220,6 @@ int main(void) {
   CHECK(rlmesh_space_shape(u, dims, 2, &n) == RLMESH_OK && dims[0] == 3);
   rlmesh_space_free(u);
 
-  /* Errors: fractional integer bounds, wrong-kind spec, typed accessor. */
   RLMeshBox* bad = NULL;
   bopt.dtype = RLMESH_DTYPE_INT32;
   CHECK(rlmesh_box_new(rlmesh_bound_float(0.5), rlmesh_bound_float(3.0), shape, 1, &bopt, &bad) ==
@@ -245,7 +233,6 @@ int main(void) {
   CHECK(rlmesh_discrete_n(pos, &value) == RLMESH_ERR_TYPE);
   CHECK(rlmesh_discrete_start(id, &value) == RLMESH_OK && value == 1);
 
-  /* Unbounded on any dtype; inspect the text representation. */
   RLMeshBox* open = NULL;
   bopt.dtype = RLMESH_DTYPE_INT64;
   CHECK(rlmesh_box_new(rlmesh_bound_float(-INFINITY), rlmesh_bound_float(INFINITY), shape, 1, &bopt,
@@ -258,7 +245,6 @@ int main(void) {
   rlmesh_bytes_free(text);
   rlmesh_space_free(open);
 
-  /* Per-element bounds (C-only extra). */
   const RLMeshBound lows[] = {rlmesh_bound_int(0), rlmesh_bound_int(-5), rlmesh_bound_int(2)};
   const RLMeshBound highs[] = {rlmesh_bound_int(1), rlmesh_bound_int(5), rlmesh_bound_int(9)};
   RLMeshBox* per = NULL;
@@ -267,7 +253,6 @@ int main(void) {
   CHECK(rlmesh_box_low(per, got, 3, &n) == RLMESH_OK && n == 3 && got[1].value.i == -5);
   rlmesh_space_free(per);
 
-  /* Space and SpaceSpec have distinct ABI-5 ownership/free functions. */
   RLMeshSpaceSpec* cloned = rlmesh_space_spec_clone(rlmesh_space_spec(id));
   RLMeshSpace* from_cloned = NULL;
   CHECK(rlmesh_space_new(cloned, &from_cloned) == RLMESH_OK);

@@ -1,4 +1,3 @@
-# The scripted env resets to 0, adds one per step, terminates at 2 and rewards 1.
 [[scenario]]
 id = "default_episode"
 family = "Defaults"

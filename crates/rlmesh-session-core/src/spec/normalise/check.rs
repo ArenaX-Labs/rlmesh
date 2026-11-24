@@ -1,6 +1,3 @@
-//! Per-key checks (rates, durations, names, ranges) and the field
-//! builders they feed: schemas, optional fields, units and limits.
-
 use super::decl::{FieldDecl, FieldsDecl, LimitDecl, Ordered};
 use super::{MAX_HZ, MAX_MS, MAX_NAME_LEN};
 use crate::prelude::*;
@@ -21,7 +18,6 @@ pub(super) fn invalid(path: &str, message: impl fmt::Display) -> CtlError {
     CtlError::new(CtlStatus::InvalidRequest, format!("{path}: {message}"))
 }
 
-/// Validates a rate in Hz.
 pub(super) fn rate(path: &str, key: &str, hz: f64) -> Result<f64, CtlError> {
     if hz.is_finite() && hz > 0.0 && hz <= MAX_HZ {
         Ok(hz)
@@ -30,7 +26,6 @@ pub(super) fn rate(path: &str, key: &str, hz: f64) -> Result<f64, CtlError> {
     }
 }
 
-/// Validates a duration in ms; `zero_ok` allows 0.
 pub(super) fn millis(path: &str, key: &str, ms: f64, zero_ok: bool) -> Result<Duration, CtlError> {
     let ok = ms.is_finite() && ms <= MAX_MS && (ms > 0.0 || (zero_ok && ms == 0.0));
     if ok {
@@ -59,7 +54,6 @@ pub(super) fn pair(path: &str, key: &str, [low, high]: [f64; 2]) -> Result<(), C
     }
 }
 
-/// A custom kind's field schema, in payload order.
 pub(super) fn schema(path: &str, decl: Ordered<FieldDecl>) -> Result<Vec<FieldSpec>, CtlError> {
     decl.0
         .into_iter()
@@ -72,7 +66,6 @@ pub(super) fn schema(path: &str, decl: Ordered<FieldDecl>) -> Result<Vec<FieldSp
         .collect()
 }
 
-/// The float dtype a part declares (`float32` by default).
 pub(super) fn float_dtype(path: &str, dtype: Option<&str>) -> Result<DType, CtlError> {
     match dtype {
         None | Some("float32") => Ok(DType::F32),
@@ -84,7 +77,6 @@ pub(super) fn float_dtype(path: &str, dtype: Option<&str>) -> Result<DType, CtlE
     }
 }
 
-/// Which optional fields a joint set or IMU publishes, in table order.
 pub(super) fn optional_fields(
     path: &str,
     kind: Kind,
@@ -123,7 +115,6 @@ pub(super) fn optional_fields(
         .collect())
 }
 
-/// A field with its SI (or declared) unit.
 pub(super) fn field(name: &str, dtype: DType, shape: &[u32], unit: &str) -> FieldSpec {
     let mut spec = FieldSpec::new(name, dtype, shape);
     spec.unit = unit.to_string();
@@ -136,8 +127,6 @@ pub(super) fn rotation_field(name: &str, dtype: DType, rotation: Rotation) -> Fi
     spec
 }
 
-/// Applies a part's declared `units` to its fields (published and command),
-/// checking each against the field's quantity.
 pub(super) fn apply_units(
     path: &str,
     kind: Kind,

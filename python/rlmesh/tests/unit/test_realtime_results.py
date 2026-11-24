@@ -1,10 +1,3 @@
-"""The result ``TypedDict``s have exactly the keys the extension's dicts are built with.
-
-Read from the extension's source, so a key added, renamed or dropped there
-fails here without a session; ``integration/test_v2_builders.py`` checks the
-dicts a live session returns, key for key and type for type.
-"""
-
 from __future__ import annotations
 
 import re
@@ -18,13 +11,11 @@ pytest.importorskip("numpy")
 from rlmesh.realtime import results
 
 SESSION_RS = Path(__file__).resolve().parents[2] / "rust" / "src" / "session.rs"
-# A literal key, or one set through a loop over ``("key", row.field)`` pairs.
 KEY = re.compile(r'\.set_item\(\s*"([a-z0-9_]+)"|\(\s*"([a-z0-9_]+)",\s*row\.\w+\s*\)')
 KIND = re.compile(r'\.set_item\("kind", "([a-z_]+)"\)')
 
 
 def body(signature: str) -> str:
-    """The body of the one function whose source starts with ``signature``."""
     source = SESSION_RS.read_text()
     assert source.count(signature) == 1, (
         f"{signature!r} is not one function in session.rs"

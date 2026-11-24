@@ -1,14 +1,14 @@
-//! The safety layer's cryptography: byte encodings, the
-//! `Sealed` and `Signed` envelopes, replay windows, the participant's IK
-//! handshake and the machine-pairing exchange. Sans-IO like the rest of the
-//! crate: randomness comes from the caller ([`Rng`]), and nothing here knows
-//! about Zenoh, protobuf or a clock. Payloads are opaque bytes.
+//! The safety layer's cryptography: byte encodings, the `Sealed` and `Signed` envelopes,
+//! replay windows, the participant's IK handshake and the machine-pairing exchange.
 //!
-//! - [`mod@lp`][]: `lp`.
-//! - [`sealed`]: the `Sealed` envelope, with a sender's per-kind `seq`
-//!   counters and a receiver's replay windows ([`replay`]).
+//! Sans-IO: randomness comes from the caller ([`Rng`]), nothing here knows about the transport,
+//! protobuf or a clock, and payloads are opaque bytes.
+//!
+//! - [`mod@lp`]: length-prefixed byte encoding.
+//! - [`sealed`]: the `Sealed` envelope, with a sender's per-kind `seq` counters and a
+//!   receiver's replay windows ([`replay`]).
 //! - [`signed`]: the host's `Signed` broadcasts.
-//! - [`handshake`][]: `Noise_IK_25519_ChaChaPoly_BLAKE2s`.
+//! - [`handshake`]: the `Noise_IK_25519_ChaChaPoly_BLAKE2s` handshake.
 //! - [`pairing`]: Noise XX, then commit-reveal and the SAS.
 //!
 //! Interop vectors are in `tests/vectors/crypto.json`.
@@ -35,8 +35,8 @@ pub use signed::{
     Checked, SignError, SignedChecker, SignedError, SignedKind, SignedReceiver, SignedSender,
 };
 
-/// A source of cryptographic randomness, implemented by the caller: the OS
-/// on a host, the hardware RNG on a board, a fixed stream in tests.
+/// A source of cryptographic randomness, implemented by the caller: the OS on a host, the
+/// hardware RNG on a board, a fixed stream in tests.
 pub trait Rng {
     /// Fill `dest` entirely with random bytes.
     ///
@@ -50,20 +50,17 @@ pub trait Rng {
 #[error("the random number generator failed")]
 pub struct RngError;
 
-/// A 32-byte symmetric key (a `Sealed` key, a raw-split half), wiped on
-/// drop. Not `Clone`: a key goes into exactly one [`SealSender`] (or
-/// [`SealReceiver`]) by value, so one process can't run two `seq` counters
-/// from 1 under the same key and reuse a nonce. Bytes leave only through
-/// [`as_bytes`](Self::as_bytes), for the host's key delivery.
+/// A 32-byte symmetric key (a `Sealed` key, a raw-split half), wiped on drop.
+/// Not `Clone`: a key goes into exactly one sender or receiver by value, so one
+/// process cannot run two `seq` counters from 1 under the same key and reuse a nonce.
 pub struct Key([u8; 32]);
 
 impl Key {
     /// The key with these bytes: a delivered key or a stored one.
     ///
-    /// The type can't stop bytes from being duplicated: the host holds every
-    /// key it delivers, so keeping one sender per key and never restarting a
-    /// key's counters (by building a second [`SealSender`] from the same
-    /// bytes) is the caller's, and in practice the host's, responsibility.
+    /// Nothing stops the bytes being duplicated: keeping one sender per key, and never restarting
+    /// a key's counters by building a second [`SealSender`] from the same bytes, is the caller's
+    /// responsibility.
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
@@ -91,10 +88,6 @@ impl core::fmt::Debug for Key {
     }
 }
 
-/// `secret`'s public key, by the same Montgomery ladder every key exchange
-/// runs. `PublicKey::from` multiplies on the Edwards curve instead, which
-/// without precomputed tables holds a lookup table on the stack (about 2 KB
-/// more, on a board).
 pub(crate) fn x25519_public(secret: &x25519_dalek::StaticSecret) -> [u8; 32] {
     let base = x25519_dalek::PublicKey::from(x25519_dalek::X25519_BASEPOINT_BYTES);
     secret.diffie_hellman(&base).to_bytes()
@@ -110,8 +103,6 @@ pub struct StaticKeypair {
 impl StaticKeypair {
     /// The key pair of this private key, which is wiped in place.
     pub fn from_private(private: &mut [u8; 32]) -> Self {
-        // x25519-dalek takes the bytes by value: that argument is the one
-        // copy left to the compiler.
         let secret = x25519_dalek::StaticSecret::from(*private);
         private.zeroize();
         let public = x25519_public(&secret);
@@ -133,8 +124,7 @@ impl StaticKeypair {
         &self.public
     }
 
-    /// Copies the private key into `out`, for storage. It is copied from
-    /// a reference, so no temporary copy is left behind; wiping `out` is
+    /// Copies the private key into `out`, for storage, leaving no temporary copy; wiping `out` is
     /// the caller's job (e.g. a `Zeroizing` buffer).
     pub fn write_private(&self, out: &mut [u8; 32]) {
         out.copy_from_slice(self.secret.as_bytes());
@@ -157,7 +147,6 @@ impl core::fmt::Debug for StaticKeypair {
 mod tests {
     use super::*;
 
-    /// The ladder and the Edwards multiply agree: the same public key.
     #[test]
     fn x25519_public_is_the_edwards_result() {
         for byte in [0_u8, 1, 0x42, 0x7f, 0x80, 0xff] {
@@ -207,8 +196,6 @@ mod tests {
     }
 }
 
-/// Asserts `value` prints something and none of it is `secret`, in the
-/// forms a careless `Debug` would use: hex, a byte list, the raw bytes.
 #[cfg(test)]
 pub(crate) fn assert_redacted(value: &impl core::fmt::Debug, secret: &[u8]) {
     #[allow(unused_imports)]
@@ -235,8 +222,6 @@ pub(crate) fn assert_redacted(value: &impl core::fmt::Debug, secret: &[u8]) {
 pub(crate) mod test_rng {
     use super::{Rng, RngError};
 
-    /// A deterministic stream: byte i of draw n is a function of the seed,
-    /// n and i. Not random; for tests only.
     pub(crate) struct TestRng {
         seed: u8,
         draws: u8,
@@ -260,7 +245,6 @@ pub(crate) mod test_rng {
         }
     }
 
-    /// An RNG that always fails.
     pub(crate) struct Broken;
 
     impl Rng for Broken {

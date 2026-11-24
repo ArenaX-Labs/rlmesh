@@ -48,10 +48,9 @@ pub struct ResetRequest {
     pub timeout_ms: i64,
     /// Sub-environment indices to reset. Empty means reset the whole vector —
     /// the only mode most envs support. A non-empty list requests a partial
-    /// (per-lane) reset of just those sub-envs and is only honored by an env
-    /// that overrides `VectorEnv::reset_subset` (the wire trait); any other
-    /// env rejects it rather than silently resetting every lane. When present,
-    /// `seeds` (if any) is positionally aligned to this list.
+    /// (per-lane) reset of just those sub-envs, which an env that does not
+    /// support it rejects rather than resetting every lane. `seeds`, if any,
+    /// align positionally with this list.
     pub env_indices: Vec<i32>,
 }
 

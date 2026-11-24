@@ -1,14 +1,10 @@
-//! Machine pairing's exchanges, sans-IO: rlmeshd's
-//! [`Pairings`] (its pending exchanges, their limits and the owner's
-//! approval) and the laptop's [`Pairing`]. Both run
-//! [`crate::crypto::pairing`] and the messages of [`crate::wire::pair`];
-//! the caller moves the bytes on [`PAIR_KEY`] and passes the time.
+//! Machine pairing's exchanges, sans-IO: rlmeshd's [`Pairings`] (its pending exchanges,
+//! their limits and the owner's approval) and the laptop's [`Pairing`]. The caller moves the
+//! bytes on [`PAIR_KEY`] and passes the time.
 //!
-//! **Retries.** The laptop sends a request again byte for byte until it
-//! has its answer, and rlmeshd answers a request equal to an exchange's
-//! last one with the same reply before anything else, so a lost packet is
-//! only a retry. A packet that fails its Noise or AEAD check is ignored and
-//! changes nothing.
+//! The laptop resends a request byte for byte until answered, and rlmeshd answers a repeat of
+//! an exchange's last request with the same reply, so a lost packet is only a retry. A packet
+//! that fails its Noise or AEAD check is ignored and changes nothing.
 
 use alloc::collections::{BTreeMap, VecDeque};
 
@@ -56,12 +52,12 @@ pub fn expired_reply() -> Vec<u8> {
 pub enum Handled {
     /// Answer it with this `PairReply`.
     Reply(Vec<u8>),
-    /// A `PairWait` with no result yet: hold the query, and answer it with
-    /// the reply [`Pairings::take_results`] gives for this exchange, or
-    /// [`expired_reply`] when [`Pairings::expire`] drops it.
+    /// A `PairWait` with no result yet: hold the query, and answer it with the reply
+    /// [`Pairings::take_results`] gives for this exchange, or [`expired_reply`] when
+    /// [`Pairings::expire`] drops it.
     Wait([u8; 16]),
-    /// Not a pairing packet, or one that failed its Noise or AEAD check:
-    /// no answer, and nothing changed.
+    /// Not a pairing packet, or one that failed its Noise or AEAD check: no answer, and nothing
+    /// changed.
     Ignore,
 }
 
@@ -78,8 +74,7 @@ pub struct Pending {
     pub age_ns: i64,
 }
 
-/// The exchange an approval picked: what to enroll, before
-/// [`Pairings::decide`].
+/// The exchange an approval picked: what to enroll, before [`Pairings::decide`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Approved {
     /// The exchange.
@@ -92,14 +87,13 @@ pub struct Approved {
     pub kind: String,
 }
 
-/// Why a typed code approved nothing. Nothing is enrolled.
+/// Why a typed code approved nothing.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ApproveError {
     /// No pending exchange shows the code.
     #[error("no pending pairing shows {0:06}")]
     NoMatch(u32),
-    /// The last of [`WRONG_CODES`] wrong codes: every pending exchange
-    /// was refused.
+    /// The last of [`WRONG_CODES`] wrong codes: every pending exchange was refused.
     #[error("{WRONG_CODES} wrong codes: every pending pairing was refused; start again")]
     Closed,
     /// Two pending exchanges show the code: both were refused.
@@ -124,19 +118,16 @@ struct Linked {
 enum Stage {
     Responding(PairResponder),
     Linked(Box<Linked>),
-    /// Aborted (a changed nonce): every packet gets this.
     Refused(CtlError),
 }
 
 struct Exchange {
     created_ns: i64,
     stage: Stage,
-    /// The last request and its reply (`None`: a `PairWait` held).
     last: Option<(Vec<u8>, Option<Vec<u8>>)>,
 }
 
 impl Exchange {
-    /// Pending: not decided or aborted.
     fn open(&self) -> bool {
         match &self.stage {
             Stage::Responding(_) => true,
@@ -146,10 +137,9 @@ impl Exchange {
     }
 }
 
-/// rlmeshd's pairing exchanges: at most [`MAX_PENDING`]
-/// pending, [`HANDSHAKES_PER_MINUTE`] completed XX handshakes a minute,
-/// each kept [`EXPIRY_NS`] (decided ones too, so a lost result can be
-/// fetched again), and [`WRONG_CODES`] wrong codes close the window.
+/// rlmeshd's pairing exchanges: at most [`MAX_PENDING`] pending, [`HANDSHAKES_PER_MINUTE`]
+/// completed XX handshakes a minute, each kept [`EXPIRY_NS`] (decided ones too, so a lost
+/// result can be fetched again), and [`WRONG_CODES`] wrong codes close the window.
 #[derive(Default)]
 pub struct Pairings {
     exchanges: BTreeMap<[u8; 16], Exchange>,
@@ -354,8 +344,8 @@ impl Pairings {
         }
     }
 
-    /// Drops every exchange older than [`EXPIRY_NS`] at `now_ns`: the
-    /// dropped ones, whose held `PairWait`s get [`expired_reply`].
+    /// Drops every exchange older than [`EXPIRY_NS`] at `now_ns`: the dropped ones, whose held
+    /// `PairWait`s get [`expired_reply`].
     pub fn expire(&mut self, now_ns: i64) -> Vec<[u8; 16]> {
         let old: Vec<[u8; 16]> = self
             .exchanges
@@ -390,8 +380,8 @@ impl Pairings {
         out
     }
 
-    /// The owner typed `code` on the robot: the one pending exchange
-    /// showing it, to enroll and then [`decide`](Self::decide).
+    /// The owner typed `code` on the robot: the one pending exchange showing it, to enroll and
+    /// then [`decide`](Self::decide).
     ///
     /// # Errors
     /// [`ApproveError`]: nothing approved. Two exchanges showing the code
@@ -468,10 +458,9 @@ impl Pairings {
         }
     }
 
-    /// The outcome of an approved exchange (the device it was enrolled
-    /// as, or why it wasn't): its `PairResult`, now for a held `PairWait`
-    /// ([`take_results`](Self::take_results)) and for every later one.
-    /// Whether the exchange was still there to take it.
+    /// The outcome of an approved exchange (the device it was enrolled as, or why it wasn't):
+    /// its `PairResult`, now for a held `PairWait` ([`take_results`](Self::take_results)) and
+    /// for every later one.
     pub fn decide(&mut self, exchange: [u8; 16], result: Result<PairInfo, CtlError>) -> bool {
         let Some(Exchange {
             stage: Stage::Linked(linked),
@@ -500,15 +489,10 @@ impl Pairings {
     }
 }
 
-/// What a packet gets.
 enum Answer {
-    /// This reply, and again for the same request.
     Keep(PairReply),
-    /// This reply, this time.
     Once(PairReply),
-    /// Held until a decision.
     Hold,
-    /// Nothing.
     Ignore,
 }
 
@@ -526,7 +510,6 @@ fn seal(link: &mut PairLink, kind: Kind, body: &[u8]) -> Answer {
     }
 }
 
-/// XX done: draw `Nr` and send its commitment.
 fn commit(rng: &mut dyn Rng, mut link: PairLink) -> (Stage, Answer) {
     let Ok(commit) = DaemonCommit::new(rng, link.handshake_hash()) else {
         let err = CtlError::new(CtlStatus::Unsupported, "rlmeshd's RNG failed");
@@ -557,14 +540,12 @@ fn commit(rng: &mut dyn Rng, mut link: PairLink) -> (Stage, Answer) {
 pub enum Progress {
     /// Send [`Pairing::request`] next.
     Next,
-    /// Show this code, then send [`Pairing::request`] (a `PairWait`), again
-    /// each time it times out, until the result.
+    /// Show this code, then send [`Pairing::request`] (a `PairWait`), again each time it times
+    /// out, until the result.
     Show(Sas),
-    /// Approved: the details to store, whose host key is the one XX
-    /// authenticated.
+    /// Approved: the details to store, whose host key is the one XX authenticated.
     Paired(PairInfo),
-    /// Not an answer to the current request (a forgery, a duplicate): send
-    /// it again.
+    /// Not an answer to the current request (a forgery, a duplicate): send it again.
     Ignored,
 }
 
@@ -574,8 +555,7 @@ pub enum PairError {
     /// rlmeshd refused, or the owner did.
     #[error("{}", .0.message)]
     Refused(CtlError),
-    /// The revealed nonce doesn't match its commitment: someone is in the
-    /// middle.
+    /// The revealed nonce doesn't match its commitment: someone is in the middle.
     #[error(transparent)]
     Pairing(#[from] PairingError),
     /// XX failed.
@@ -615,9 +595,9 @@ impl core::fmt::Debug for Pairing {
 }
 
 impl Pairing {
-    /// Starts exchange `exchange` (16 random bytes) with `device`, the key
-    /// this machine (or the browser token it holds) will attach with, under
-    /// the name `name`, as `kind` ([`MACHINE`] or [`BROWSER`]).
+    /// Starts exchange `exchange` (16 random bytes) with `device`, the key this machine (or the
+    /// browser token it holds) will attach with, under the name `name`, as `kind` ([`MACHINE`]
+    /// or [`BROWSER`]).
     ///
     /// # Errors
     /// [`PairError::Handshake`].
@@ -754,7 +734,6 @@ mod tests {
         }
     }
 
-    /// Runs `laptop` against `daemon` until it shows its code.
     fn to_code(
         daemon: &mut Pairings,
         host: &HostIdentity,
@@ -765,7 +744,6 @@ mod tests {
             let Handled::Reply(reply) = daemon.handle(rng, host, 0, laptop.request()) else {
                 panic!("an answer");
             };
-            // A lost reply is a retry: the same request gets the same reply.
             assert_eq!(
                 daemon.handle(rng, host, 0, laptop.request()),
                 Handled::Reply(reply.clone())
@@ -808,7 +786,6 @@ mod tests {
             laptop.on_reply(&mut rng, &reply).unwrap(),
             Progress::Paired(info(*host.static_public()))
         );
-        // The same wait again gets the same result, until the expiry.
         assert_eq!(
             daemon.handle(&mut rng, &host, 0, laptop.request()),
             Handled::Reply(reply)
@@ -847,8 +824,6 @@ mod tests {
         HostIdentity::from_secrets(&mut [6; 32], &mut [7; 32], &mut [8; 32])
     }
 
-    /// Runs `laptop` through XX and the commitment at `now`: its next
-    /// request is its nonce.
     fn to_nonce(
         daemon: &mut Pairings,
         host: &HostIdentity,

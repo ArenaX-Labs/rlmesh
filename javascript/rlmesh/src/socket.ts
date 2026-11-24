@@ -1,19 +1,14 @@
-// One reconnecting WebSocket per traffic class, with exponential backoff and jitter. Runs inside the
-// class Worker; injectable WebSocket and timers so it is testable under Node with fakes.
-
 import type { BackoffOptions } from './types.js';
 
 export const SUBPROTOCOL = 'rlmesh.v2';
 export const TOKEN_PREFIX = 'rlmesh.token.';
 
-/** The subprotocols to offer: `rlmesh.v2` always (the gateway selects it), plus the token if any. */
 export function protocolsFor(token?: string): string[] {
   return token ? [SUBPROTOCOL, `${TOKEN_PREFIX}${token}`] : [SUBPROTOCOL];
 }
 
 const DEFAULTS: Required<BackoffOptions> = { initialMs: 100, maxMs: 5000, factor: 2, jitter: 0.5 };
 
-/** Delay before reconnect attempt `attempt` (0-based). `rand` in [0, 1). */
 export function backoffDelay(attempt: number, opts: BackoffOptions = {}, rand: () => number = Math.random): number {
   const o = { ...DEFAULTS, ...opts };
   const base = Math.min(o.maxMs, o.initialMs * o.factor ** Math.max(0, attempt));
@@ -35,12 +30,9 @@ export interface WebSocketLike {
 export type WebSocketCtor = new (url: string, protocols?: string | string[]) => WebSocketLike;
 
 export interface SocketHandlers {
-  /** `reconnect` is false for the first successful open. */
   onOpen(reconnect: boolean): void;
   onMessage(data: ArrayBuffer): void;
-  /** A text frame (the gateway's JSON). */
   onText?(text: string): void;
-  /** The socket closed (or failed to open); a retry is scheduled after `delayMs` unless closed by us. */
   onClose(info: { code?: number; reason?: string; attempt: number; delayMs: number; wasOpen: boolean; fatal?: boolean }): void;
 }
 
@@ -89,19 +81,16 @@ export class ReconnectingSocket {
     return this.ws?.readyState === 1;
   }
 
-  /** Reconnect attempts since the last stable open. */
   get attempts() {
     return this.attempt;
   }
 
-  /** Send if open; returns false (and drops the frame) otherwise. Strings go as text frames. */
   send(b: ArrayBufferView | ArrayBuffer | string): boolean {
     if (this.ws?.readyState !== 1) return false;
     this.ws.send(b);
     return true;
   }
 
-  /** Stop for good: close the socket and cancel any pending reconnect. */
   close() {
     this.stopped = true;
     if (this.timer != null) this.ct(this.timer);
@@ -118,7 +107,6 @@ export class ReconnectingSocket {
     }
   }
 
-  /** Drop the current connection and reconnect (as if the network blinked). */
   reconnectNow() {
     this.ws?.close(4000, 'reconnect');
   }
@@ -154,7 +142,6 @@ export class ReconnectingSocket {
       this.ws = null;
       if (wasOpen && this.now() - this.opened >= (this.opts.stableMs ?? 2000)) this.attempt = 0;
       if (e.code != null && FATAL_CLOSE.has(e.code)) {
-        // Retrying cannot help: report it and stop.
         this.stopped = true;
         this.h.onClose({ attempt: this.attempt, delayMs: 0, wasOpen, code: e.code, reason: e.reason ?? '', fatal: true });
         return;

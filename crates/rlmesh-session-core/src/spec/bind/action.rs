@@ -1,5 +1,3 @@
-//! Binding an action entry, or dropping an absent optional one.
-
 use super::steps::field_range;
 use super::table::ActionRow;
 use super::table::Status;
@@ -50,7 +48,6 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// Step 6 for one action.
     pub(super) fn action(
         &mut self,
         slot: &Slot<'a>,
@@ -163,7 +160,6 @@ impl<'a> Binder<'a> {
         self.frames(slot, part, None);
         let mut plan = Plan::default();
         let mut fields = command.fields.clone();
-        // Declared affine first (actions apply it before the conversions).
         let elements = if fields
             .iter()
             .all(|f| f.shape.len() == 1 && f.dtype == fields[0].dtype)
@@ -177,7 +173,6 @@ impl<'a> Binder<'a> {
             Ok(None) => {}
             Err(()) => return None,
         }
-        // Rescale: the gripper's open/closed, or a declared range.
         if kind == Kind::Gripper {
             let (open, closed) = (action.open.unwrap_or(1.0), action.closed.unwrap_or(0.0));
             if (open, closed) != (1.0, 0.0) {
@@ -240,7 +235,6 @@ impl<'a> Binder<'a> {
                 plan.steps.push(Step::Rescale { from, to });
             }
         }
-        // Rotation: the model's encoding to the part's.
         if let Some(from) = slot.entry.rotation {
             let Some(i) = fields.iter().position(|f| !f.rotation.is_empty()) else {
                 self.incompatible(
@@ -263,7 +257,6 @@ impl<'a> Binder<'a> {
                 Err(()) => return None,
             }
         }
-        // Units: the model's (SI unless declared) to the part's.
         for (field, _) in &slot.entry.units {
             if !fields.iter().any(|f| &f.name == field) {
                 self.incompatible(
@@ -301,7 +294,6 @@ impl<'a> Binder<'a> {
                 Err(()) => return None,
             }
         }
-        // Names.
         let mut count = None;
         if kind.is_joint_set() {
             let n = joint_count(&fields);
@@ -332,7 +324,6 @@ impl<'a> Binder<'a> {
                 return None;
             }
         }
-        // Timing.
         let (grid_hz, grid_declared, dt) = self.grid(action, replan);
         if command.is_delta() && grid_hz > part.control_hz {
             self.incompatible(
@@ -350,11 +341,8 @@ impl<'a> Binder<'a> {
         }
         let span = dt * action.chunk;
         let valid = action.ttl.map_or(span, |ttl| ttl.min(span));
-        // A part that can't hold its target (a velocity, a torque; not a
-        // delta, which keeps its target) runs its safe behaviour whenever
-        // no action is due: each chunk must outlast the replan period, or
-        // the robot stutters between chunks and goes safe after hold_max.
-        // In lockstep no time passes between chunks.
+        // A part that can't hold its target (a velocity, a torque) runs its safe behaviour whenever
+        // no action is due, so each chunk must outlast the replan period.
         let period = Duration::from_secs_f64(1.0 / replan);
         let lockstep = self.options.lockstep;
         if !lockstep && !command.hold_last && !command.is_delta() && valid <= period {

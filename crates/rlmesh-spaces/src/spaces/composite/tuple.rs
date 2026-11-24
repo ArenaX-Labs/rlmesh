@@ -134,7 +134,6 @@ mod tests {
         ]);
         assert!(contains(&space, &valid).is_ok());
 
-        // Wrong length
         let wrong_len = SpaceValue::Tuple(vec![SpaceValue::Discrete(2)]);
         assert!(contains(&space, &wrong_len).is_err());
     }

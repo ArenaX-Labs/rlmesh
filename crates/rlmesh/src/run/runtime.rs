@@ -2,8 +2,6 @@
 //! semantics for one ready model/environment session. Public to bindings
 //! through `binding::runtime`.
 
-// Moved from the `rlmesh-runtime` crate, which did not document every
-// public item.
 #![allow(missing_docs)]
 
 mod driver;

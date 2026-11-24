@@ -48,9 +48,8 @@ impl fmt::Display for EdgeMode {
     }
 }
 
-/// The envelope metadata of an applied sample: what the edge
-/// dispatched on one tick, after clamping, and on whose authority. It is the
-/// dispatched command, not confirmed physical motion.
+/// The envelope metadata of an applied sample: what the edge dispatched on one
+/// tick, after clamping, and on whose authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Applied {
     /// The edge mode on that tick.
@@ -85,9 +84,8 @@ impl Applied {
 
 /// One sample of one stream.
 ///
-/// Missing samples are explicit: a gap in `seq` is a loss, and a consumer
-/// judges age from `capture_ns`, so it never silently freezes on an old
-/// value.
+/// Missing samples are explicit: a gap in `seq` is a loss, and a consumer judges age
+/// from `capture_ns`, so it never silently freezes on an old value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sample {
     /// The stream.
@@ -131,9 +129,7 @@ pub struct SeqRange {
     pub last: u64,
 }
 
-/// Several samples of one stream in one epoch: a history-store page. The
-/// payload holds `samples.len()` values at the
-/// stream's stride (one value of an unbatchable stream).
+/// Several samples of one stream in one epoch: a history-store page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SampleBatch {
     /// The stream.
@@ -155,9 +151,9 @@ pub struct SampleBatch {
 }
 
 impl SampleBatch {
-    /// Splits the batch into samples, slicing the payload (no copy). `stride`
-    /// is the stream's stride; `None` for an unbatchable stream, whose batch
-    /// holds at most one sample. Fails when the payload does not match.
+    /// Splits the batch into samples, slicing the payload (no copy). `stride` is the
+    /// stream's stride, `None` for an unbatchable stream, whose batch holds at most one
+    /// sample. Fails when the payload does not match.
     pub fn split(&self, stride: Option<usize>) -> Result<Vec<Sample>, String> {
         let n = self.samples.len();
         let expected = match stride {
@@ -193,9 +189,8 @@ impl SampleBatch {
     }
 }
 
-/// A query of the host's history store: samples with
-/// `after_seq < seq <= until_seq` in `epoch`, at most `limit` of them (the
-/// newest of the range).
+/// A query of the host's history store: samples with `after_seq < seq <=
+/// until_seq` in `epoch`, at most `limit` of them (the newest of the range).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HistoryQuery {
     /// The epoch the caller is in; another epoch's samples are never served.

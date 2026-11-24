@@ -15,18 +15,10 @@ keywords = { workspace = true }
 publish = { workspace = true }
 
 [dependencies]
-# The leaf codec's slabs (`leaves`).
 bytes = { workspace = true }
-# `chacha20::ChaCha12Rng` is the pinned sampler RNG: rand's StdRng is the same
-# algorithm today but rand reserves the right to change it across versions, so
-# pinning the concrete cipher freezes the seed->sample contract. `rand` is kept
-# minimal (no OS-entropy default features) — the sampler only needs its
-# distribution methods on a supplied RNG, never thread/OS randomness.
+# Pinned sampler RNG: rand reserves the right to change StdRng. `rand` has default features off (no OS entropy).
 chacha20 = { workspace = true }
 half = { workspace = true }
-# Declared directly (not workspace-inherited) so default features can be off:
-# the sampler needs only rand's distribution methods on a supplied RNG, never
-# OS/thread entropy. Version tracks the workspace `rand`.
 rand = { version = "0.10", default-features = false }
 rayon = { workspace = true }
 thiserror = { workspace = true }

@@ -1,15 +1,3 @@
-"""``rlmesh.realtime.inputs`` and ``actions`` build the policy map's plain dicts, key for key.
-
-Each builder against the dict it must produce, the refusals naming the
-argument, ``parts.array``, ``inputs.of``, the keyword ``Policy`` and how
-``run`` reads a ``predict``'s signature. That the host takes every
-builder's output is ``integration/test_v2_builders.py``.
-
-The shared fixture ``builders.json`` holds a case for every builder and
-argument; the Rust builders are checked against the same cases, which keeps
-the two in step.
-"""
-
 from __future__ import annotations
 
 import functools
@@ -45,7 +33,6 @@ MODULES = {"inputs": inputs, "actions": actions, "parts": parts}
 
 
 def build_case(case: dict[str, Any]) -> object:
-    """``case``'s builder called with its arguments, as a user writes them."""
     module, name = case["builder"].split(".")
     builder = getattr(MODULES[module], name)
     args = dict(case["args"])

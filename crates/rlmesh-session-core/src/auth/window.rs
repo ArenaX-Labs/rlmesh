@@ -1,5 +1,5 @@
-//! The host's per-generation request window: request ids and the reply
-//! cache that makes a retried verb idempotent.
+//! The host's per-generation request window: request ids and the reply cache that makes a
+//! retried verb idempotent.
 
 use alloc::collections::BTreeMap;
 
@@ -13,17 +13,17 @@ pub enum Admit<'a, R> {
     Execute,
     /// A retry of an answered request: send this reply again.
     Done(&'a R),
-    /// A retry of a request still executing (a grant waiting for its
-    /// robots' keys): it joins that operation and gets its one reply.
+    /// A retry of a request still executing (a grant waiting for its robots' keys): it joins
+    /// that operation and gets its one reply.
     Pending,
     /// Below the window: never applied (`EXPIRED`).
     Expired,
 }
 
-/// One participant generation's request ids: a window of
-/// [`REQUEST_WINDOW`] ids from a floor, each absent, pending or answered
-/// (with its reply). The host applies verbs one at a time; only a grant
-/// stays pending past its turn, while its robots install its keys.
+/// One participant generation's request ids: a window of [`REQUEST_WINDOW`] ids from a
+/// floor, each absent, pending or answered (with its reply). The host applies verbs one
+/// at a time; only a grant stays pending past its turn, while its robots install its
+/// keys.
 #[derive(Debug)]
 pub struct RequestWindow<R> {
     floor: u64,
@@ -42,8 +42,7 @@ impl<R> Default for RequestWindow<R> {
 }
 
 impl<R> RequestWindow<R> {
-    /// Admits request `id`. An id above the window moves the floor up (and
-    /// forgets the replies below it).
+    /// Admits request `id`.
     pub fn admit(&mut self, id: u64) -> Admit<'_, R> {
         if id < self.floor {
             return Admit::Expired;
@@ -61,8 +60,7 @@ impl<R> RequestWindow<R> {
         }
     }
 
-    /// `id` is executing past its turn: retries join it until
-    /// [`complete`](Self::complete).
+    /// `id` is executing past its turn: retries join it until [`complete`](Self::complete).
     pub fn begin(&mut self, id: u64) {
         self.pending.insert(id);
     }

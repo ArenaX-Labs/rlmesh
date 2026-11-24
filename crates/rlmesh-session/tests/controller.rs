@@ -1,8 +1,3 @@
-//! A declared robot ([`Robot`]) and bound policies ([`Controller`]) over a
-//! real session: the run loop drives the edge, an operator preempts the
-//! model, which stays stopped until resumed, a failing model lets go of the
-//! robot.
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -24,15 +19,12 @@ use rlmesh_session::{
 
 const WAIT: Duration = Duration::from_secs(10);
 
-/// The UR10e's arm and wrist F/T, at 500 Hz.
 const UR10E: &str = r#"{
     "arm": {"kind": "joints", "count": 6, "fields": ["pos"], "hz": 500,
             "command": "position", "safe": "stop", "hold_max_ms": 100, "max_action_age_ms": 1000},
     "wrist/ft": {"kind": "wrench", "frame": "tool0", "hz": 500}
 }"#;
 
-/// Reads the joints and the wrench, commands 5 actions at 100 Hz, replans
-/// at 50 Hz.
 const POLICY: &str = r#"{
     "hz": 50,
     "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]},
@@ -41,7 +33,6 @@ const POLICY: &str = r#"{
                         "hz": 100, "chunk": 5}}
 }"#;
 
-/// [`POLICY`] with the wrench as a window of 4: every sample, by seq.
 const WINDOW_POLICY: &str = r#"{
     "hz": 50,
     "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]},
@@ -62,7 +53,6 @@ impl World {
         Self::start_with(|_| {}).await
     }
 
-    /// A host with `configure`d rules.
     async fn start_with(configure: impl FnOnce(&mut HostConfig)) -> Self {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
@@ -161,10 +151,8 @@ fn f32s(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
-/// What the robot dispatched: (time, mode, first joint, token).
 type Log = Arc<Mutex<Vec<(Instant, EdgeMode, Option<f32>, Option<LeaseToken>)>>>;
 
-/// The robot's 500 Hz loop: publish, then apply what is due.
 fn spin(robot: Arc<Robot>, stop: Arc<AtomicBool>, log: Log) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let clock = robot.participant().clock().clone();
@@ -203,7 +191,6 @@ fn spin(robot: Arc<Robot>, stop: Arc<AtomicBool>, log: Log) -> std::thread::Join
     })
 }
 
-/// Commands every joint to `target` for the whole chunk.
 struct Constant {
     target: f32,
     seen: usize,
@@ -256,7 +243,6 @@ async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
-/// The last five ticks dispatched `target`.
 fn driven_to(log: &Log, target: f32) -> bool {
     let log = log.lock().expect("log");
     log.len() >= 5
@@ -288,7 +274,6 @@ async fn a_bound_policy_runs_warm_before_authority_and_the_robot_applies_its_chu
     let (result, seen) = run.join().expect("run thread");
     result.expect("a clean stop");
     assert!(seen > 0);
-    // A stopped run gives its leases back: released, not lapsed.
     wait_until("the lease released", || !model.holds()).await;
     stop.store(true, Ordering::Relaxed);
     robot_loop.join().expect("robot loop");
@@ -296,12 +281,10 @@ async fn a_bound_policy_runs_warm_before_authority_and_the_robot_applies_its_chu
     assert_eq!(safe.entries, 0, "a release never latches safe");
 }
 
-/// The edge's mode on its last tick.
 fn edge_mode(log: &Log) -> Option<EdgeMode> {
     log.lock().expect("log").last().map(|(_, mode, ..)| *mode)
 }
 
-/// The parked events drained so far.
 fn parked_events(
     controller: &Controller,
     seen: &mut Vec<RunEvent>,
@@ -317,9 +300,6 @@ fn parked_events(
         .collect()
 }
 
-/// Waits until `controller` has skipped `n` more starts as `parked`, the
-/// robot's arm has gone safe, and nothing was sent meanwhile: it stayed
-/// stopped although nobody holds the arm.
 async fn stays_parked(world: &World, controller: &Controller, log: &Log, n: u64) {
     let (skipped, sent) = {
         let stats = controller.stats();
@@ -338,14 +318,8 @@ async fn stays_parked(world: &World, controller: &Controller, log: &Log, n: u64)
     );
 }
 
-/// An operator takes the arm from a running model and lets go: the model
-/// stays stopped, the arm goes safe, and only `resume` hands it back (under
-/// a fresh token). The same when the operator's process dies.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_operator_preempts_the_model_which_stays_stopped_until_resumed() {
-    // An arm whose chunks run dry past its 100 ms hold (a starved test
-    // machine) goes safe on its own: re-armed at once, so its holder asks
-    // again and only the preemption decides the test, never the load.
     let world = World::start_with(|config| config.rearm_robots = true).await;
     let robot = world.robot().await;
     let model = world.controller("model", PriorityClass::Model).await;
@@ -356,7 +330,6 @@ async fn an_operator_preempts_the_model_which_stays_stopped_until_resumed() {
     wait_until("the model driving", || driven_to(&log, 1.0)).await;
     let model_token = model.leases()[0].token;
 
-    // The operator takes over and streams its own chunks.
     let leases = operator.acquire().await.expect("operator class preempts");
     assert!(leases[0].token > model_token);
     wait_until("the model's lease gone", || !model.holds()).await;
@@ -400,14 +373,12 @@ async fn an_operator_preempts_the_model_which_stays_stopped_until_resumed() {
     );
     assert!(model.stats().skipped(SkipReason::Parked) > 0);
 
-    // The operator lets go: the model does not take the arm back.
     operator_driving.store(false, Ordering::Relaxed);
     streaming.join().expect("operator thread");
     operator.release().await.expect("release");
     stays_parked(&world, &model, &log, 25).await;
     assert_eq!(model.parked(), vec![taken.clone()]);
 
-    // Resumed, it asks again and drives under a fresh token.
     assert_eq!(model.resume(), vec!["ur10e:arm".to_string()]);
     assert!(model.parked().is_empty());
     wait_until("the model driving again", || driven_to(&log, 1.0)).await;
@@ -421,8 +392,6 @@ async fn an_operator_preempts_the_model_which_stays_stopped_until_resumed() {
     assert!(last > leases[0].token, "a fresh token after the hand-back");
     assert!(tokens.contains(&model_token));
 
-    // The operator takes it again, and its process dies: its lease lapses,
-    // and the model still stays stopped.
     operator.acquire().await.expect("operator preempts");
     wait_until("the model preempted", || !model.holds()).await;
     operator.participant().set_heartbeats_enabled(false);
@@ -443,19 +412,12 @@ async fn an_operator_preempts_the_model_which_stays_stopped_until_resumed() {
     robot_loop.join().expect("robot loop");
 }
 
-/// A loss that is not a higher class taking the arm leaves the model asking
-/// for it again: a holder of its own class, a disarm and arm, its own
-/// lease's lapse.
 #[tokio::test(flavor = "multi_thread")]
 async fn every_other_loss_leaves_the_model_asking_again() {
-    // Its lease's lapse is timed by the host and by the edge: an edge that
-    // sees it first goes safe on its own, and the host would hold the robot.
-    // Re-armed at once, so the model asks again whichever saw it first.
     let world = World::start_with(|config| config.rearm_robots = true).await;
     let robot = world.robot().await;
     let (stop, log): (_, Log) = (Arc::new(AtomicBool::new(false)), Arc::default());
     let robot_loop = spin(robot.clone(), stop.clone(), log.clone());
-    // Another model holds the arm first: the run waits for it, unparked.
     let other = world.controller("other", PriorityClass::Model).await;
     other.acquire().await.expect("first come");
     let model = world.controller("model", PriorityClass::Model).await;
@@ -471,7 +433,6 @@ async fn every_other_loss_leaves_the_model_asking_again() {
     })
     .await;
 
-    // Disarmed and armed: every lease ends, and it asks again.
     robot.participant().disarm().await.expect("disarm");
     wait_until("the lease voided", || !model.holds_any()).await;
     robot.participant().arm().await.expect("arm");
@@ -481,7 +442,6 @@ async fn every_other_loss_leaves_the_model_asking_again() {
     })
     .await;
 
-    // Its own lease lapses (no heartbeats past its ttl), then it is back.
     model.participant().set_heartbeats_enabled(false);
     wait_until("the model's lease lapsed", || {
         world.host.snapshot().leases.is_empty()
@@ -502,7 +462,6 @@ async fn every_other_loss_leaves_the_model_asking_again() {
     robot_loop.join().expect("robot loop");
 }
 
-/// Fails on its third start.
 struct Failing(usize);
 
 impl Predictor for Failing {
@@ -538,7 +497,6 @@ async fn a_failing_model_stops_sending_and_lets_go_of_the_robot() {
     assert!(matches!(result, Err(RunError::Predict(ref e)) if e == "the model crashed"));
     assert!(!model.holds());
     assert!(model.leases().is_empty());
-    // A wrong shape is refused before anything is sent.
     let (observation, at) = model.observe().expect("warm inputs");
     let wrong = Value::Tensor(Tensor::from_f64(DType::F32, vec![6], &[0.0; 6]));
     let err = model
@@ -559,8 +517,6 @@ async fn a_local_estop_stops_the_robot_at_once_and_reaches_the_host_before_its_c
     let run = run_in_thread(&model, 1.5);
     wait_until("the robot driven by the policy", || driven_to(&log, 1.5)).await;
 
-    // Latched and cleared back to back: the edge stops on its next tick,
-    // and the host still sees the Estop before the Clear.
     robot.estop("button");
     let latched_at = Instant::now();
     robot.clear_estop();
@@ -584,7 +540,6 @@ async fn a_local_estop_stops_the_robot_at_once_and_reaches_the_host_before_its_c
             .iter()
             .any(|e| { e.reason.code == ReasonCode::VoidedByEstop && e.reason.by == "ur10e" })
     );
-    // Leaving ESTOP still needs disarm and arm.
     p.disarm().await.expect("disarm");
     p.arm().await.expect("arm");
     let resumed = Instant::now();
@@ -612,7 +567,6 @@ async fn a_run_stops_with_session_lost_when_its_robot_is_lost() {
     let robot_loop = spin(robot.clone(), stop.clone(), log.clone());
     let run = run_in_thread(&model, 1.5);
     wait_until("the robot driven by the policy", || driven_to(&log, 1.5)).await;
-    // The robot process dies: no detach, its heartbeats just stop.
     stop.store(true, Ordering::Relaxed);
     robot_loop.join().expect("robot loop");
     let robot = Arc::try_unwrap(robot).ok().expect("the only handle");
@@ -629,10 +583,6 @@ async fn a_run_stops_with_session_lost_when_its_robot_is_lost() {
     assert!(!model.holds());
 }
 
-/// A camera offered faster than its `send` ceiling, read by a bound policy
-/// (an `every` contract): the image publisher's rate gate and the plan's
-/// run on one clock, so frames keep flowing at the ceiling once the gate's
-/// burst is spent.
 #[tokio::test(flavor = "multi_thread")]
 async fn camera_frames_keep_flowing_under_a_send_ceiling_and_a_contract() {
     let world = World::start().await;
@@ -675,14 +625,11 @@ async fn camera_frames_keep_flowing_under_a_send_ceiling_and_a_contract() {
     }
 }
 
-/// An eye: two joints at 500 Hz, held then safe on its own.
 const EYE: &str = r#"{
     "eyes": {"kind": "joints", "names": ["pan", "tilt"], "fields": ["pos"], "hz": 500,
              "command": "position", "safe": "hold", "hold_max_ms": 100}
 }"#;
 
-/// One policy for two eyes: no robot named, so it binds the session's
-/// view, and each action targets its eye by a qualified selector.
 const EYES: &str = r#"{
     "hz": 50,
     "actions": {
@@ -693,7 +640,6 @@ const EYES: &str = r#"{
     }
 }"#;
 
-/// Both eyes to `target`, for the whole chunk.
 struct Gaze {
     target: f32,
 }
@@ -713,7 +659,6 @@ impl Predictor for Gaze {
     }
 }
 
-/// An eye's 500 Hz loop: publish its gaze, then apply what is due.
 fn spin_eye(robot: Arc<Robot>, stop: Arc<AtomicBool>, log: Log) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let clock = robot.participant().clock().clone();
@@ -746,7 +691,6 @@ fn spin_eye(robot: Arc<Robot>, stop: Arc<AtomicBool>, log: Log) -> std::thread::
     })
 }
 
-/// The last five ticks since `since` dispatched `target`.
 fn driven_since(log: &Log, target: f32, since: Instant) -> bool {
     let log = log.lock().expect("log");
     let recent: Vec<_> = log.iter().filter(|(at, ..)| *at >= since).collect();
@@ -760,9 +704,6 @@ fn driven_since(log: &Log, target: f32, since: Instant) -> bool {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_off() {
-    // An eye whose chunks run dry past its hold (a starved test machine)
-    // goes safe on its own: re-armed at once, so only what eye 2's loss
-    // does to eye 1 decides the test, never the machine's load.
     let world = World::start_with(|config| config.rearm_robots = true).await;
     let eye = |name: &'static str| {
         let world = &world;
@@ -780,7 +721,6 @@ async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_o
     let (one, two) = (eye("eye-1").await, eye("eye-2").await);
     one.participant().arm().await.expect("arm");
 
-    // No robot named: the policy binds the view of both eyes.
     let p = world
         .join("tracker", Role::Controller, PriorityClass::Model)
         .await;
@@ -815,7 +755,6 @@ async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_o
     .await;
 
     let mut events = world.host.events();
-    // Eye 2 drops off the network: no more heartbeats, no more ticks.
     two.participant().set_heartbeats_enabled(false);
     stop_two.store(true, Ordering::Relaxed);
     loop_two.join().expect("eye 2 loop");
@@ -829,7 +768,6 @@ async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_o
     })
     .await;
     let lost = Instant::now();
-    // Eye 1 keeps being driven, after the loss as before it.
     while !driven_since(&log_one, 0.25, lost) {
         assert!(
             lost.elapsed() < WAIT,
@@ -837,9 +775,6 @@ async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_o
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    // What the loss did, from the host's own account: it ended eye 2's
-    // lease and held eye 2, and it never stopped the session, nor ended or
-    // held anything of eye 1's.
     let eye_one = rlmesh_session::wire::ParticipantId::new("eye-1").expect("id");
     let mut told = Vec::new();
     loop {
@@ -882,7 +817,6 @@ async fn one_policy_drives_two_eyes_and_keeps_driving_one_when_the_other_drops_o
     loop_one.join().expect("eye 1 loop");
 }
 
-/// Eye 1 alone, for an operator.
 const EYE_ONE: &str = r#"{
     "hz": 50,
     "actions": {
@@ -891,9 +825,6 @@ const EYE_ONE: &str = r#"{
     }
 }"#;
 
-/// An operator takes one of the two eyes a policy drives and lets go: that
-/// eye stays stopped (safe) until the policy is resumed, and the other is
-/// driven all along.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_operator_taking_one_eye_parks_only_that_eye() {
     let world = World::start_with(|config| config.rearm_robots = true).await;
@@ -960,7 +891,6 @@ async fn an_operator_taking_one_eye_parks_only_that_eye() {
     .await;
     let parked: Vec<String> = tracker.parked().into_iter().map(|p| p.part).collect();
     assert_eq!(parked, ["eye-1:eyes"]);
-    // Starts go on, for eye 2: none is skipped as parked.
     let sent = tracker.stats().chunks_sent;
     wait_until("eye 2 still commanded", || {
         tracker.stats().chunks_sent >= sent + 10
@@ -994,9 +924,6 @@ async fn an_operator_taking_one_eye_parks_only_that_eye() {
     }
 }
 
-/// A robot the host dropped (its heartbeats stopped past the presence
-/// grace) joins again on its own through the SDK, and after an arm the same
-/// policy drives it again; the other eye never stops.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_sdk_robot_the_host_dropped_joins_again_on_its_own() {
     use rlmesh_session::address::Address;
@@ -1041,7 +968,6 @@ async fn an_sdk_robot_the_host_dropped_joins_again_on_its_own() {
         .await
         .expect("one binding over both eyes"),
     );
-    // Each eye's loop reads its slot every tick, as a binding does.
     let spin = |slot: sdk::RobotSlot, stop: Arc<AtomicBool>, log: Log| {
         std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
@@ -1082,7 +1008,6 @@ async fn an_sdk_robot_the_host_dropped_joins_again_on_its_own() {
     })
     .await;
 
-    // Eye 2's heartbeats stop: the host drops it, and it joins again.
     let first = current(&two);
     first.participant().set_heartbeats_enabled(false);
     wait_until("eye 2 joined again", || {
@@ -1091,8 +1016,6 @@ async fn an_sdk_robot_the_host_dropped_joins_again_on_its_own() {
     .await;
     drop(first);
     let back = Instant::now();
-    // It waits to be re-armed by name (robots don't re-arm on their own by
-    // default); a routine arm is not one.
     let driver = current(&one);
     driver.participant().arm().await.expect("a no-op");
     let eye_two = current(&two).participant().id().clone();
@@ -1131,7 +1054,6 @@ async fn an_sdk_robot_the_host_dropped_joins_again_on_its_own() {
     host.close().await.expect("close");
 }
 
-/// Commands the arm, and reads nothing: nothing to warm or install.
 const COMMAND_ONLY: &str = r#"{
     "hz": 50,
     "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position",
@@ -1143,8 +1065,6 @@ fn command_values() -> Vec<(String, Value)> {
     vec![("arm".into(), Value::Tensor(tensor))]
 }
 
-/// A controller bound and acquired at once, as an operator's first command
-/// is, before the host has measured its clock.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_first_chunk_after_an_explicit_acquire_is_accepted() {
     let world = World::start().await;
@@ -1178,9 +1098,6 @@ async fn the_first_chunk_after_an_explicit_acquire_is_accepted() {
     }
 }
 
-/// A controller whose clock the host never maps: no heartbeat after attach.
-/// Its acquire gives up after the wait timeout set after binding, not the
-/// (long) bind timeout.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_acquire_whose_clock_is_never_mapped_says_whose() {
     let world = World::start().await;
@@ -1221,14 +1138,9 @@ async fn an_acquire_whose_clock_is_never_mapped_says_whose() {
     assert_eq!(robot.edge_stats("arm").expect("stats").rejected_total(), 0);
 }
 
-/// The host grants no lease before a robot's publishers install the
-/// delivery plans of the streams a binding reads. An acquire right after
-/// the bind waits for them, as for the clocks, instead of being refused;
-/// past the wait timeout it says whose publishers it waited for.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_acquire_waits_for_the_robots_publishers_to_install_its_plans() {
     let world = World::start().await;
-    // A robot that declared its parts but publishes none of them yet.
     let robot = world
         .join("ur10e", Role::Embodiment, PriorityClass::Scripted)
         .await;
@@ -1245,7 +1157,6 @@ async fn an_acquire_waits_for_the_robots_publishers_to_install_its_plans() {
     )
     .await
     .expect("bind");
-    // The clocks first, so only the plans are waited for below.
     let ids = [robot.id().clone(), controller.participant().id().clone()];
     wait_until("both clocks mapped", || {
         let view = world.host.snapshot();
@@ -1269,8 +1180,6 @@ async fn an_acquire_waits_for_the_robots_publishers_to_install_its_plans() {
     assert_eq!(leases.len(), 1);
 }
 
-/// `Duration::MAX` is a wait with no limit, for the bind and its later
-/// waits alike, not an overflow.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bind_and_acquire_without_a_limit_complete() {
     let world = World::start().await;
@@ -1355,8 +1264,6 @@ async fn binding_to_a_robot_that_never_appears_names_it() {
         "{err}"
     );
 }
-/// With no robot in the session, a policy whose entries name their robots
-/// says which from its first wait, as one reading them beside it does.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bind_with_no_robot_yet_names_the_robots_its_entries_name() {
     let world = World::start().await;
@@ -1386,7 +1293,6 @@ async fn a_bind_with_no_robot_yet_names_the_robots_its_entries_name() {
     );
 }
 
-/// Reads the arm, and a part of a robot that may not have started.
 const READS_TRACKER: &str = r#"{
     "hz": 50,
     "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]},
@@ -1417,8 +1323,6 @@ async fn binding_waits_for_a_named_robot_that_starts_later() {
     assert!(controller.binding().input("target").is_some());
 }
 
-/// A robot attached but not declared yet is waited for like one not
-/// attached; once it has declared, a part it lacks is refused at once.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_robot_attached_with_no_parts_is_waited_for_and_one_lacking_the_part_is_refused() {
     let world = World::start().await;
@@ -1503,7 +1407,6 @@ async fn a_named_input_that_never_appears_says_which_robot_and_entry() {
     assert!(text.contains("at \"tracker:target\""), "{text}");
 }
 
-/// Echoes the arm's joints as one action: nothing else to read.
 struct Echo;
 
 impl Predictor for Echo {
@@ -1568,8 +1471,6 @@ async fn a_run_on_a_disarmed_session_says_it_waits_to_be_armed() {
     assert_eq!(seen + waits(&controller), 1, "warned once while disarmed");
 }
 
-/// A policy that reads a part of its own would wait for itself: refused at
-/// once, never waited for.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_policy_reading_its_own_part_is_refused_at_once() {
     let world = World::start().await;
@@ -1604,21 +1505,13 @@ async fn a_policy_reading_its_own_part_is_refused_at_once() {
     );
 }
 
-/// A lease grace no stall of a loaded machine outlasts, for the hand-back
-/// tests, where leases change hands only by preemption and release. A lapse
-/// would end the operator's lease (the host missing its heartbeats, or the
-/// edge its renewals), its keeper would take the part again from nobody, and
-/// no hand-back follows a lease that took its part from nobody.
 const NO_LAPSE: Duration = Duration::from_secs(2);
 
-/// An eye whose hold outlasts a hand-back on a loaded machine, and the
-/// stalls of the operator streaming to it before.
 const EYE_HOLDING: &str = r#"{
     "eyes": {"kind": "joints", "names": ["pan", "tilt"], "fields": ["pos"], "hz": 500,
              "command": "position", "safe": "hold", "hold_max_ms": 2000}
 }"#;
 
-/// Eye 2 alone, for a second operator.
 const EYE_TWO: &str = r#"{
     "hz": 50,
     "actions": {
@@ -1627,8 +1520,6 @@ const EYE_TWO: &str = r#"{
     }
 }"#;
 
-/// Streams `target` to action `entry` from `controller` until the flag
-/// drops.
 fn stream(
     controller: &Arc<Controller>,
     entry: &'static str,
@@ -1650,11 +1541,6 @@ fn stream(
     (on, handle)
 }
 
-/// Two operators take one eye each from the policy driving both. The first
-/// hands its eye back: the policy resumes that eye alone (a `HandedBack`
-/// event), and between the release and its first chunk the eye only holds
-/// the operator's last target, as on any change of holder, never going
-/// safe. The second lets go plainly: its eye stays parked.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_operator_hands_back_the_eye_it_took_and_only_that_eye_resumes() {
     let world = World::start_with(|config| {
@@ -1746,9 +1632,6 @@ async fn an_operator_hands_back_the_eye_it_took_and_only_that_eye_resumes() {
         driven_since(&log_one, 0.25, released)
     })
     .await;
-    // From the release to the tracker's first action, eye 1 only held
-    // operator 1's last target (its queue's tail until the edge saw the
-    // release): no safe behaviour, no gap in dispatch.
     let since: Vec<_> = log_one
         .lock()
         .expect("log")
@@ -1797,7 +1680,6 @@ async fn an_operator_hands_back_the_eye_it_took_and_only_that_eye_resumes() {
         .collect();
     assert_eq!(handed, [("eye-1:eyes".into(), "operator-1".into())]);
 
-    // A plain release leaves eye 2 parked: it goes safe, unleased.
     second.release().await.expect("plain release");
     wait_until("eye 2 safe", || edge_mode(&log_two) == Some(EdgeMode::Safe)).await;
     let sent = tracker.stats().chunks_sent;
@@ -1817,17 +1699,12 @@ async fn an_operator_hands_back_the_eye_it_took_and_only_that_eye_resumes() {
     }
 }
 
-/// A hand-back that cannot take is refused before anything is released,
-/// and the operator keeps the arm: a model process too old to resume on
-/// one, a part taken from nobody, nothing held, and a host too old to read
-/// one.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_hand_back_that_cannot_take_is_refused_and_the_operator_keeps_the_arm() {
     let refusal = |result: Result<Vec<HandBack>, SessionError>| match result {
         Err(SessionError::Rejected(err)) => (err.status, err.message),
         other => panic!("not refused: {other:?}"),
     };
-    // Re-armed at once after a dry queue on a starved machine, as above.
     let world = World::start_with(|config| {
         config.lease_grace = NO_LAPSE;
         config.rearm_robots = true;
@@ -1836,7 +1713,6 @@ async fn a_hand_back_that_cannot_take_is_refused_and_the_operator_keeps_the_arm(
     let robot = world.robot().await;
     let (stop, log): (_, Log) = (Arc::new(AtomicBool::new(false)), Arc::default());
     let robot_loop = spin(robot.clone(), stop.clone(), log.clone());
-    // A model built before hand-backs: it would stay parked.
     let model = world
         .controller_with("model", PriorityClass::Model, |c| c.supports.clear())
         .await;
@@ -1857,7 +1733,6 @@ async fn a_hand_back_that_cannot_take_is_refused_and_the_operator_keeps_the_arm(
     assert!(operator.holds(), "nothing released");
     assert_eq!(model.parked().len(), 1);
 
-    // Taken again while nobody held it: nothing is parked on it by this one.
     operator.release().await.expect("release");
     operator.acquire().await.expect("free part");
     let (status, message) = refusal(operator.release_to(PriorityClass::Model).await);
@@ -1875,7 +1750,6 @@ async fn a_hand_back_that_cannot_take_is_refused_and_the_operator_keeps_the_arm(
     model.stop();
     run.join().expect("run thread").0.expect("clean stop");
 
-    // A host that would read a hand-back as a plain release is not sent one.
     let old = World::start_with(|config| {
         config.supports.retain(|f| f != LEASE_HANDBACK);
         config.lease_grace = NO_LAPSE;
@@ -1928,7 +1802,6 @@ async fn a_window_input_counts_the_samples_its_link_lost() {
             .expect("ft is counted")
     };
 
-    // The wrench's samples put raw on its key, so seqs can go missing.
     let stream = controller
         .binding()
         .inputs
@@ -1965,8 +1838,6 @@ async fn a_window_input_counts_the_samples_its_link_lost() {
         let key = key.clone();
         async move { session.put(&key, frame).await.expect("put") }
     };
-    // Seq 1 until the subscription is routed (a repeat is out of order,
-    // not lost), then 3 and 4, and 6 to 8, go missing.
     let started = Instant::now();
     while ft(&controller).received == 0 {
         assert!(started.elapsed() < WAIT, "seq 1 never arrived");
@@ -1995,7 +1866,6 @@ async fn a_window_input_counts_the_samples_its_link_lost() {
     );
     let q = &stats.inputs[0];
     assert_eq!((q.part.as_str(), q.received, q.lost), ("ur10e:arm", 0, 0));
-    // A start reads the window, and warns of the 5 the link lost.
     let _ = controller.observe();
     raw.close().await.expect("close");
 }

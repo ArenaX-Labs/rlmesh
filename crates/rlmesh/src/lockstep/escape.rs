@@ -1,17 +1,13 @@
 //! Gym keys to path segments.
 //!
 //! A `Dict` key becomes one segment: lowercased, every character outside
-//! `[a-z0-9_]` replaced by `_`, a leading digit given an `n` prefix, and a
-//! segment over 32 characters cut to its first 23 characters + `_` + 8 hex
-//! characters of the BLAKE3 hash of the original key. A `Tuple` item `i` is
-//! the segment `item{i}`. Two readings the table leaves open, taken here as
-//! the smallest that keeps every path valid: a leading `_` (a reserved
-//! segment) also gets the `n` prefix, and an empty key is `n`. Keys that
-//! escape alike (`Pos` and `pos`) are not refused: the later leaf's last
-//! segment is cut the same way, with the hash of its original keys
-//! ([`distinct`]).
+//! `[a-z0-9_]` replaced by `_`, a leading digit or `_` given an `n` prefix (an
+//! empty key is `n`), and a segment over 32 characters cut to its first 23
+//! characters + `_` + 8 hex characters of the BLAKE3 hash of the original key.
+//! A `Tuple` item `i` is the segment `item{i}`. Keys that escape alike (`Pos`
+//! and `pos`) are not refused: the later leaf's last segment is cut the same
+//! way, with the hash of its original keys ([`distinct`]).
 
-/// The longest segment.
 const MAX_SEGMENT: usize = 32;
 
 /// One step into a Gym space: a `Dict` key or a `Tuple` index.
@@ -73,7 +69,6 @@ pub fn segment(key: &KeySeg) -> String {
 
 /// `path` with its last segment made distinct for the leaf `origin` (its
 /// original keys): the segment's first 23 characters + `_` + 8 hex
-/// characters of the BLAKE3 hash of `origin`, as an over-long key is cut.
 pub fn distinct(path: &str, origin: &str) -> String {
     let (head, last) = path.rsplit_once('/').map_or(("", path), |(h, l)| (h, l));
     let mut segment: String = last.chars().take(23).collect();

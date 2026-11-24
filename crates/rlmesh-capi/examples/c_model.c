@@ -1,16 +1,9 @@
-/* A pure-C model driving a remote RLMesh environment — rlmesh.h as valid C11,
- * the C ABI without the C++ wrapper.
- *
- *   zig cc -std=c11 -I<include> c_model.c -lrlmesh_capi -o c_model
- *   ./c_model localhost:7447/env [episodes]
- */
 #include <rlmesh.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* A zero action shaped like the route's action space (Box or Discrete). */
 static RLMeshValue* zero_action(const RLMeshSpaceSpec* action) {
   switch (rlmesh_space_spec_kind(action)) {
     case RLMESH_SPACE_KIND_BOX: {
@@ -24,7 +17,7 @@ static RLMeshValue* zero_action(const RLMeshSpaceSpec* action) {
         return NULL;
       }
       if (rlmesh_space_spec_shape(action, shape, ndim, &ndim) != RLMESH_OK) {
-        return NULL; /* last-error already set */
+        return NULL;
       }
       size_t numel = 1;
       for (size_t i = 0; i < ndim; ++i) {
@@ -73,7 +66,6 @@ int main(int argc, char** argv) {
   connection.address = address;
   RLMeshRemoteEnv* env = NULL;
   if (rlmesh_remote_env_new(&connection, &env) != RLMESH_OK) goto fail;
-  /* The run drives the env itself: keep its action space, release the lease. */
   RLMeshSpaceSpec* action_space = rlmesh_space_spec_clone(rlmesh_remote_env_action_space_spec(env));
   rlmesh_remote_env_free(env);
   RLMeshModelVtable vt = RLMESH_MODEL_VTABLE_INIT;

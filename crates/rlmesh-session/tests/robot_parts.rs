@@ -1,5 +1,3 @@
-//! `Robot::parts` is in authored order, even after a re-declaration gives a
-//! part a new, higher channel id than the parts authored after it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use rlmesh_session::edge::{EdgeConfig, Robot};
@@ -12,8 +10,6 @@ use rlmesh_session::{
 
 const FIRST: &str = r#"{"z": {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 50},
                         "a": {"kind": "joints", "count": 1, "fields": ["pos"], "hz": 50}}"#;
-// `z` changes schema (its rate), so the host retires its channel and assigns
-// a new one, after `a`'s.
 const SECOND: &str = r#"{"z": {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 100},
                          "a": {"kind": "joints", "count": 1, "fields": ["pos"], "hz": 50}}"#;
 

@@ -13,7 +13,6 @@ use crate::host::peer::Peer;
 use crate::lobby::{LobbyAnswer, LobbyReply, LobbyResult, LobbyService};
 
 impl HostActor {
-    /// A lobby verb's reply: its order or its run's state.
     pub(super) fn answer_lobby(
         &self,
         to: &ParticipantId,
@@ -35,8 +34,6 @@ impl HostActor {
         )
     }
 
-    /// Hands a lobby verb to the lobby: `RunScene`, `StopScene` and
-    /// `ArmScene` need the `arm` verb.
     pub(super) fn lobby_verb(
         &self,
         peer: &Peer,
@@ -60,8 +57,6 @@ impl HostActor {
         }
     }
 
-    /// Answers a lobby verb that waited, once, if its sender is still the
-    /// generation that sent it.
     pub(super) async fn finish_lobby(&mut self, (key, result): LobbyDone) {
         let Some(waiting) = self.lobby.remove(&key) else {
             return;

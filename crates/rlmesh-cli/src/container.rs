@@ -1,8 +1,7 @@
 //! One prebuilt rlmesh image run for `doctor` and `bench`, the way the Python
 //! sandbox runs it (`rlmesh._sandbox.session.start_prebuilt_container`): the
 //! container hosts its session on the host's own port number, published on
-//! loopback, under keys made here, and serves in it under a participant
-//! name. Removed on drop.
+//! loopback, under keys made here, and serves in it under a participant name.
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::process::{Command, Stdio};
@@ -13,12 +12,10 @@ use rlmesh_session::address::{
     AddressKey, DEFAULT_SESSION, HOST_IDENTITY_VAR, SessionAddress, launch_identity, redact_text,
 };
 
-/// The longest one readiness attempt waits, so an image that died is told
-/// apart between attempts.
 const READY_ATTEMPT: Duration = Duration::from_secs(5);
 
-/// What `docker run` adds for the image under probe, as a sandbox's run
-/// options do: its `volumes`, and its params as `RLMESH_MAKE_KWARGS`.
+/// What `docker run` adds for the image under probe, as a sandbox's run options
+/// do: its `volumes`, and its params as `RLMESH_MAKE_KWARGS`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RunExtras<'a> {
     pub volumes: &'a [String],
@@ -30,14 +27,14 @@ pub struct Container {
     image: String,
     /// The participant it serves as (`env`, `model`).
     role: String,
-    /// The participant address the container serves at, with its host's
-    /// key: a credential, so print it only through `redact`.
+    /// The participant address the container serves at, with its host's key: a
+    /// credential, so print it only through `redact`.
     pub address: String,
 }
 
 impl Container {
-    /// `docker run -d` `image`, serving as participant `name`, with the
-    /// sandbox's hardening flags and owner labels.
+    /// `docker run -d` `image`, serving as participant `name`, with the sandbox's
+    /// hardening flags and owner labels.
     pub fn start(
         image: &str,
         name: &str,
@@ -65,9 +62,9 @@ impl Container {
     }
 
     /// Wait until `ready` (one attempt, given how long it may take) says the
-    /// container serves, or fail with its recent logs once it exits or
-    /// `timeout` passes. A published port answers TCP before the container
-    /// serves, and after it died, so only a real call says it is up.
+    /// container serves, or fail with its recent logs once it exits or `timeout`
+    /// passes.
+    // A published port accepts TCP before the container serves and after it died, so only a real call proves it is up.
     pub fn wait_ready(
         &self,
         timeout: Duration,
@@ -84,7 +81,6 @@ impl Container {
                 Ok(()) => return Ok(()),
                 Err(error) => error,
             };
-            // A container that died during the attempt is its cause.
             if let Some(code) = self.exited() {
                 bail!("{}", self.exit_report(code));
             }
@@ -100,8 +96,6 @@ impl Container {
         }
     }
 
-    /// The container's exit code once it stopped (`Some(None)`: stopped,
-    /// code unknown), `None` while it runs or when docker cannot say.
     fn exited(&self) -> Option<Option<i32>> {
         let output = Command::new("docker")
             .args([
@@ -118,15 +112,13 @@ impl Container {
         (running != "true").then(|| code.parse().ok())
     }
 
-    /// The error of a container that exited before it served: its exit
-    /// leads, then its last log lines.
     fn exit_report(&self, code: Option<i32>) -> String {
         let short = &self.id[..self.id.len().min(12)];
         exit_report(&self.role, &self.image, short, code, &self.logs())
     }
 
-    /// The last lines the container wrote, any secret in them (its address
-    /// key, its host identity) left out.
+    /// The last lines the container wrote, any secret in them (its address key, its
+    /// host identity) left out.
     pub fn logs(&self) -> String {
         Command::new("docker")
             .args(["logs", "--tail", "40", &self.id])
@@ -152,8 +144,6 @@ impl Drop for Container {
     }
 }
 
-/// The error of `role`'s container (`short` id, running `image`) that
-/// exited with `code` before it served, quoting its last log lines.
 fn exit_report(role: &str, image: &str, short: &str, code: Option<i32>, logs: &str) -> String {
     let exited = match code {
         Some(code) => format!("the {role} container exited with code {code} during startup"),
@@ -167,11 +157,6 @@ fn exit_report(role: &str, image: &str, short: &str, code: Option<i32>, logs: &s
     }
 }
 
-/// The `docker run -d` of `image` hosting its session on `port` under
-/// `identity` ([`launch_identity`]'s text). Beyond loopback, as a
-/// container's published port is, a session hosts only under keys its
-/// launcher passed; the secret reaches docker through its environment,
-/// never argv.
 fn run_command(
     image: &str,
     name: &str,
@@ -214,8 +199,6 @@ fn run_command(
     command
 }
 
-/// Participant `name`'s address in the session a container hosts on
-/// loopback `port` under `key`.
 fn participant_address(port: u16, key: AddressKey, name: &str) -> Result<String> {
     let session = SessionAddress {
         key: Some(key),
@@ -227,8 +210,6 @@ fn participant_address(port: u16, key: AddressKey, name: &str) -> Result<String>
     Ok(session.participant_invite(name))
 }
 
-/// A free port on 127.0.0.1 to publish a container's session on. Free when
-/// checked: `docker run` reports a port taken since.
 fn free_session_port() -> Result<u16> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).context("no free local port")?;
     Ok(listener.local_addr()?.port())
@@ -283,7 +264,6 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["-e", "RLMESH_ADDRESS=0.0.0.0:40000"])
         );
-        // One port: every traffic class dials it.
         let published: Vec<_> = args
             .windows(2)
             .filter(|pair| pair[0] == "-p")

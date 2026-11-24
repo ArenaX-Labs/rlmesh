@@ -1,6 +1,5 @@
 //! The sync Gymnasium envs on the wire: each lane (or vector env) is driven
 //! on one thread for the server's life, and its values cross the wire's
-//! request/result shape here.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc;
@@ -27,12 +26,10 @@ use crate::specs::EnvContract;
 use crate::value::{meta_codec, space_codec};
 use crate::{Error, ErrorClass, InfoDict, Metadata, Result, Value};
 
-/// The id an env with none serves.
 pub(crate) const UNKNOWN_ENV_ID: &str = "UnknownEnv-v1";
 
 const AUTORESET_KEY: &str = "autoreset_mode";
 
-/// The autoreset mode an env's metadata declares.
 pub(crate) fn autoreset_mode(metadata: Option<&Metadata>) -> Result<AutoresetMode> {
     let Some(value) = metadata.and_then(|metadata| metadata.get(AUTORESET_KEY)) else {
         return Ok(AutoresetMode::Disabled);
@@ -46,7 +43,6 @@ pub(crate) fn autoreset_mode(metadata: Option<&Metadata>) -> Result<AutoresetMod
         Value::Text(mode) => match mode.as_str() {
             "NextStep" => Ok(AutoresetMode::NextStep),
             "Disabled" => Ok(AutoresetMode::Disabled),
-            // Served on a v2 session (the v1 wire and `Model.run` refuse it).
             "SameStep" => Ok(AutoresetMode::SameStep),
             other => Err(Error::invalid_argument(format!(
                 "unrecognized metadata[\"autoreset_mode\"] {other:?}; expected a gymnasium \
@@ -60,7 +56,6 @@ pub(crate) fn autoreset_mode(metadata: Option<&Metadata>) -> Result<AutoresetMod
     }
 }
 
-/// Construction step 7: the contract a scalar env serves as one lane.
 pub(crate) fn env_contract_of(env: &dyn Env) -> Result<EnvContract> {
     let metadata = env.metadata();
     let autoreset = autoreset_mode(metadata.as_ref())?;
@@ -77,7 +72,6 @@ pub(crate) fn env_contract_of(env: &dyn Env) -> Result<EnvContract> {
     ))
 }
 
-/// The contract a vector env serves (its single spaces at `num_envs`).
 pub(crate) fn vector_contract_of(env: &dyn VectorEnv) -> Result<EnvContract> {
     let metadata = env.metadata();
     let autoreset = autoreset_mode(metadata.as_ref())?;
@@ -94,13 +88,7 @@ pub(crate) fn vector_contract_of(env: &dyn VectorEnv) -> Result<EnvContract> {
     ))
 }
 
-/// An authored `{op}` failure as the client receives it, code `INTERNAL` and
-/// the text `"{op} failed: {message}"`, recoverable only for a recoverable
-/// Environment-class error. A builtin class (`ValueError`) rides along, so
-/// the client raises it beside the Environment class, as for a Python env.
 pub(crate) fn authored_failure(op: &str, err: &Error) -> EnvRuntimeError {
-    // Binding payloads preserve local exception identity, but do not change
-    // the authored error's wire classification or its raw environment text.
     let mut source = err;
     while let Error::Attached(attached) = source {
         source = attached.error();
@@ -133,8 +121,6 @@ pub(crate) fn authored_failure(op: &str, err: &Error) -> EnvRuntimeError {
     }
 }
 
-/// A value the env produced that the wire cannot carry (a structural
-/// deviation from its declared space).
 fn encode_failure(op: &str, err: Error) -> EnvRuntimeError {
     EnvRuntimeError::Runtime(format!(
         "{op} returned a value the wire cannot carry: {err}"
@@ -143,20 +129,16 @@ fn encode_failure(op: &str, err: Error) -> EnvRuntimeError {
 
 type Job<T> = Box<dyn FnOnce(&mut T) + Send>;
 
-/// One thread that owns a `T` and runs jobs on it in order.
 pub(crate) struct Actor<T> {
     tx: mpsc::Sender<Job<T>>,
 }
 
-/// The mailbox of an actor whose thread is the caller's (a foreground serve's
-/// lane 0): [`run`](Self::run) drains it until the actor is dropped.
 pub(crate) struct ActorRunner<T> {
     rx: mpsc::Receiver<Job<T>>,
     target: T,
 }
 
 impl<T: Send + 'static> Actor<T> {
-    /// An actor on its own dedicated plain thread.
     pub(crate) fn spawn(
         name: String,
         target: T,
@@ -169,13 +151,11 @@ impl<T: Send + 'static> Actor<T> {
         Ok((actor, thread))
     }
 
-    /// An actor whose jobs the returned runner executes.
     pub(crate) fn foreground(target: T) -> (Actor<T>, ActorRunner<T>) {
         let (tx, rx) = mpsc::channel();
         (Actor { tx }, ActorRunner { rx, target })
     }
 
-    /// Run `job` on the actor's thread and wait for its result.
     pub(crate) async fn call<R: Send + 'static>(
         &self,
         op: &'static str,
@@ -199,8 +179,6 @@ impl<T: Send + 'static> Actor<T> {
 }
 
 impl<T> ActorRunner<T> {
-    /// Run jobs until every handle to the actor is dropped, then drop the
-    /// target on this thread.
     pub(crate) fn run(mut self) {
         for job in self.rx {
             job(&mut self.target);
@@ -208,28 +186,23 @@ impl<T> ActorRunner<T> {
     }
 }
 
-/// The wire shapes of one scalar lane: its spaces, contract and codecs.
 struct LaneShape {
     observation: spaces::SpaceSpec,
     action: spaces::SpaceSpec,
     contract: spaces::EnvContract,
 }
 
-/// How a lane's calls reach its env: inline on the lane thread, or relayed to
-/// the thread that called a foreground `serve()`.
 enum LaneCalls {
     Inline(Box<dyn Env + Send>),
     Relayed(Actor<Box<dyn Env + Send>>),
 }
 
-/// A sync [`Env`] as one lane of the wire's lane host.
 pub(crate) struct SyncLane {
     shape: LaneShape,
     calls: LaneCalls,
 }
 
 impl SyncLane {
-    /// `contract` is the lane's derived contract (construction step 7).
     pub(crate) fn new(env: Box<dyn Env + Send>, contract: &EnvContract) -> Result<SyncLane> {
         Ok(SyncLane {
             shape: lane_shape(contract)?,
@@ -237,7 +210,6 @@ impl SyncLane {
         })
     }
 
-    /// A lane whose env runs on the runner's thread.
     pub(crate) fn relayed(
         env: Box<dyn Env + Send>,
         contract: &EnvContract,
@@ -385,8 +357,6 @@ impl legacy::Env for SyncLane {
     }
 }
 
-/// A sync [`VectorEnv`] on the wire, driven on one dedicated thread (or the
-/// caller's, for a foreground serve).
 pub(crate) struct SyncVector {
     actor: Actor<Box<dyn VectorEnv + Send>>,
     observation: spaces::SpaceSpec,
@@ -427,7 +397,6 @@ fn vector_observations(
 }
 
 fn vector_seed(seeds: Vec<i64>) -> Option<VectorSeed> {
-    // ENV-4: no seed is None, one wire seed one int, more a list.
     match seeds.as_slice() {
         [] => None,
         [seed] => Some(VectorSeed::One(*seed)),

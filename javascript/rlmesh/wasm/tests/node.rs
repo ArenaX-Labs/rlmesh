@@ -32,7 +32,6 @@ const ROBOT: &str = r#"{
 }"#;
 const SESSION: &str = "0192f3a4-5b6c-7d8e-9f00-112233445566";
 const MS: i64 = 1_000_000;
-/// Local and session clocks around 2023-11-14 (ms since the epoch).
 const T0: f64 = 1_700_000_000_000.0;
 
 fn get(o: &JsValue, k: &str) -> JsValue {
@@ -171,7 +170,7 @@ fn samples_decode_with_gaps_stats_and_copies_into_caller_buffers() {
     assert_eq!(get(&decl, "class").as_string().as_deref(), Some("state"));
     assert_eq!(get(&decl, "index").as_f64(), Some(0.0));
     for n in 0..10_u64 {
-        let seq = if n >= 5 { n + 3 } else { n + 1 }; // two lost
+        let seq = if n >= 5 { n + 3 } else { n + 1 };
         let t = T0 + n as f64;
         assert_eq!(
             s.push(sample_frame(0, &joints(seq, t, 0.5)), t + 0.25)
@@ -192,13 +191,11 @@ fn samples_decode_with_gaps_stats_and_copies_into_caller_buffers() {
     assert_eq!(get(&st, "received").as_f64(), Some(10.0));
     assert_eq!(get(&st, "lost").as_f64(), Some(2.0));
     assert_eq!(get(&st, "late_pct").as_f64(), Some(0.0));
-    // A repeated seq is dropped, not delivered.
     assert_eq!(
         s.push(sample_frame(0, &joints(12, T0, 0.0)), T0).unwrap(),
         0
     );
     assert_eq!(get(&s.stats(0), "out_of_order").as_f64(), Some(1.0));
-    // Freshness against max_age (50 ms).
     assert!(!s.is_stale(0, T0 + 9.0 + 40.0));
     assert!(s.is_stale(0, T0 + 9.0 + 60.0));
 }
@@ -216,15 +213,12 @@ fn garbage_and_misfits_are_errors_or_counts_never_panics() {
             .is_err()
     );
     assert!(s.push(vec![], T0).is_err());
-    // An unknown subscription is ignored.
     assert_eq!(s.push(sample_frame(9, &joints(1, T0, 0.0)), T0).unwrap(), 0);
-    // A payload that does not fit the layout is counted, not delivered.
     let mut short = joints(1, T0, 0.0);
     short.payload = Bytes::from_static(&[0; 8]);
     assert_eq!(s.push(sample_frame(0, &short), T0).unwrap(), 0);
     assert_eq!(get(&s.stats(0), "malformed").as_f64(), Some(1.0));
     assert!(s.data_f64().is_err());
-    // The control side refuses garbage the same way.
     let mut c = ControlSession::new();
     assert!(c.on_frame(vec![], T0).is_err());
     assert!(c.on_frame(vec![frame::STATE, 0xff, 0xff], T0).is_err());
@@ -277,8 +271,6 @@ fn frames_copy_into_pooled_buffers_and_applied_samples_carry_the_edge_mode() {
     assert_eq!(s.data_f64().unwrap().length(), 7);
 }
 
-/// Attaches `c` as `web-1` with a snapshot and one completed clock exchange
-/// (session = local + 2 ms, 0.1 ms each way).
 fn attached() -> ControlSession {
     let mut c = ControlSession::new();
     assert!(c.heartbeat(T0).is_none(), "no heartbeat before the hello");
@@ -309,7 +301,6 @@ fn attached() -> ControlSession {
         )
         .unwrap();
     assert_eq!(get(&ev, "ours").as_bool(), Some(true));
-    // A foreign echo (the gateway's own heartbeat) is ignored.
     let foreign = HeartbeatEcho { t1_ns: 7, ..echo };
     let ev = c
         .on_frame(
@@ -321,13 +312,11 @@ fn attached() -> ControlSession {
     let clock = c.clock(T0 + 0.3);
     let offset = get(&clock, "offset_ms").as_f64().unwrap();
     assert!((offset - 2.0).abs() < 1e-3, "offset {offset}");
-    // The next heartbeat carries the completed exchange.
     let next = codec::decode_heartbeat(&c.heartbeat(T0 + 50.0).unwrap()[1..]).unwrap();
     assert_eq!(next.previous.map(|p| p.seq), Some(hb.seq));
     c
 }
 
-/// Grants `path` to `web-1`; the reply's snapshot also shows `held`.
 fn grant(
     c: &mut ControlSession,
     path: &str,
@@ -388,7 +377,6 @@ fn clock_lease_chunks_and_fencing() {
         c.request_lease("arm7/scene/cam", f64::NAN, T0).is_err(),
         "not commandable"
     );
-    // Host expiry 1 s after T0 (session time is local + 2 ms).
     let expires = (T0 as i64) * MS + 1_000 * MS;
     grant(&mut c, "arm7/arm", 10, 42, expires, 2, &[]);
     assert_eq!(c.lease_state("arm7/arm", T0 + 2.0), "held");
@@ -411,10 +399,8 @@ fn clock_lease_chunks_and_fencing() {
         c.command("arm7/arm", &[0.1; 3], 10.0, T0 + 2.0).is_err(),
         "wrong value count"
     );
-    // The deadline is the host expiry less offset and error: before 1 s.
     let remaining = c.lease_remaining_ms("arm7/arm", T0 + 2.0);
     assert!(remaining > 900.0 && remaining < 998.0, "{remaining}");
-    // Past it: refused locally, and a later snapshot does not renew it.
     assert!(
         c.command("arm7/arm", &[0.1; 7], 10.0, T0 + 1_000.0)
             .is_err()
@@ -427,7 +413,6 @@ fn clock_lease_chunks_and_fencing() {
     )
     .unwrap();
     assert_eq!(c.lease_state("arm7/arm", T0 + 1_001.0), "expired");
-    // The debug path crafts a stale-token chunk and reports the fence.
     let out: Array = c
         .command_with_token("arm7/arm", &[0.0; 7], 41.0, T0 + 1_001.0)
         .unwrap();
@@ -436,7 +421,6 @@ fn clock_lease_chunks_and_fencing() {
         verdict.contains("t41") && verdict.contains("fenced"),
         "{verdict}"
     );
-    // Release names the token.
     let release = c.release("arm7/arm").unwrap().unwrap();
     let request = codec::decode_request(&release[5..]).unwrap();
     assert_eq!(
@@ -469,7 +453,6 @@ fn leases_on_two_parts_are_independent_and_preemption_and_forget_end_them() {
     let g = c.command("arm7/gripper", &[0.5], 20.0, T0 + 2.0).unwrap();
     let g = codec::decode_chunk(Bytes::from(g).slice(1..)).unwrap();
     assert_eq!((g.channel, g.lease_token), (ChannelId(20), LeaseToken(8)));
-    // A safety supervisor takes the arm; the gripper stays ours.
     let mut supervisor = lease(10, "supervisor", 9, expires);
     supervisor.priority = PriorityClass::Safety;
     let next = snapshot(4, vec![supervisor, lease(20, "web-1", 8, expires)]);
@@ -505,7 +488,6 @@ fn leases_on_two_parts_are_independent_and_preemption_and_forget_end_them() {
         get(&status, "priority").as_string().as_deref(),
         Some("safety")
     );
-    // A dropped connection: forget, and the token is never used again.
     assert_eq!(c.forget("arm7/gripper"), 8.0);
     assert!(c.command("arm7/gripper", &[0.0], 20.0, T0 + 4.0).is_err());
     assert_eq!(c.lease_state("arm7/gripper", T0 + 4.0), "idle");

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Never enable tracing. Credentials exist only on the ephemeral release runner.
 set -euo pipefail
+# Never enable tracing. Credentials exist only on the ephemeral release runner.
 : "${RUNNER_TEMP:?release runner scratch is required}"
 keychain="$RUNNER_TEMP/rlmesh-signing.keychain-db"
 library="target/macos-universal/librlmesh_capi.dylib"
@@ -53,7 +53,6 @@ PY
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then echo 'notarize=true' >> "$GITHUB_OUTPUT"; fi
 elif [[ "$mode" == notarize ]]; then
   ditto -c -k --keepParent "$library" "$RUNNER_TEMP/rlmesh-notary.zip"
-  # Preserve the response even when notarytool exits nonzero (Invalid/timeout).
   status=0
   xcrun notarytool submit "$RUNNER_TEMP/rlmesh-notary.zip" --wait --timeout 15m \
     --key "$RUNNER_TEMP/rlmesh-notary.p8" --key-id "$APPLE_NOTARY_KEY_ID" \

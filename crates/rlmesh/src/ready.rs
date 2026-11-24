@@ -24,9 +24,6 @@ pub struct Ready {
 }
 
 impl Ready {
-    /// `requested` is the address serving was asked for, `invite` the keyed
-    /// address it serves at: bound to every interface, the invite's
-    /// loopback host becomes this machine's.
     pub(crate) fn new(
         kind: &'static str,
         participant: &str,
@@ -52,8 +49,6 @@ pub struct Announce {
     pub requested: String,
     /// Where to write the ready file.
     pub file: Option<PathBuf>,
-    /// Print the serving line, timed from this start (a native factory
-    /// serve's; a binding prints its own from the hook).
     pub(crate) banner: Option<std::time::Instant>,
 }
 
@@ -67,7 +62,6 @@ impl Announce {
         }
     }
 
-    /// Say that `participant` (an `env` or `model`) answers at `invite`.
     pub(crate) fn ready(self, kind: &'static str, participant: &str, invite: &str) -> Announced {
         let ready = Ready::new(kind, participant, &self.requested, invite);
         if let Some(started) = self.banner {
@@ -95,7 +89,6 @@ pub fn ready_file_from_env() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Removes the ready file when the serve that wrote it stops.
 #[derive(Debug)]
 pub(crate) struct Announced(Option<PathBuf>);
 
@@ -107,7 +100,6 @@ impl Drop for Announced {
     }
 }
 
-/// Say `ready`: the hook, then `file`, written whole or not at all.
 pub(crate) fn announce(ready: &Ready, file: Option<PathBuf>) -> Announced {
     let hook = HOOK.lock().unwrap_or_else(PoisonError::into_inner).clone();
     if let Some(hook) = hook {
@@ -143,7 +135,6 @@ fn write_atomically(path: &Path, ready: &Ready) -> std::io::Result<()> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    // A sibling, so the rename stays on one filesystem.
     let partial = path.with_file_name(format!(".{name}.{}.partial", ready.pid));
     std::fs::write(&partial, body)?;
     std::fs::rename(&partial, path).inspect_err(|_| {
@@ -151,7 +142,6 @@ fn write_atomically(path: &Path, ready: &Ready) -> std::io::Result<()> {
     })
 }
 
-/// The host and port segment of an address (`rlmesh://` and a key aside).
 fn host_port(address: &str) -> &str {
     let address = address.strip_prefix("rlmesh://").unwrap_or(address);
     let first = address.split('/').next().unwrap_or_default();
@@ -173,8 +163,6 @@ fn port_of(address: &str) -> Option<u16> {
     split_host(host_port(address)).1?.parse().ok()
 }
 
-/// `invite` with this machine's host in place of loopback when `requested`
-/// binds every interface: what another machine or container can dial.
 fn dialable(requested: &str, invite: &str) -> String {
     let (host, _) = split_host(host_port(requested));
     if !matches!(host, "0.0.0.0" | "::") {
@@ -195,8 +183,6 @@ fn dialable(requested: &str, invite: &str) -> String {
     invite.replacen(served, &format!("{machine}:{port}"), 1)
 }
 
-/// This machine as a peer reaches it: its hostname's address when that is
-/// not loopback (a container's own address), else the hostname.
 fn machine_host() -> Option<String> {
     use std::net::ToSocketAddrs;
     let name = hostname()?;

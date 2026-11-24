@@ -1,5 +1,5 @@
-//! Deliveries: each member's outbox handed out and acknowledged, the
-//! host's own, e-stop keys and `GetKeys`.
+//! Deliveries: each member's outbox handed out and acknowledged, the host's own, e-stop
+//! keys and `GetKeys`.
 
 use super::{KeyIssuer, Outbox, RETRY_NS};
 use crate::authority::Access;
@@ -28,8 +28,8 @@ impl KeyIssuer {
         self.advance(now_ns);
     }
 
-    /// The host's own receivers' delivery, if anything changed: apply it
-    /// to the host's keyring and [`Self::host_ack`] the result.
+    /// The host's own receivers' delivery, if anything changed: apply it to the host's keyring
+    /// and [`Self::host_ack`] the result.
     pub fn host_delivery(&mut self) -> Option<KeyDelivery> {
         if self.host.is_empty() || self.host.sent_ns.is_some() {
             return None;
@@ -61,9 +61,8 @@ impl KeyIssuer {
         }
     }
 
-    /// The deliveries to send now: each member's outbox with something new,
-    /// or unacknowledged for [`RETRY_NS`]. Also moves rotations whose
-    /// install wait ran out.
+    /// The deliveries to send now: each member's outbox with something new, or unacknowledged
+    /// for [`RETRY_NS`].
     pub fn deliveries(&mut self, now_ns: i64) -> Vec<(ParticipantId, KeyDelivery)> {
         self.advance(now_ns);
         let due: Vec<ParticipantId> = self
@@ -87,8 +86,8 @@ impl KeyIssuer {
             .collect()
     }
 
-    /// Generation `generation` of `participant`'s own `k_estop`, to send
-    /// under: what its `Attach` reply carries.
+    /// Generation `generation` of `participant`'s own `k_estop`, to send under: what its
+    /// `Attach` reply carries.
     pub fn estop_key(&self, participant: &ParticipantId, generation: u32) -> Option<IssuedKey> {
         let member = self
             .members
@@ -100,9 +99,8 @@ impl KeyIssuer {
         })
     }
 
-    /// Every key issued to generation `generation` of `participant` (with
-    /// `send` where it is the sender), for its `GetKeys`: stream keys only
-    /// where its device may read.
+    /// Every key issued to generation `generation` of `participant` (with `send` where it is
+    /// the sender), for its `GetKeys`: stream keys only where its device may read.
     pub fn get_keys(
         &self,
         participant: &ParticipantId,

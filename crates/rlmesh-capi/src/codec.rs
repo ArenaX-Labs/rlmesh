@@ -1,7 +1,4 @@
-//! `RLMeshBytes` — an owned byte buffer handed across the ABI (JSON payloads
-//! from the adapter path). The observation/action wire codec never crosses the
-//! ABI: the model path hands C decoded values and takes typed values back.
-#![allow(unsafe_code)] // FFI: owned-buffer transfer.
+#![allow(unsafe_code)]
 
 /// An owned byte buffer produced by the capi. Free with `rlmesh_bytes_free`.
 #[repr(C)]
@@ -32,8 +29,6 @@ impl RLMeshBytes {
         std::mem::forget(bytes);
         out
     }
-    /// # Safety
-    /// `self` must originate from `from_vec` and not have been freed.
     pub(crate) unsafe fn into_vec(self) -> Vec<u8> {
         // A capi buffer always satisfies cap >= len > 0; a foreign or corrupted
         // buffer (cap < len, or empty) would make Vec::from_raw_parts UB, so it is

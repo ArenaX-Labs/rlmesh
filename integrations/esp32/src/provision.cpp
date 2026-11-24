@@ -1,6 +1,3 @@
-// rlmesh::Provisioning: the device key and the provisioning record in NVS
-// (Preferences), and the USB provisioning responder on a serial port.
-
 #include <Preferences.h>
 #include <string.h>
 
@@ -15,9 +12,9 @@ const char kKey[] = "key";
 const char kRecord[] = "record";
 
 #if defined(CONFIG_IDF_TARGET_ESP32) || defined(CONFIG_IDF_TARGET_ESP32S3)
-const uint8_t kArch = 4;  // Xtensa
+const uint8_t kArch = 4;
 #else
-const uint8_t kArch = 3;  // RISC-V
+const uint8_t kArch = 3;
 #endif
 
 }  // namespace
@@ -34,8 +31,6 @@ bool Provisioning::begin() {
   if (!nvs.begin(kNamespace, false)) return false;
   if (nvs.getBytesLength(kKey) != sizeof key_ ||
       nvs.getBytes(kKey, key_, sizeof key_) != sizeof key_) {
-    // First boot: a new device. Each put is one NVS commit, which keeps the
-    // old value if power fails mid-write.
     esp32::fillRandom(key_, sizeof key_);
     if (nvs.putBytes(kKey, key_, sizeof key_) != sizeof key_) {
       nvs.end();

@@ -1,6 +1,6 @@
-//! The lobby and scenes: a waiting participant's
-//! assignment, the orders a home daemon sends satellites, a run's state, and
-//! the places and scene a session's authority state carries.
+//! The lobby and scenes: a waiting participant's assignment, the orders a home
+//! daemon sends satellites, a run's state, and the places and scene a session's
+//! authority state carries.
 
 #[allow(unused_imports)]
 use crate::prelude::*;

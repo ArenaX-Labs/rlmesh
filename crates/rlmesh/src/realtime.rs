@@ -1,35 +1,27 @@
 //! A real-time policy on either clock (Experimental).
 //!
-//! A policy is written once, as a [`Predictor`] against its named inputs
-//! and actions, and the robot it binds to decides the clock, by what it
-//! declared when it attached (`rlmesh_session::wire::RobotClock`). The
-//! policy, its options and the predictor are `rlmesh_session`'s, as for a
-//! [`Controller`]:
+//! A policy is written once, as a [`Predictor`] against its named inputs and
+//! actions, and the robot it binds to decides the clock by what it declared
+//! when it attached:
 //!
 //! - **Wall**: the robot keeps its own time and the policy keeps up. [`bind`]
 //!   returns [`BoundPolicy::Wall`], the session's [`Controller`]: starts on
 //!   the replan grid, timed chunks, leases and the edge.
 //! - **Lockstep**: the robot advances one step per action and waits for the
-//!   policy. [`bind`] returns [`BoundPolicy::Lockstep`], a
-//!   [`LockstepPolicy`]: one `predict` per chunk, a chunk of H actions is H
-//!   steps with their rewards summed, and the binder's conversions and
-//!   history windows run as on the wall clock. The policy's action rate sets
-//!   the session time each step stands for, so input ages and windows keep
-//!   their meaning; nothing waits on real time. No input is ever stale or
-//!   missing: each start sees what the robot published, its age in session
-//!   time. Arming and the lease are taken care of.
+//!   policy. [`bind`] returns [`BoundPolicy::Lockstep`], a [`LockstepPolicy`]:
+//!   one `predict` per chunk, a chunk of H actions is H steps with their
+//!   rewards summed. The action rate sets the session time each step stands
+//!   for, so input ages and windows keep their meaning; no input is ever
+//!   stale or missing. Arming and the lease are taken care of.
 //!
-//! [`BoundPolicy::run`] runs either; [`RunSettings`] says how, and refuses
-//! at once a setting the robot's clock gives no meaning to: `duration`,
+//! [`BoundPolicy::run`] runs either; [`RunSettings`] says how, and refuses at
+//! once a setting the robot's clock gives no meaning to: `duration`,
 //! `mode: Shadow` and `resume` are the wall clock's, `episodes` and `seed`
 //! lockstep's. A lockstep run resets the robot at the start of each episode,
-//! each episode's seed derived from `seed` as [`crate::Model::run`] derives
-//! it, so one seed draws the same episodes through either. A Gym env that
-//! declared the `trial_index` reset option gets each episode's 0-based
-//! ordinal in it, as a run of the env sends it.
-//!
-//! One lockstep robot per run: a policy that binds several robots, any of
-//! them in lockstep, is refused.
+//! seeded from `seed` as [`crate::Model::run`] seeds it, so one seed draws the
+//! same episodes through either; a Gym env that declared the `trial_index`
+//! reset option gets each episode's 0-based ordinal. A policy that binds
+//! several robots, any of them in lockstep, is refused.
 //!
 //! ```no_run
 //! use std::time::Duration;
@@ -82,12 +74,10 @@ pub enum BoundPolicy {
     Lockstep(LockstepPolicy),
 }
 
-/// Attaches as policy `name` in the session at `session`, waits for the
-/// robots `options` names, binds `policy` and follows the robot's clock: a
-/// wall-clock robot is driven by a [`Controller`], a lockstep robot through
-/// its lockstep exchange (the policy then attaches again, as its driver).
-/// Refuses what the binder refuses, and a policy binding several robots
-/// where any runs in lockstep.
+/// Attaches as policy `name` in the session at `session`, waits for the robots
+/// `options` names, binds `policy` and follows the robot's clock: a wall-clock robot is
+/// driven by a [`Controller`], a lockstep robot through its lockstep exchange (the
+/// policy then attaches again, as its driver).
 pub async fn bind(
     session: &SessionAddress,
     name: &str,
@@ -316,7 +306,6 @@ pub struct LockstepStats {
 
 /// A policy bound to one lockstep robot (see the module docs).
 pub struct LockstepPolicy {
-    /// Boxed, so [`BoundPolicy`]'s variants stay close in size.
     view: Box<GymView>,
     robot: ParticipantId,
     binding: Arc<Binding>,
@@ -406,9 +395,8 @@ impl LockstepPolicy {
             .clone()
     }
 
-    /// Runs `settings.episodes` episodes (one by default), each from a
-    /// reset, until each ends or [`Self::stop`]. Blocks: call it from a
-    /// plain thread, not from inside the async runtime.
+    /// Runs `settings.episodes` episodes (one by default), each from a reset, until each
+    /// ends or [`Self::stop`].
     pub fn run<P: Predictor>(
         &self,
         predictor: &mut P,
@@ -470,9 +458,6 @@ impl LockstepPolicy {
         Ok(self.stats())
     }
 
-    /// The options the reset starting episode `episode` (0-based) carries:
-    /// its ordinal as `trial_index` to a Gym env that declared it, as
-    /// [`crate::Model::run`] numbers it; none otherwise.
     fn reset_options(&self, episode: u64) -> String {
         let Some(key) = &self.trial_option else {
             return String::new();
@@ -491,8 +476,6 @@ impl LockstepPolicy {
     }
 }
 
-/// A view step as a policy start sees it: every input as the robot last
-/// published it, its age in session time, never stale.
 fn observation(step: ViewStep) -> Observation {
     let ages: Vec<i64> = step
         .ages_ns

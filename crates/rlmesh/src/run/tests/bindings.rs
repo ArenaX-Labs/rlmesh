@@ -1,6 +1,3 @@
-//! Bindings: stepping a local env with the model or a given action, reset
-//! options, hooks, and which envs a binding closes or refuses.
-
 use super::*;
 
 #[test]
@@ -41,7 +38,6 @@ fn a_binding_steps_a_local_env_on_this_thread_with_the_model_or_a_given_action()
     let (observation, _) = binding.reset(Some(4), Some(&options)).unwrap();
     assert_eq!(observation, Value::Int(0));
     assert!(!binding.done());
-    // The model's action (1), then a given one (0).
     assert_eq!(binding.step(None).unwrap().1, 1.0);
     assert_eq!(binding.step(Some(Value::Int(0))).unwrap().1, 0.0);
     let (observation, _, terminated, _, info) = binding.step(None).unwrap();
@@ -58,7 +54,6 @@ fn a_binding_steps_a_local_env_on_this_thread_with_the_model_or_a_given_action()
     );
     drop(binding);
     assert_eq!(*resets.lock().unwrap(), vec![(Some(4), Some(options))]);
-    // Closing the binding closes neither the borrowed env nor the model.
     assert_eq!(closes.load(Ordering::SeqCst), 0);
     model.run(&mut env, RunOptions::default()).unwrap();
 }
@@ -118,7 +113,6 @@ fn a_bindings_hooks_see_its_episodes_a_reset_over_one_as_truncated_and_the_run_e
         for _ in 0..3 {
             binding.step(None).unwrap();
         }
-        // Reset over the second episode after one step: it ends truncated.
         binding.reset(Some(11), None).unwrap();
         binding.step(Some(Value::Int(0))).unwrap();
         binding.reset(None, None).unwrap();
@@ -181,8 +175,6 @@ fn a_binding_reaches_a_served_env_and_refuses_what_it_cannot_drive() {
     binding.reset(Some(1), None).unwrap();
     assert_eq!(binding.step(None).unwrap().0, Value::Int(1));
     binding.close().unwrap();
-    // A v1 endpoint, and a served model at a bare host:port (a model has no
-    // default name).
     let error = model
         .bind("tcp://127.0.0.1:1", BindOptions::default())
         .unwrap_err();

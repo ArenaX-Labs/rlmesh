@@ -1,11 +1,9 @@
 //! [`LaneEnv`]: N independent scalar [`Env`]s, one actor thread each.
 //!
-//! The server calls the author's `make()` N times and hosts the instances as
-//! the lanes of one `num_envs = N` endpoint. Each lane is an actor: a thread
-//! that owns its env and runs its jobs in order, so a lane's reset and step
-//! always execute on the same OS thread (what OSMesa and Vulkan contexts
-//! expect) and the lanes run concurrently with no shared lock. `N = 1` is
-//! the ordinary scalar server: same wire, same code path.
+//! The instances are the lanes of one `num_envs = N` endpoint. Each lane's thread owns its env
+//! and runs its jobs in order, so a lane's reset and step always run on the same OS thread
+//! (as OSMesa and Vulkan contexts expect), and lanes run concurrently with no shared lock.
+//! `N = 1` is the ordinary scalar server.
 
 use std::collections::BTreeMap;
 use std::sync::mpsc;
@@ -17,7 +15,6 @@ use super::legacy::Env;
 use crate::binding::spaces::{self, CloseRequest, MetaMap, MetaValue, RenderRequest, RenderResult};
 use rlmesh_proto::{EndpointPhases, elapsed_ns};
 
-/// The op result plus the lane's phase split for it (queue wait included).
 pub(super) type LaneReply<T> = Result<(T, EndpointPhases), spaces::EnvRuntimeError>;
 
 enum Job {
@@ -41,19 +38,12 @@ struct Envelope {
     enqueued: Instant,
 }
 
-/// How long [`LaneEnv::drop`] waits, across all lanes, for the lane threads to
-/// finish dropping their envs. Matches the server's teardown grace: a lane that
-/// outlasts it is detached so Rust shutdown and Drop stay bounded. C free
-/// joins the retained handles through the binding-only hook after finish().
 const LANE_JOIN_GRACE: Duration = Duration::from_secs(5);
 
-/// How often that wait re-checks a lane thread.
 const LANE_JOIN_POLL: Duration = Duration::from_millis(1);
 
-/// Threads retained by a v2 server for its final native join point.
 pub(super) type JoinThreads = std::sync::Arc<std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>>;
 
-/// One lane: its actor thread's mailbox and the thread itself.
 struct LaneActor {
     tx: mpsc::Sender<Envelope>,
     thread: std::thread::JoinHandle<()>,
@@ -71,8 +61,11 @@ pub struct LaneEnv {
 impl LaneEnv {
     /// Host `envs` as lanes `0..envs.len()`, each on its own thread. Spaces
     /// and the contract are served from lane 0, so every lane must carry the
-    /// same contract (spaces, metadata, tags): a lane that disagrees is an
-    /// error, since the model resolves its adapter against lane 0 alone.
+    /// same contract (spaces, metadata, tags).
+    ///
+    /// # Errors
+    /// [`EnvRuntimeError::Runtime`](spaces::EnvRuntimeError::Runtime) when a lane's
+    /// contract differs from lane 0's.
     ///
     /// # Panics
     /// Panics on an empty `envs`.
@@ -89,9 +82,6 @@ impl LaneEnv {
                 )));
             }
         }
-        // Lane resets are driver-owned by construction; a scalar env's metadata
-        // may still carry a vector autoreset mode (gymnasium's SyncVectorEnv
-        // writes one into the shared class-level `gym.Env.metadata`).
         env_contract.autoreset_mode = spaces::types::AutoresetMode::Disabled;
         let lanes = envs
             .into_iter()
@@ -182,22 +172,13 @@ impl LaneEnv {
 
 impl Drop for LaneEnv {
     fn drop(&mut self) {
-        // A lane thread owns its env, so the endpoint should not outlive its
-        // threads: dropping the mailbox ends the actor loop, and the join is
-        // what guarantees the env is fully dropped before this returns. For an
-        // env whose drop runs foreign code (a Python env dropped after the
-        // interpreter has finalized) an unjoined lane thread is a crash.
-        //
-        // Every mailbox closes first, so the lanes wind down concurrently and
-        // share one deadline. The wait is bounded because teardown is bounded:
-        // a lane still inside a wedged user `close()` is left to the OS rather
-        // than hanging Rust shutdown/Drop on it forever. A C binding retains
-        // that handle for its separate, unbounded free join point.
         let (senders, threads): (Vec<_>, Vec<_>) = self
             .lanes
             .drain(..)
             .map(|LaneActor { tx, thread }| (tx, thread))
             .unzip();
+        // Close every mailbox first so lanes wind down concurrently; the bounded join ensures each env is dropped
+        // before this returns (an unjoined lane dropping a Python env after interpreter finalization is a crash).
         drop(senders);
         let deadline = Instant::now() + LANE_JOIN_GRACE;
         for thread in threads {
@@ -225,19 +206,15 @@ impl LaneActor {
         let thread = std::thread::Builder::new()
             .name(format!("rlmesh-lane-{index}"))
             .spawn(move || {
-                // The env's calls run on this thread with the lane runtime's
-                // handle current (its one worker drives timers and I/O) but
-                // outside any `block_on`: a callback may block, start another
-                // runtime (a sync rlmesh client) or block in place (Zenoh,
-                // dropping a session), none of which a runtime context allows.
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(1)
                     .enable_all()
                     .build()
                     .expect("lane runtime");
+                // The env's calls run outside any `block_on`: a callback may block, start another runtime or
+                // block in place (Zenoh dropping a session), none of which a runtime context allows.
                 let _handle = runtime.enter();
                 for Envelope { job, enqueued } in rx {
-                    // The wait in the mailbox is this op's queue time.
                     let queue_ns = elapsed_ns(enqueued);
                     let stamp = |env: &mut E| {
                         let mut phases = env.take_last_phases();
@@ -267,7 +244,6 @@ impl LaneActor {
                         }
                     }
                 }
-                // Mailbox closed: the LaneEnv is gone, drop the env with the thread.
             })
             .expect("spawn lane thread");
         Self { tx, thread }
@@ -293,10 +269,6 @@ async fn await_reply<T>(rx: oneshot::Receiver<LaneReply<T>>, lane: usize) -> Lan
     })
 }
 
-/// Batch per-lane info maps. One lane passes its info through unchanged (the
-/// scalar shape every consumer already reads). Several lanes use the gym vector
-/// convention the wire layer decodes per lane: `final_info` is a list with one
-/// map per lane and `_final_info` masks the lanes that completed this step.
 pub(super) fn batch_infos(infos: Vec<Option<MetaMap>>, done: Option<&[bool]>) -> Option<MetaMap> {
     if infos.len() == 1 {
         return infos.into_iter().next().flatten();
@@ -322,10 +294,6 @@ pub(super) fn batch_infos(infos: Vec<Option<MetaMap>>, done: Option<&[bool]>) ->
     Some(batched)
 }
 
-/// The phase split of a concurrent lane batch: the lanes' own splits summed
-/// (their work overlapped, so this is CPU, not wall), the longest queue wait,
-/// and `lane_skew_ns` as the spread between the fastest and slowest lane's
-/// work. A lone lane's split passes through as is.
 pub(super) fn fold_phases(lane_phases: Vec<EndpointPhases>) -> EndpointPhases {
     if lane_phases.len() == 1 {
         return lane_phases.into_iter().next().unwrap_or_default();
@@ -353,18 +321,14 @@ mod tests {
     use async_trait::async_trait;
     use std::time::Duration;
 
-    /// A scalar env whose step takes `delay` and records the thread it ran on.
     struct SleepyEnv {
         obs_space: spaces::SpaceSpec,
         action_space: spaces::SpaceSpec,
         env_contract: spaces::EnvContract,
         delay: Duration,
         threads: std::sync::Arc<std::sync::Mutex<Vec<std::thread::ThreadId>>>,
-        /// How long this env's drop blocks: a stand-in for a wedged `close()`.
         drop_block: Duration,
-        /// Step blocks in place, as Zenoh does when a session drops there.
         blocks_in_place: bool,
-        /// Step blocks on a runtime of its own, as a sync client does.
         blocks_on_a_runtime: bool,
     }
 
@@ -489,9 +453,6 @@ mod tests {
 
     #[test]
     fn lanes_must_agree_with_lane_0_on_the_env_contract() {
-        // The endpoint serves lane 0's contract and the model resolves its
-        // adapter against it, so a lane whose contract differs (here: tags in
-        // metadata) is a startup error, not a silent adoption of lane 0's.
         let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut odd = SleepyEnv::new(Duration::ZERO, std::sync::Arc::clone(&threads));
         odd.env_contract.metadata = Some(MetaMap::from([(
@@ -513,11 +474,6 @@ mod tests {
 
     #[test]
     fn dropping_the_endpoint_joins_the_lane_threads_that_own_the_envs() {
-        // Each env lives on its lane thread, so the endpoint's drop has to wait
-        // for those threads: a lane still dropping its env after the endpoint
-        // is gone is what aborts the interpreter when the env is a Python one.
-        // The env holds `threads`, so a strong count back down to 1 proves the
-        // lane thread finished dropping it before drop() returned.
         let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let envs = (0..2)
             .map(|_| SleepyEnv::new(Duration::ZERO, std::sync::Arc::clone(&threads)))
@@ -535,9 +491,6 @@ mod tests {
 
     #[test]
     fn dropping_the_endpoint_gives_up_on_a_wedged_lane_instead_of_hanging() {
-        // The join above is bounded: a lane stuck in a user `close()` that never
-        // returns must not hold the endpoint's drop -- and with it the server's
-        // shutdown and process exit -- open forever. Give up on it instead.
         let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut wedged = SleepyEnv::new(Duration::ZERO, std::sync::Arc::clone(&threads));
         wedged.drop_block = Duration::from_secs(600);
@@ -555,8 +508,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_lane_call_may_block_in_place() {
-        // A Python env's callback can drop a Zenoh session (a garbage-collected
-        // client), which blocks in place; that must not panic the lane.
+        // A Python env callback can drop a Zenoh session, which blocks in place; that must not panic the lane.
         let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut env = SleepyEnv::new(Duration::ZERO, threads);
         env.blocks_in_place = true;
@@ -570,8 +522,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_lane_call_may_run_a_runtime_of_its_own() {
-        // A Python env relaying to a sync client (a RemoteEnv) blocks on the
-        // client's runtime inside its callback.
         let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut env = SleepyEnv::new(Duration::ZERO, threads);
         env.blocks_on_a_runtime = true;

@@ -1,34 +1,24 @@
 //! A participant: presence, heartbeats, the authority view and `ctl` verbs.
 //!
-//! [`Participant::attach`] announces presence (a liveliness token), waits
-//! for the host, subscribes to authority updates, runs the handshake with
-//! its [`Credential`], attaches through `ctl` and starts
-//! heartbeating on the control class. Every verb and heartbeat it sends is
-//! sealed under its `k_up`, every reply and echo it takes is opened under
-//! its `k_down`, and every `host/state` and `host/tick` it takes is
-//! verified against the host's signing key: anything else is dropped.
-//! Verbs carry rising request ids, so a retry is answered once.
+//! [`Participant::attach`] announces presence, waits for the host, subscribes to authority
+//! updates, runs the handshake with its [`Credential`], attaches through `ctl` and starts
+//! heartbeating. Every verb and heartbeat it sends is sealed under its `k_up`, every reply and
+//! echo it takes is opened under its `k_down`, and every `host/state` and `host/tick` is verified
+//! against the host's signing key: anything else is dropped. Verbs carry rising request ids, so
+//! a retry is answered once.
 //!
-//! **Keys**: the host delivers the participant's other
-//! keys on `p/{id}/keys` (subscribed before the handshake), and a grant's
-//! reply carries the holder's. The participant installs them in its link
-//! and acknowledges each delivery (`KeysAck`); a message under a key it
-//! doesn't hold makes it ask for every key of its generation (`GetKeys`).
-//! Its chunk publishers seal under the lease's `k_cmd`, its sample
-//! publishers under the stream's `k_stream`, and its subscribers, edges and
-//! history queries open under them ([`Sealer`]).
+//! **Keys.** The host delivers the participant's other keys on `p/{id}/keys`, and a grant's reply
+//! carries the holder's; the participant installs and acknowledges each delivery, and a message
+//! under a key it doesn't hold makes it ask for every key of its generation. Chunk publishers
+//! seal under the lease's `k_cmd`, sample publishers under the stream's `k_stream`, and
+//! subscribers, edges and history queries open under them ([`Sealer`]).
 //!
-//! From then on it keeps the newest authority snapshot (from updates and
-//! from every `ctl` reply) and hands out endpoints addressed by robot and
-//! path: sample publishers and subscribers, chunk publishers, history
-//! queries, the virtual-mode tick stream, and the hooks an edge runtime
-//! needs ([`AuthorityView`], [`EdgeReport`], [`Participant::report_safe`],
-//! the local e-stop latch).
-//!
-//! An embodiment's publishers follow their streams' publication plans: a background
-//! task installs each `Demand` the host publishes on
-//! the stream's publishers and acknowledges its revision (`DemandAck`), so
-//! controllers bound to the stream can be granted leases.
+//! From then on it keeps the newest authority snapshot and hands out endpoints addressed by robot
+//! and path: sample publishers and subscribers, chunk publishers, history queries, the
+//! virtual-mode tick stream, and the hooks an edge runtime needs ([`AuthorityView`],
+//! [`EdgeReport`], [`Participant::report_safe`], the local e-stop latch). An embodiment's
+//! publishers follow the publication plans (`Demand`) the host publishes for their streams, so
+//! controllers bound to a stream can be granted leases.
 
 mod attach;
 mod config;
@@ -76,7 +66,6 @@ use crate::transport::Transport;
 #[cfg(doc)]
 use rlmesh_session_core::auth::Credential;
 
-/// A lock that a panicked holder left behind is still the state to use.
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()

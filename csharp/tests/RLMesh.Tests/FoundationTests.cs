@@ -59,7 +59,6 @@ public sealed unsafe class FoundationTests
     [Fact]
     public void ABareHostAndPortIsTheEnvThere()
     {
-        // ":0" is short for ":0/env", and the served host:port#key for its env.
         using var server = new EnvServer(new Counter(), new() { Address = ":0" });
         server.Start();
         string address = server.Address;
@@ -196,7 +195,6 @@ public sealed unsafe class FoundationTests
         Assert.Equal(2, o.AsInt()); Assert.Equal(3, r); Assert.True(term); Assert.False(trunc); Assert.Empty(inf);
         using var env = Env.For(new DefaultResultEnv());
         using var binding = new LocalBinding(env);
-        // The env runs behind the binding's session: its refusal arrives as an env failure.
         var refused = Assert.ThrowsAny<EnvironmentException>(() => binding.Reset());
         Assert.Contains("default result", refused.Message);
     }
@@ -369,8 +367,6 @@ public sealed unsafe class FoundationTests
         {
             CleanupWorkers.WaitForWork = null;
             waitingThread = System.Environment.CurrentManagedThreadId;
-            // Model an enqueuer winning Sync after timeout but before the
-            // worker reacquires it: idle still includes the retiring worker.
             CleanupWorkers.Enqueue(new CleanupRecord(() =>
             {
                 runningThread = System.Environment.CurrentManagedThreadId;
@@ -444,8 +440,6 @@ public sealed unsafe class FoundationTests
     [Fact]
     public void LocalBindingReportsEveryEnvExceptionAsAnEnvFailure()
     {
-        // A bound local env runs behind the binding's session, as Python's does:
-        // what it throws arrives as the session reports an env failure.
         Exception[] errors = {
             new RLMeshException("library"), new ProtocolException("protocol"), new EnvironmentException("env"),
             new RecoverableEnvironmentException("again"), new ValueError("value"), new TypeError("type"),
@@ -479,7 +473,6 @@ public sealed unsafe class FoundationTests
         }
         finally { stop.Cancel(); Assert.True(collector.Join(Deadline)); }
         server.Shutdown(); Assert.True(server.Wait(TimeSpan.Zero));
-        // A builtin class names the scenario: Python raises it too.
         (Exception error, string text, string scenario)[] failures = {
             (new RLMeshException("library"), "library", "plain"),
             (new ProtocolException("protocol"), "protocol", "plain"),
@@ -545,7 +538,6 @@ public sealed unsafe class FoundationTests
     [Fact]
     public void BindFailuresReleaseLibraryOwnerAndOptionsAreValidated()
     {
-        // A name another live env holds in the session fails the bind at construction.
         using var live = new EnvServer(new Counter());
         var authored = new Counter();
         Assert.Throws<ConnectionError>(() => new EnvServer(authored, new() { Address = live.Address }));
@@ -635,7 +627,6 @@ public sealed unsafe class FoundationTests
     [Fact]
     public void CleanupFailuresAreContainedAndPreserveTheLastError()
     {
-        // Create a real last-error slot before entering a void cleanup callback.
         Value scalar = 1; using var call = scalar.Handle.Acquire(scalar);
         double output = 0;
         Assert.NotEqual(RLMeshStatus.RLMESH_OK, Native.rlmesh_value_as_float(call.Value, &output));
@@ -708,7 +699,6 @@ public sealed unsafe class FoundationTests
         Assert.Equal(12, Enum.GetValues<DType>().Length); Assert.Equal(10, Enum.GetValues<ValueKind>().Length);
     }
 
-    // A RANDOM_SAMPLE binding: the env's callbacks run on the calling thread.
     private sealed class LocalBinding : IDisposable
     {
         private readonly HandleLease borrow;

@@ -58,7 +58,6 @@ def fixture():
             "ext::CancelledError" if name == "KeyboardInterrupt" else name
         )
         surfaces["cpp"][cpp] = Item("class", base=base)
-    # All synthetic support items are explicitly inventoried on the mapping.
     for lang, items in surfaces.items():
         manifest["rlmesh:run"][lang]["also"] = list(
             items.keys() - {manifest["rlmesh:run"][lang]["path"]}

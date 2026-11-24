@@ -1,10 +1,9 @@
 """The ``tag`` verb: attach env tags to an environment.
 
-Tagging an environment publishes its :class:`EnvTags` in the
-env's ``metadata`` mapping (under :data:`ENV_METADATA_KEY`). A server built
-on that env then carries the tags in its contract, so a model client
-can resolve an adapter from the handshake alone
-(:func:`rlmesh.adapters.resolve_from_contract`) without a local copy.
+Tagging an environment publishes its :class:`EnvTags` in the env's ``metadata``
+mapping (under :data:`ENV_METADATA_KEY`), so a model client can resolve an
+adapter from the handshake alone
+(:func:`rlmesh.adapters.resolve_from_contract`).
 """
 
 from __future__ import annotations
@@ -41,8 +40,7 @@ def tag(env: EnvT, tags: EnvTags, *, validate: bool = True) -> EnvT:
         else {}
     )
     merged.update(fragment)
-    # ``metadata`` is typically a class attribute on gymnasium envs; assigning
-    # here shadows it with an instance attribute, the standard override path.
+    # Assigning shadows the class-level ``metadata`` with an instance attribute.
     env.metadata = merged  # type: ignore[attr-defined]
     return env
 
@@ -66,8 +64,6 @@ def _validate(env: object, tags: EnvTags) -> None:
         )
     except ValueError as exc:
         raise AdapterResolutionError(str(exc)) from None
-    # Non-fatal hints (e.g. a layout that looks mis-declared): surface at tag time
-    # so the author sees their own mistake now, not via a peer's serve logs.
     for note in advisories:
         warnings.warn(str(note), stacklevel=3)
 

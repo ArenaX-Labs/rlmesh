@@ -63,7 +63,6 @@ def test_view_validates_backend_and_port() -> None:
 
 
 def test_view_validates_fps_format_and_quality() -> None:
-    # Every documented field range is enforced, not just backend/port.
     with pytest.raises(ValueError, match="fps"):
         View(fps=0)
     with pytest.raises(ValueError, match="format"):
@@ -72,12 +71,10 @@ def test_view_validates_fps_format_and_quality() -> None:
         View(quality=0)
     with pytest.raises(ValueError, match="quality"):
         View(quality=101)
-    View(fps=1, format="png", quality=100)  # bounds are inclusive
+    View(fps=1, format="png", quality=100)
 
 
 def test_viewer_driver_feed_failure_warns_once_and_disables() -> None:
-    # A per-step feed failure must not be swallowed silently forever: the first
-    # failure warns and disables the viewer; later feeds are quiet no-ops.
     from rlmesh._models._view import ViewerDriver
 
     class _BoomPV:
@@ -100,7 +97,7 @@ def test_viewer_driver_feed_failure_warns_once_and_disables() -> None:
             outcome="",
         )
     assert driver._pv is None
-    driver.feed(  # disabled: no second warning, no crash
+    driver.feed(
         contract=None,
         client=None,
         obs=None,
@@ -173,7 +170,7 @@ def test_view_outcome_prefers_info_over_terminated() -> None:
     assert episode_outcome(False, False, {}) == ""
     assert episode_outcome(True, False, {"is_success": False}) == "failure"
     assert episode_outcome(True, False, {"is_success": True}) == "success"
-    assert episode_outcome(True, False, {}) == "done"  # outcome unknown: not success
+    assert episode_outcome(True, False, {}) == "done"
     assert episode_outcome(False, True, {}) == "timeout"
 
 
@@ -212,15 +209,13 @@ def test_frame_sources_default_to_the_first_image_role() -> None:
         roles=("wrist", "agentview"), render_label="render", render=render
     )
     assert both.labels == ("render", "wrist", "agentview")
-    assert both.default_label == "wrist"  # read off the obs: no render() RPC
+    assert both.default_label == "wrist"
     only_render = FrameSources(roles=(), render_label="render", render=render)
     assert only_render.default_label == "render"
     assert FrameSources(roles=(), render_label=None, render=None).default_label is None
 
 
 class _FakePV:
-    """A PyViewer double: records draws and HUD outcomes, quits on request."""
-
     def __init__(self) -> None:
         self.sources: list[str] = []
         self.selected = 0
@@ -260,7 +255,6 @@ class _FakePV:
 def _driver(
     monkeypatch: pytest.MonkeyPatch, view: View
 ) -> tuple[ViewerDriver, _FakePV]:
-    """A driver over a fake viewer and one ``wrist`` role, fed one final step."""
     pv = _FakePV()
     monkeypatch.setattr(native, "PyViewer", lambda *a, **k: pv)
     monkeypatch.setattr(
@@ -291,7 +285,7 @@ def test_viewer_selects_the_image_role_not_render_by_default(
     _, pv = _driver(monkeypatch, View())
     assert pv.sources == ["render", "wrist"]
     assert pv.selected_source() == "wrist"
-    assert pv.frames == [(3, 2)]  # the role's frame, not the render() one
+    assert pv.frames == [(3, 2)]
     _, pv = _driver(monkeypatch, View(source="render"))
     assert pv.selected_source() == "render"
 
@@ -315,7 +309,7 @@ def test_viewer_hold_serves_the_final_frame_until_it_elapses(
     assert time.monotonic() - start >= 0.2
     assert pv.closed
     assert pv.outcomes[-1] == "success [held]"
-    assert len(pv.frames) == 2  # the final frame is redrawn for the hold
+    assert len(pv.frames) == 2
 
 
 def test_viewer_hold_redraws_on_source_switch_and_ends_on_quit(
@@ -326,7 +320,7 @@ def test_viewer_hold_redraws_on_source_switch_and_ends_on_quit(
 
     def user() -> None:
         time.sleep(0.15)
-        pv.selected = 0  # switch to render() while held
+        pv.selected = 0
         time.sleep(0.15)
         pv.quit = True
 
@@ -335,7 +329,7 @@ def test_viewer_hold_redraws_on_source_switch_and_ends_on_quit(
     driver.close()
     thread.join()
     assert pv.closed
-    assert (6, 4) in pv.frames  # the render() frame, drawn after the switch
+    assert (6, 4) in pv.frames
 
 
 def test_unbounded_hold_without_a_way_to_quit_does_not_block(
@@ -351,8 +345,6 @@ def test_unbounded_hold_without_a_way_to_quit_does_not_block(
 def test_unbounded_http_hold_without_a_tty_does_not_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The http page has a quit button, but with no interactive stdin (CI, a
-    # detached job) nobody is watching it: hold=True must not hang the process.
     driver, pv = _driver(monkeypatch, View(backend="http", hold=True))
     monkeypatch.setattr("sys.stdin", io.StringIO())
     _hold_quits_on_first_wait(monkeypatch, pv)
@@ -377,15 +369,11 @@ def _held(pv: _FakePV) -> bool:
 
 
 class _Tty(io.StringIO):
-    """A stdin that reports an interactive terminal."""
-
     def isatty(self) -> bool:
         return True
 
 
 def _hold_quits_on_first_wait(monkeypatch: pytest.MonkeyPatch, pv: _FakePV) -> None:
-    """Make the hold loop's first wait press quit instead of sleeping."""
-
     def sleep(_: float) -> None:
         pv.quit = True
 
@@ -393,8 +381,6 @@ def _hold_quits_on_first_wait(monkeypatch: pytest.MonkeyPatch, pv: _FakePV) -> N
 
 
 class _CrashEnv:
-    """A local env whose step raises, like an env process crashing mid-run."""
-
     def __init__(self) -> None:
         from rlmesh import spaces
 
@@ -414,8 +400,6 @@ class _CrashEnv:
 
 
 class _DoneEnv(_CrashEnv):
-    """A local env that terminates after one step."""
-
     def step(self, action: object) -> tuple[int, float, bool, bool, dict[str, object]]:
         return 0, 1.0, True, False, {}
 
@@ -423,16 +407,9 @@ class _DoneEnv(_CrashEnv):
 def _held_binding(
     monkeypatch: pytest.MonkeyPatch, env: _CrashEnv | None = None
 ) -> tuple[Binding[Any, Any], _FakePV]:
-    """A binding whose viewer would hold (http, hold=True, an interactive stdin).
-
-    The hold never really waits: its first wait presses quit, so a test that
-    wrongly holds still finishes, and ``[held]`` on the HUD shows it held.
-    """
     import rlmesh
 
     driver, pv = _driver(monkeypatch, View(backend="http", hold=True))
-    # Show only render(), so the binding's own feeds draw without adapter tags
-    # (a feed error would disable the viewer and make every hold vacuous).
     pv.sources, pv.selected = ["render"], 0
     monkeypatch.setattr("sys.stdin", _Tty())
     _hold_quits_on_first_wait(monkeypatch, pv)
@@ -467,7 +444,6 @@ def test_a_binding_exiting_on_a_crashed_step_skips_the_hold(
 def test_close_after_a_failed_step_skips_the_hold(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The try/finally shape: close() itself sees no exception, but the step raised.
     binding, pv = _held_binding(monkeypatch)
     with pytest.raises(Exception, match="env crashed"):
         try:
@@ -511,9 +487,9 @@ def test_step_hz_paces_steps_without_bursting() -> None:
     start = time.perf_counter()
     slept = [driver.pace() for _ in range(6)]
     elapsed = time.perf_counter() - start
-    assert slept[0] == 0.0  # the first step only starts the schedule
+    assert slept[0] == 0.0
     assert elapsed >= 5 * 0.02 * 0.9
-    time.sleep(0.1)  # a slow step: the schedule restarts instead of bursting
+    time.sleep(0.1)
     assert driver.pace() == 0.0
     assert ViewerDriver(View()).pace() == 0.0
 

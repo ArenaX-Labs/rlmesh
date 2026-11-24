@@ -1,9 +1,4 @@
 //! HTTP backend: serves the latest frame + a poll page over `tiny_http`.
-//!
-//! Runs on its OWN std::thread; the viewer writes a shared latest-frame slot and
-//! every request just reads it, so N browser tabs share one frame for free. The
-//! browser polls `/frame`; switching source is a `GET /select?i=N` against the
-//! shared `selected` atomic the viewer reads each step.
 
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -33,7 +28,6 @@ pub struct HttpShared {
     /// non-failure stop that advances to the next episode) — unlike `quit`, which stops
     /// the whole run. Consumed once per request: the eval swaps it back to false.
     pub skip: AtomicBool,
-    /// Content-type for `/frame` matching the encoded `latest_frame` bytes.
     content_type: &'static str,
 }
 
@@ -114,12 +108,10 @@ fn route(url: &str, shared: &HttpShared) -> Response<Cursor<Vec<u8>>> {
             with_ct(Response::from_string("{\"ok\":true}"), "application/json")
         }
         "/skip" => {
-            // End the current episode early (the eval consumes this on its next step).
             shared.skip.store(true, Ordering::Relaxed);
             with_ct(Response::from_string("{\"ok\":true}"), "application/json")
         }
         "/quit" => {
-            // The page's `q`: stop the run (or close a viewer held after it).
             shared.quit.store(true, Ordering::Relaxed);
             with_ct(Response::from_string("{\"ok\":true}"), "application/json")
         }

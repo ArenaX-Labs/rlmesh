@@ -25,7 +25,6 @@ import rlmesh.adapters as adapt
 
 
 def _swap_halves(vector: Any) -> Any:
-    """Swap the two 3-vectors of a 6D rotation; its own inverse."""
     import numpy as np
 
     flat = np.asarray(vector)
@@ -40,7 +39,6 @@ ROT6D_COLSWAP = adapt.CustomEncoding(
 )
 
 SPEC = adapt.ModelSpec(
-    # This study deliberately permits the projections described in README.md.
     allow=("drop_action",),
     input={
         "image": adapt.Image(adapt.IMAGE_PRIMARY, size=224, fit="stretch"),
@@ -61,12 +59,6 @@ SPEC = adapt.ModelSpec(
 
 
 def load_predict_fn() -> Callable[[Mapping[str, Any]], Any]:
-    """Return the checkpoint's raw predict callable (stubbed: zero action).
-
-    A real integration loads the policy here; ``payload`` already arrives in
-    the format declared by ``SPEC`` (with ``eef_rot`` in the model's own 6D
-    packing). The stub returns a zero action so the example runs with no GPU.
-    """
     import numpy as np
 
     def predict(payload: Mapping[str, Any]) -> Any:

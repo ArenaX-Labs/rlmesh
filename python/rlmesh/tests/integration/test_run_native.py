@@ -1,15 +1,3 @@
-"""The unified native ``Model.run``: seeds, caps, and the hook contract.
-
-``run()`` drives every env shape through the native runtime loop. These pin
-the features the runtime enforces itself: explicit per-episode seeds
-(``episode_seeds``, echoed on the ``RunResult``), the step cap
-(runtime-truncated episodes), and ``hooks`` firing the same callbacks in the
-same per-episode order as a :class:`~rlmesh.Binding` stepped by hand -- with
-the terminal flags the runtime knows at each step, exceptions aborting the run
-with their own type, and ``on_run_end`` firing exactly once. Only the live
-viewer stays binding-only.
-"""
-
 from __future__ import annotations
 
 import time
@@ -25,12 +13,6 @@ pytest.importorskip("gymnasium")
 
 
 class CountEnv:
-    """Single env: Box obs, terminates after ``episode_len`` steps (0 = never).
-
-    ``final_info``, when given, is emitted as the terminal step's info dict --
-    the shape a Gymnasium env uses to report ``is_success`` / ``success``.
-    """
-
     def __init__(
         self, episode_len: int = 3, final_info: dict[str, Any] | None = None
     ) -> None:
@@ -61,8 +43,6 @@ class CountEnv:
 
 
 class _PosEnv(CountEnv):
-    """``CountEnv`` whose observation is a ``pos`` Dict leaf."""
-
     def __init__(self) -> None:
         import gymnasium as gym
 
@@ -146,7 +126,6 @@ def test_run_surfaces_the_session_telemetry_aggregate() -> None:
         assert row.count > 0
         assert row.unit in ("ms", "bytes", "count")
         assert row.avg >= 0.0 and row.p50 <= row.p95 <= row.p99
-    # The formatter renders one aligned line per row plus a header.
     table = result.format_telemetry()
     assert len(table.splitlines()) == len(result.telemetry) + 1
     assert table.splitlines()[0].split()[:2] == ["op", "metric"]
@@ -225,18 +204,10 @@ def test_run_truncates_an_over_produced_dict_chunk_to_the_horizon() -> None:
 
 
 def test_run_prefetch_lead_predicts_the_next_chunk_from_a_stale_observation() -> None:
-    """``prefetch_lead`` reaches the runtime driver: at chunk 3 / lead 1 the
-    second chunk is asked for while one replay frame is still queued, from the
-    observation after step 1 rather than step 3, and the chunk prefetched at
-    each episode's tail is discarded so the next episode re-plans from its
-    reset observation. Every episode still completes and scores."""
     import gymnasium as gym
     from rlmesh.numpy import Model
 
     class StepEnv(CountEnv):
-        """Observation ``[t, 0]``: the step count, so a chunk corner can
-        report which observation it was conditioned on."""
-
         def __init__(self) -> None:
             super().__init__(episode_len=6, final_info={"is_success": True})
             self.observation_space = gym.spaces.Box(0.0, 100.0, (2,), np.float32)
@@ -273,11 +244,6 @@ def test_run_prefetch_lead_predicts_the_next_chunk_from_a_stale_observation() ->
     assert [e.steps for e in result.episodes] == [6, 6]
     assert all(e.success is True for e in result.episodes)
     assert result.success_rate == 1.0
-    # The prefetch at each episode's tail (from step 4, with the last frame
-    # still queued) may or may not reach the model before the terminal step
-    # lands; every other chunk is pinned: the reset observation opens each
-    # episode (the tail prefetch was discarded) and the second chunk was
-    # conditioned on step 1, two steps before the synchronous loop's step 3.
     assert [obs for obs in seen if obs != 4] == [0, 1, 0, 1]
 
     _, synchronous = run(0)
@@ -285,9 +251,6 @@ def test_run_prefetch_lead_predicts_the_next_chunk_from_a_stale_observation() ->
 
 
 def test_run_holds_a_declared_native_chunk_to_its_length() -> None:
-    """The spec-less native path measures the chunk against a declared K the
-    way a Session does: a short chunk is a model error, not a silent early
-    re-plan that only the adapted route would have caught."""
     from rlmesh.numpy import Model
 
     class ShortChunk(Model):
@@ -308,8 +271,6 @@ def test_run_holds_a_declared_native_chunk_to_its_length() -> None:
 
 
 def test_run_warns_once_per_episode_for_an_undeclared_short_chunk() -> None:
-    """An undeclared K replays the short chunk and warns ``RuntimeWarning``
-    with the Session's text, once per episode (MDL-P11)."""
     from rlmesh.numpy import Model
 
     class Short(Model):
@@ -323,8 +284,6 @@ def test_run_warns_once_per_episode_for_an_undeclared_short_chunk() -> None:
 
 
 def test_close_stops_a_running_serve_which_then_returns() -> None:
-    """``close()`` is terminal: it stops a running serve (drain) and fires the
-    hook once (MDL-P2)."""
     import threading
 
     closes: list[str] = []
@@ -350,9 +309,6 @@ def test_close_stops_a_running_serve_which_then_returns() -> None:
 
 
 def test_run_delivers_every_step_to_a_stacked_model_at_any_horizon() -> None:
-    """The native path carries replayed steps to the model as observation
-    history, so a frame-stacked model sees the same windows under ``run`` as
-    under a binding, at execution_horizon 1 and above."""
     import rlmesh.adapters as adapt
     from rlmesh.numpy import Model
 
@@ -390,7 +346,6 @@ def test_run_delivers_every_step_to_a_stacked_model_at_any_horizon() -> None:
             self.windows: list[tuple[int, ...]] = []
 
         def predict_chunk(self, observation: Any) -> Any:
-            # The stacked axis leads: (3, H, W, C). Record which frames it holds.
             self.windows.append(tuple(int(frame[0, 0, 0]) for frame in observation))
             return np.zeros((3, 2), np.float32)
 
@@ -406,8 +361,6 @@ def test_run_delivers_every_step_to_a_stacked_model_at_any_horizon() -> None:
 
     every_step = windows("native", 1)
     assert every_step[:3] == [(0, 0, 0), (0, 0, 1), (0, 1, 2)]
-    # Re-plans at steps 0, 3 and 6: the window at each holds the consecutive
-    # frames, not the decision points, on both paths.
     assert windows("native", 3) == [every_step[0], every_step[3], every_step[6]]
     assert windows("bind", 3) == windows("native", 3)
 
@@ -426,8 +379,6 @@ def test_run_max_episode_steps_truncates_via_the_runtime() -> None:
     assert all(e.steps == 4 for e in result.episodes)
     assert all(e.truncated and not e.terminated for e in result.episodes)
     assert all(e.reward == 4.0 for e in result.episodes)
-    # A truncation echoed back by the env must not be counted twice or cut the
-    # next episode short: two distinct episodes, each driven for all four steps.
     assert [e.index for e in result.episodes] == [0, 1]
     assert len(env.seen_seeds) == 2
 
@@ -444,8 +395,6 @@ def test_an_env_failure_names_the_step_it_happened_at() -> None:
 
 
 def test_run_on_an_open_handle_explains_the_lease_conflict() -> None:
-    """An open RemoteEnv holds its env's lease: run() refuses the handle,
-    naming the address form, and a run on the address points at the holder."""
     server = rlmesh.EnvServer(CountEnv(), ":0/env")
     server.start()
     try:
@@ -461,9 +410,6 @@ def test_run_on_an_open_handle_explains_the_lease_conflict() -> None:
 
 
 class _ScriptedViewer:
-    """A stand-in ViewerDriver: skips after the steps in ``skip_after``
-    (counted across the run), quits after step ``quit_after``."""
-
     def __init__(self, skip_after: tuple[int, ...] = (), quit_after: int = 0) -> None:
         self.skip_after, self.quit_after = skip_after, quit_after
         self.steps = 0
@@ -500,7 +446,6 @@ def test_a_viewer_skip_truncates_the_episode_and_the_run_goes_on(
     viewer = _ScriptedViewer(skip_after=(2, 5))
     _watch(monkeypatch, viewer)
     result = rlmesh.run(_model(), CountEnv(episode_len=0), episodes=2, view=True)
-    # A skip lands on the step after it was asked for.
     assert [(e.steps, e.truncated) for e in result.episodes] == [(3, True), (3, True)]
     assert viewer.feeds[:3] == [(0, 0), (0, 1), (0, 2)]
     assert viewer.held == [True]
@@ -519,8 +464,6 @@ def test_a_viewer_quit_returns_the_partial_result(
 def test_a_viewer_quit_ends_every_lane_of_a_driver_reset_lane_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Quit truncates both live lane episodes and starts no more, however much
-    # of the budget is left.
     viewer = _ScriptedViewer(quit_after=4)
     _watch(monkeypatch, viewer)
     lanes = [CountEnv(episode_len=0), CountEnv(episode_len=0)]
@@ -536,14 +479,8 @@ def test_a_viewer_quit_ends_every_lane_of_a_driver_reset_lane_env(
     finally:
         server.shutdown()
     assert result.num_episodes == 2
-    # The lanes step independently, so the quit finds each wherever it got
-    # to: one may have taken every step before it.
     assert all(e.truncated for e in result.episodes)
     assert sum(e.steps for e in result.episodes) >= 4
-
-
-# ---------------------------------------------------------------------------
-# hooks: the same contract on both loops
 
 
 class _BoomError(Exception):
@@ -551,8 +488,6 @@ class _BoomError(Exception):
 
 
 class _Recorder(rlmesh.RunHooks):
-    """Every hook call in order; flags any call that lands after the run returned."""
-
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
         self.events: list[rlmesh.StepEvent] = []
@@ -600,7 +535,6 @@ def _raising(hook: str, error: BaseException) -> _Recorder:
 
 
 def _by_hand(binding: rlmesh.Binding[Any, Any], seeds: list[int | None]) -> None:
-    """Each episode of ``seeds`` stepped to its end under the model's actions."""
     for seed in seeds:
         binding.reset(seed=seed)
         while not binding.done:
@@ -652,8 +586,6 @@ def test_hooks_fire_in_order_with_indices_and_seeds(path: str) -> None:
     assert first.observation.shape == (2,) and first.action.shape == (2,)
     assert first.predict_ms >= 0.0 and first.step_ms >= 0.0
     assert recorder.run_results == [result]
-    # Hooks never change the result, and the record delivered to on_episode_end
-    # IS the result's: one timing definition, timings included.
     assert recorder.episode_results == list(result.episodes)
     assert all(
         e.predict_ms is not None and e.step_ms is not None and e.step_ms > 0.0
@@ -738,8 +670,6 @@ def test_hooks_read_a_role_off_the_observation(path: str) -> None:
 
 
 def test_hooks_read_roles_off_an_env_at_an_address() -> None:
-    """A served or random model resolves no route here, so the run context
-    takes the contract from the runtime's connection to the env itself."""
     tags = adapt.EnvTags(
         observation={"pos": adapt.StateTag(role=adapt.EEF_POS)},
         action=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
@@ -850,12 +780,6 @@ def test_hooks_fire_on_an_empty_native_run() -> None:
 
 
 class _NextStepVectorEnv:
-    """Lanes under NEXT_STEP autoreset, each with its own episode length.
-
-    A lane that ended resets on its next ``step`` call (reward 0, the reset
-    observation), as Gymnasium's vector envs do, while the other lanes step on.
-    """
-
     def __init__(self, lengths: tuple[int, ...] = (1, 1)) -> None:
         from rlmesh import spaces
 
@@ -912,7 +836,6 @@ def _assert_interleaved_episodes_are_well_formed(
     steps_of = {r.index: r.steps for r in recorder.episode_results}
     last_events = {e.episode: e for e in recorder.events}
     for index, calls in _episodes_by_index(recorder).items():
-        # The budget bounds starts: every episode a hook sees start completes.
         assert index in steps_of, index
         kinds = [c[0] for c in calls]
         assert kinds == ["start"] + ["step"] * steps_of[index] + ["end"], (index, kinds)
@@ -925,7 +848,6 @@ def test_hooks_on_a_next_step_vector_env() -> None:
     from rlmesh.numpy import Model
 
     recorder = _Recorder()
-    # A spec-less policy on a vector env predicts on the fused (N, ...) batch.
     stacked = Model(lambda obs: np.zeros((2, 2), np.float32))
     result = _drive(stacked, _NextStepVectorEnv(), "native", episodes=2, hooks=recorder)
     assert result.num_episodes == 2
@@ -937,10 +859,6 @@ def test_hooks_on_a_next_step_vector_env() -> None:
 def test_an_uneven_budget_is_exact_on_a_lockstep_vector_env(
     lengths: tuple[int, int],
 ) -> None:
-    # Two lanes, three episodes: equal lengths complete in pairs (the second
-    # pair overshoots the budget by one), unequal ones roll apart. Either way
-    # exactly three are started, scored, and reported; the fourth lane-episode
-    # the env rolls into is never announced.
     from rlmesh.numpy import Model
 
     recorder = _Recorder()
@@ -1021,8 +939,6 @@ def test_run_options_fail_before_anything_dials(
 ) -> None:
     import re
 
-    # Nothing listens on port 1, and zero episodes would never dial anyway:
-    # the options alone decide these, on both loops.
     with pytest.raises(ValueError, match=re.escape(text)):
         _model().run("tcp://127.0.0.1:1", episodes=0, **options)
     if "prefetch_lead" not in options:
@@ -1059,8 +975,6 @@ def test_an_infinite_time_cap_is_no_cap_on_a_next_step_env() -> None:
 
 
 def test_hooks_on_a_next_step_vector_env_whose_lanes_roll_apart() -> None:
-    # Lane 0 rolls while lane 1 is mid-episode: the roll is skipped for lane 0
-    # only, and lane 1's step on that response is delivered.
     from rlmesh.numpy import Model
 
     recorder = _Recorder()
@@ -1122,10 +1036,6 @@ def test_a_served_env_binding_carries_stable_episode_identity() -> None:
 
 
 def test_run_feeds_a_previous_action_part_the_frame_executed_the_step_before() -> None:
-    """A Go2-style policy reading its own last command sees, at every re-plan,
-    the raw chunk frame the runtime executed at the step before: the last frame
-    of the previous chunk at execution_horizon 7, the only one at 1, and the
-    fill at step 0, run and bound alike."""
     import gymnasium as gym
     import rlmesh.adapters as adapt
     from rlmesh.numpy import Model
@@ -1221,12 +1131,8 @@ def test_run_feeds_a_previous_action_part_the_frame_executed_the_step_before() -
         def predict_chunk(self, observation: Any) -> Any:
             obs = observation["obs"]
             assert obs.shape == (45,)
-            # The previous-action slot is uniform by construction; record it.
             assert len(set(obs[33:].tolist())) == 1
             self.previous.append(float(obs[33]))
-            # Frame k of call c is 5c + k + 1 on every joint (inside the
-            # container clip): the scaled, offset env command is a different
-            # number, so a slot holding anything but the raw frame is visible.
             chunk = np.full((7, 12), 5 * self.calls + 1, np.float32)
             chunk += np.arange(7, dtype=np.float32)[:, None]
             self.calls += 1
@@ -1242,19 +1148,11 @@ def test_run_feeds_a_previous_action_part_the_frame_executed_the_step_before() -
             model.run(env, episodes=1, execution_horizon=horizon)
         return model.previous
 
-    # Horizon 1: predict k+1 sees frame 0 of call k (5k + 1).
     every_step = [0.0] + [5.0 * call + 1 for call in range(14)]
     assert previous("native", 1) == every_step
     assert previous("bind", 1) == every_step
-    # Horizon 7: re-plans at 0, 7 and 14 see the fill, then frame 6 of the
-    # chunk executed before (7 and 12), never frame 0 of it (1 and 6).
     assert previous("native", 7) == [0.0, 7.0, 12.0]
     assert previous("bind", 7) == [0.0, 7.0, 12.0]
-
-
-# ---------------------------------------------------------------------------
-# Ownership: a borrowed model and env survive a run, a failure, an interrupt
-# ---------------------------------------------------------------------------
 
 
 def test_a_model_is_reusable_after_a_predict_failure_and_an_interrupt() -> None:
@@ -1283,7 +1181,6 @@ def test_a_model_is_reusable_after_a_predict_failure_and_an_interrupt() -> None:
             hooks=_raising("on_step", KeyboardInterrupt()),
         )
     assert _drive(model, env, "native", episodes=2).num_episodes == 2
-    # A binding on the same model, then a run on it again: nothing was closed.
     with model.bind(env) as binding:
         _by_hand(binding, [None])
     assert _drive(model, env, "native", episodes=1).num_episodes == 1
@@ -1293,9 +1190,6 @@ def test_a_model_is_reusable_after_a_predict_failure_and_an_interrupt() -> None:
 
 
 def test_an_open_remote_env_serves_and_runs_as_a_local_env() -> None:
-    """A client is an env: serve it, or run it in a wrapper, and its sync calls
-    block on its own runtime from the serving lane."""
-
     class Relay:
         def __init__(self, env: Any) -> None:
             self.env = env
@@ -1393,7 +1287,6 @@ def test_a_second_run_on_a_running_model_fails_at_once() -> None:
     assert result.num_episodes == 1
     assert len(errors) == 1
     assert "already in progress" in str(errors[0])
-    # The slot is free again once the run returns.
     assert model.run(CountEnv(episode_len=1)).num_episodes == 1
 
 

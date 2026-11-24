@@ -49,8 +49,7 @@ pub async fn org_list(
     stdout: &mut impl Write,
     style: Style,
 ) -> Result<()> {
-    // Always the profile session, never the API key: organizations are an
-    // account-level concept and a key is bound to one of them.
+    // Profile session, never the API key: a key is bound to one organization.
     let profile = profiles.resolve(args.profile.profile.as_deref());
     let mut platform = store::connect_profile(profiles.clone(), profile).await?;
     let page = platform.get("/v1/me/organizations", &[]).await?;
@@ -104,8 +103,6 @@ pub async fn org_switch(
     let client = http_client()?;
     let session = switch_organization(&client, profiles, &profile, id).await?;
     let platform = profile.platform_url.as_deref().unwrap_or_default();
-    // The platform, not the token, says which organization the session now
-    // belongs to: /v1/me reports it by provider id and supplies the name.
     let identity = fetch_identity(&client, platform, &session.credentials.access_token).await?;
     if identity.organization_id != id {
         bail!(
@@ -145,9 +142,6 @@ struct MeSubject {
     display_name: String,
 }
 
-// The platform also reports its own public id for a linked organization;
-// the CLI keys everything by the provider id, which is what `org switch`
-// sends on the refresh grant.
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct MeOrganization {
@@ -180,8 +174,7 @@ pub async fn login(
     stdout.flush()?;
 
     let auth_config = fetch_auth_config(&client, platform_url).await?;
-    // Pin the token endpoint's host: the stored refresh token is only ever
-    // sent where this sign-in sent it, whatever a later /v1/info says.
+    // Pin the token endpoint's host: the stored refresh token is only ever sent where this sign-in sent it.
     profile.token_endpoint = Some(auth_config.token_endpoint.clone());
 
     let authorization: DeviceAuthorization = expect_json(
@@ -229,9 +222,6 @@ pub async fn login(
     writeln!(stdout)?;
     let credentials = credentials?;
 
-    // The provider vouched for the sign-in, so the credentials are stored
-    // either way; a platform that cannot confirm the identity is reported,
-    // not hidden behind "Signed in".
     let identity = match fetch_identity(&client, platform_url, &credentials.access_token).await {
         Ok(identity) => Some(identity),
         Err(error) => {
@@ -309,8 +299,7 @@ async fn poll_for_token(
             return Ok(token.into_credentials());
         }
 
-        // A gateway's HTML 502/429 page mid-poll must not abort a sign-in
-        // the user is busy approving; the expiry deadline bounds the loop.
+        // A gateway error page mid-poll must not abort a sign-in the user is approving.
         let Ok(denial) = serde_json::from_str::<TokenDenial>(&body) else {
             continue;
         };
@@ -339,8 +328,6 @@ pub async fn logout(
     style: Style,
 ) -> Result<()> {
     let profile = profiles.resolve(args.profile.as_deref());
-    // Best effort all the way down: nothing about the revocation, its
-    // client, or reporting it may keep the local credential on disk.
     let _ = revoke_platform_session(profiles, &profile, stdout, style).await;
     if profiles.logout(&profile.name)? {
         writeln!(
@@ -361,10 +348,6 @@ pub async fn logout(
     Ok(())
 }
 
-/// Asks the platform to end the session before the local credential is
-/// deleted, so the refresh token stops working server-side too. Best
-/// effort: a platform without the route, or one that cannot be reached,
-/// never blocks a local sign-out.
 async fn revoke_platform_session(
     profiles: &mut ProfileStore,
     profile: &ResolvedProfile,
@@ -381,8 +364,6 @@ async fn revoke_platform_session(
     let access_token =
         match ensure_fresh_session(&client, profiles, profile, Refresh::IfStale).await {
             Ok(session) => session.credentials.access_token,
-            // A session the provider already rejected may still be known to the
-            // platform; try with what is on hand rather than skipping.
             Err(_) if !stored.access_token.trim().is_empty() => stored.access_token,
             Err(_) => return Ok(()),
         };
@@ -506,8 +487,6 @@ pub async fn whoami(
     Ok(if healthy { 0 } else { 1 })
 }
 
-/// The `whoami --json` document. `identity` is present only for a verified
-/// or at least signed-in session; `error` carries the verification failure.
 fn whoami_report(
     profile: Option<&str>,
     platform: Option<&str>,
@@ -532,8 +511,6 @@ fn whoami_report(
     })
 }
 
-/// `whoami` for an API key from the environment: no profile, no cached
-/// identity, just whether the platform accepts the key and as whom.
 async fn whoami_api_key(
     api_key: &str,
     platform_url: &str,
@@ -600,11 +577,6 @@ async fn whoami_api_key(
     }
 }
 
-/// Verifies the stored session against /v1/me, updating the cached identity.
-///
-/// Goes through `Client` so the stored access token is reused while it is
-/// fresh and rotated only if the platform actually rejects it: refresh
-/// tokens are single-use, and a read-only status command must not burn one.
 async fn verify_session(
     profiles: &mut ProfileStore,
     profile: &ResolvedProfile,
@@ -705,11 +677,9 @@ mod tests {
         assert_eq!(identity.user_id, "user_123");
         assert_eq!(identity.email, "dev@example.com");
         assert_eq!(identity.display_name, "Dev User");
-        // The platform's public id is never what the CLI keys on.
         assert_eq!(identity.organization_id, "org_01H");
         assert_eq!(identity.organization_name, "Dev Org");
 
-        // An older platform (no email) or an org-less session still parses.
         let bare: MeResponse = serde_json::from_str(r#"{"subject":{"id":"user_123"}}"#).unwrap();
         let identity = identity_from_me(bare);
         assert!(identity.email.is_empty());

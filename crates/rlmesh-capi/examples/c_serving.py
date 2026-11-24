@@ -9,7 +9,6 @@ import sys
 
 
 def read_checked(process: subprocess.Popen[str]) -> None:
-    """Wait for the native signal assertion without hanging on a failed child."""
     assert process.stdout is not None
     output = b""
     while b"checked signals\n" not in output:
@@ -21,7 +20,6 @@ def read_checked(process: subprocess.Popen[str]) -> None:
 
 
 def command(process: subprocess.Popen[str], mode: str) -> None:
-    """Drive the C consumer's signal check and stop, and expect a clean exit."""
     assert process.stdin is not None
     if "foreground" not in mode:
         process.stdin.write("i\n")
@@ -35,10 +33,7 @@ def command(process: subprocess.Popen[str], mode: str) -> None:
 
 
 def probe(binary: str, mode: str) -> None:
-    """Run one fresh process so signal dispositions cannot leak between cases."""
     if mode in {"no-signals", "signals", "old-signals"}:
-        # The model serves on a session the C process hosts; it waits for its
-        # own run through the served model before checking signals.
         process = subprocess.Popen(
             [binary, mode, ":0/host"],
             stdin=subprocess.PIPE,

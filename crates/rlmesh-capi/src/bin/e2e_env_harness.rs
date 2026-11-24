@@ -1,13 +1,3 @@
-//! End-to-end loopback harness for the env side: spawn a compiled C/C++ env
-//! binary (`<bin> :0/env`, a session on an OS-assigned port), read the
-//! address it prints (`listening on <address>`), drive a model against it,
-//! then close the binary's stdin and expect a graceful exit. The inverse of
-//! `e2e_harness`.
-//!
-//! Usage: `e2e_env_harness <env-binary>`. Asserts that the env published its
-//! adapter tags and `trial_index` reset option, that three seeded, trial-indexed
-//! episodes of two steps run, that every reset reached C with its seed and trial
-//! index, that render returns a PNG, and that the env's close hook ran.
 #![allow(clippy::print_stderr)]
 
 use std::io::{BufRead, BufReader, Read};
@@ -21,7 +11,6 @@ use rlmesh::binding::spaces::{DType, MetaValue, SpaceValue, Tensor};
 const EPISODES: u64 = 3;
 const BASE_SEED: i64 = 40;
 
-/// A zero `float32[3]` action per row.
 struct ZeroModel;
 
 #[async_trait]
@@ -75,7 +64,6 @@ fn main() -> ExitCode {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     let checked = runtime.block_on(drive(&address));
 
-    // Closing stdin is the env's cue to cancel, drain, close and exit.
     drop(child.stdin.take());
     let mut rest = String::new();
     let _ = stdout.read_to_string(&mut rest);
@@ -93,13 +81,10 @@ fn main() -> ExitCode {
         return fail("the env's close hook did not run");
     }
     for k in 0..EPISODES {
-        // The runtime derives each episode's seed from the base; the trial
-        // index walks base, base + 1, ...
         if !rest.contains(&format!("trial={k}")) {
             return fail(format!("no reset reached C with trial index {k}"));
         }
     }
-    // The direct probe reset, then one per run episode.
     if rest.matches("reset seed=").count() != EPISODES as usize + 1 {
         return fail(format!("expected {} resets", EPISODES + 1));
     }

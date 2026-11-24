@@ -356,7 +356,6 @@ impl TrajectoryStream {
     }
 }
 
-/// Episode indices are 1-based, so episode 1 is always selected.
 pub(crate) fn selected(index: u32, every: u32) -> bool {
     every <= 1 || index.saturating_sub(1).is_multiple_of(every)
 }

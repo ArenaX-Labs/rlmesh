@@ -1,7 +1,5 @@
-//! A robot's side of the lobby, sans-IO: what it
-//! asks the home daemon while it waits, the one order it takes, and when it
-//! leaves a run. An SDK robot process and a board run the same rules; the
-//! caller does the networking.
+//! A robot's side of the lobby, sans-IO: what it asks the home daemon while it
+//! waits, the one order it takes, and when it leaves a run.
 //!
 //! ```text
 //!  lobby ──LobbyWait──▶ home ──Join──▶ detach, join the run, declare
@@ -9,15 +7,13 @@
 //!    └──── closing, lost, or the join failed ◀─┘   (superseded: stop)
 //! ```
 //!
-//! - **The wait** is a long poll: a [`LobbyWait`] the host keeps pending
-//!   until there is an order. The robot re-sends the same request id every
-//!   [`WAIT_RETRY`]; the retry joins the pending operation.
-//! - **The order** is a [`Join`] naming this robot ([`Lobby::take`]); any
-//!   other order is refused.
-//! - **A failed join** (refused handshake or declare, host unreachable) is
-//!   reported in the next wait ([`Lobby::failed`]), and the run shows it.
-//! - **Leaving a run** ([`leave`]): the run is closing, this generation is
-//!   gone from the view, or a newer one took over.
+//! - The wait is a long poll: a [`LobbyWait`] the host keeps pending until there is an order.
+//!   The robot resends the same request id every [`WAIT_RETRY`]; the retry joins the pending
+//!   operation.
+//! - The order is a [`Join`] naming this robot ([`Lobby::take`]); any other is refused.
+//! - A failed join is reported in the next wait ([`Lobby::failed`]).
+//! - [`leave`]: the run is closing, this generation is gone from the view, or a newer one took
+//!   over.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -44,9 +40,9 @@ pub enum Leave {
     Superseded,
 }
 
-/// Whether a robot whose generation is `mine` leaves the run, given the
-/// view's `closing` and its `current` generation there (`None`: not
-/// present; an older one is a view from before its attach).
+/// Whether a robot whose generation is `mine` leaves the run, given the view's
+/// `closing` and its `current` generation there (`None`: not present; an older
+/// one is a view from before its attach).
 pub fn leave(closing: Option<&Reason>, current: Option<u32>, mine: u32) -> Option<Leave> {
     match current {
         Some(current) if current > mine => Some(Leave::Superseded),

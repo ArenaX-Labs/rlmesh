@@ -1,9 +1,5 @@
-//! Runs against a borrowed vector env and through served (v2) env handles.
-
 use super::*;
 
-/// Two lanes that each end after three steps and restart on the next step
-/// (`NEXT_STEP` autoreset).
 struct Lanes {
     counts: Vec<i64>,
     ended: Vec<bool>,
@@ -71,7 +67,6 @@ impl Lanes {
 
 #[test]
 fn a_borrowed_vector_env_runs_its_lanes_on_the_native_loop() {
-    // A batch of observations takes one action per lane.
     let model = Model::new(
         |observation: Value| {
             let lanes = match &observation {
@@ -107,8 +102,6 @@ fn a_borrowed_vector_env_runs_its_lanes_on_the_native_loop() {
     );
 }
 
-/// A `base_seed` derives the same reset seeds on every run, in any process on
-/// any machine: these values follow from `(4242, the env's id, slot)` alone.
 #[tokio::test]
 async fn a_base_seed_derives_the_same_reset_seeds_in_every_process() {
     use crate::model::random::RandomSampleHandler;
@@ -150,8 +143,6 @@ fn a_native_run_through_an_open_v2_handle_says_the_handle_holds_the_env() {
     let mut remote =
         crate::RemoteEnv::new(crate::RemoteEnvOptions::default().address(server.address()))
             .unwrap();
-    // A v2 handle holds its env's lease from connect: the run refuses it
-    // with Python's upgrade error.
     let err = ones()
         .run(
             &mut remote,

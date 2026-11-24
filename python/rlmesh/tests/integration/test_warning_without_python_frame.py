@@ -1,5 +1,3 @@
-"""A warning delivered on a runtime thread, which has no Python frame, must not crash."""
-
 import subprocess
 import sys
 import textwrap

@@ -1,18 +1,4 @@
-"""Internal helpers for loading environments to serve through RLMesh.
-
-Private module (v0.1 surface lock): reachable only as ``rlmesh._serving``,
-never as a public top-level attribute. Use :func:`load_env` (or
-:func:`load_env_entrypoint`) to construct an environment by Gymnasium id or
-``module:callable`` entrypoint, then hand it to :class:`rlmesh.EnvServer` to
-serve it.
-
-Examples:
-    >>> import rlmesh
-    >>> from rlmesh import _serving
-    >>> env = _serving.load_env("CartPole-v1")  # doctest: +SKIP
-    >>> server = rlmesh.EnvServer(env)  # doctest: +SKIP
-    >>> server.serve()  # doctest: +SKIP
-"""
+"""Internal helpers for loading environments to serve through RLMesh."""
 
 from __future__ import annotations
 

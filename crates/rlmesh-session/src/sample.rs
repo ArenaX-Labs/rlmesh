@@ -3,43 +3,34 @@
 //!
 //! A [`SamplePublisher`] numbers its samples per stream (`seq`), stamps the
 //! epoch, the capture time and the publish time, checks the payload against
-//! the stream's packed layout and sends it without copying, as its
-//! stream's **publication plan** says. The host derives the plan from
-//! every admitted delivery contract on the stream and publishes it as a
-//! `Demand`; the participant installs it here and acknowledges it:
+//! the stream's packed layout and sends it without copying, as the stream's
+//! **publication plan** says. The host derives the plan from every admitted
+//! delivery contract on the stream; the participant installs it here:
 //!
-//! - **every** (the default, with no demand, and for any `every` or
-//!   `history` contract): each sample at once;
+//! - **every** (the default, and for any `every` or `history` contract): each
+//!   sample at once;
 //! - **latest**: the newest sample at the plan's rate, coalescing the rest.
 //!
-//! No plan exceeds the part's `send` rate ceiling (a token bucket with a
-//! burst of two, so jitter around the declared rate is not decimation). A
-//! coalesced sample takes no seq, so a gap at a subscriber is still a loss.
-//! Events, and every stream in virtual or lockstep mode (whose barriers wait
-//! on seqs), always send every sample; their plans are acknowledged all the
-//! same.
+//! No plan exceeds the part's `send` rate ceiling (a token bucket with a burst
+//! of two). A coalesced sample takes no seq, so a gap at a subscriber is still
+//! a loss. Events, and every stream in virtual or lockstep mode, always send
+//! every sample.
 //!
-//! A [`SampleSubscriber`] takes each sample, keeps the latest value and a
-//! bounded window, counts gaps in `seq` as losses, drops samples from an
-//! older epoch and samples that fail the layout check, and reports a
-//! sample's age against the stream's `max_age`, so a consumer never silently
-//! freezes on an old value.
+//! A [`SampleSubscriber`] keeps the latest value and a bounded window, counts
+//! gaps in `seq` as losses, drops samples from an older epoch and samples that
+//! fail the layout check, and reports a sample's age against the stream's
+//! `max_age`, so a consumer never silently freezes on an old value.
 //!
 //! Late joiners warm their window from the host's history store
-//! ([`SubscribeOptions::warm_from_history`]): the live subscription starts
-//! first and buffers, the store is queried up to the first live seq, and the
-//! two are merged by seq. The publisher keeps no retransmission
-//! (which would hold newer samples behind missing ones, the head-of-line
-//! blocking a real-time stream must not have), with one exception: an event
-//! stream's publisher keeps its last sample and answers history queries for
-//! it beside the host's store, so a controller that joins after a single
-//! publication (the task text) still sees it, even when the store's
-//! subscription had not reached the publisher yet.
+//! ([`SubscribeOptions::warm_from_history`]), merged with the live
+//! subscription by seq. Publishers keep no retransmission, except that an
+//! event stream's publisher answers history queries for its last sample, so a
+//! controller that joins after a single publication still sees it.
 //!
-//! Every sample is sealed under its stream's key (`k_stream`): signed
-//! by default, encrypted when the session seals the part. A publisher
-//! without the key yet (a robot's first moments) drops samples unsent; a
-//! subscriber drops anything that doesn't open under a key it holds.
+//! Every sample is sealed under its stream's key (`k_stream`): signed by
+//! default, encrypted when the session seals the part. A publisher without the
+//! key yet drops samples unsent; a subscriber drops anything that doesn't open
+//! under a key it holds.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, AtomicU8, AtomicU64, Ordering};
@@ -66,12 +57,9 @@ use crate::transport::{TrafficClass, Transport, declare_publisher, stream_qos};
 pub use rlmesh_session_core::stream::SampleStats;
 use rlmesh_session_core::stream::{check_sample, is_stale};
 
-/// Every sample at once, ungated.
 const FREE: u8 = 0;
-/// Every sample or the newest, under a token bucket.
 const GATED: u8 = 1;
 
-/// At most `hz` samples per second, with a burst of two.
 #[derive(Debug)]
 struct Gate {
     per_ns: f64,
@@ -105,43 +93,32 @@ impl Gate {
     }
 }
 
-/// The installed plan.
 #[derive(Debug)]
 struct PlanState {
-    /// The demand revision installed (0: none, the default plan).
     revision: u64,
     plan: Option<Plan>,
     gate: Option<Gate>,
 }
 
-/// What publishing one stream shares with the plan installer.
 pub(crate) struct Outlet {
     spec: StreamSpec,
     publisher: zenoh::pubsub::Publisher<'static>,
-    /// The data key, which every sealed sample is bound to.
     key: String,
     sealer: Sealer,
-    /// Held across a sample's seq, seal and send, so a stream leaves in
-    /// order.
     sending: Mutex<()>,
     seq: AtomicU64,
     epoch: Arc<AtomicU64>,
     clock: Arc<dyn Clock>,
-    /// Every sample whatever the plan: events, virtual and lockstep modes.
     fixed: bool,
-    /// The `send` rate ceiling.
     ceiling_hz: Option<f64>,
     mode: AtomicU8,
     state: Mutex<PlanState>,
     changed: Notify,
     coalesced: AtomicU64,
-    /// An event stream's last sample as sent (sealed), for late joiners.
     last: Mutex<Option<Vec<u8>>>,
 }
 
 impl Outlet {
-    /// Seals and sends `sample`; `false` when there is no key for the
-    /// stream yet (nothing is sent).
     fn put_sample(&self, sample: &Sample) -> Result<bool, SessionError> {
         let sealed = match self
             .sealer
@@ -163,10 +140,6 @@ impl Outlet {
         Ok(true)
     }
 
-    /// Answers a history query on an event stream with its last sample as
-    /// it was sent: this robot can't open the query (it is sealed for the
-    /// host), so the requester filters it, and opens it under the stream's
-    /// key.
     fn serve_last(&self, query: &zenoh::query::Query) {
         let Some(sealed) = self.last.lock().ok().and_then(|last| last.clone()) else {
             return;
@@ -176,8 +149,6 @@ impl Outlet {
         }
     }
 
-    /// Installs demand revision `revision` (`None`: no demand, the default
-    /// plan).
     pub(crate) fn install(&self, revision: u64, plan: Option<Plan>) {
         let Ok(mut state) = self.state.lock() else {
             return;
@@ -204,12 +175,10 @@ impl Outlet {
         self.changed.notify_waiters();
     }
 
-    /// The installed demand revision (0: none).
     pub(crate) fn revision(&self) -> u64 {
         self.state.lock().map_or(0, |s| s.revision)
     }
 
-    /// Its publisher counters, for the participant's report.
     pub(crate) fn counters(&self) -> crate::wire::PublisherCounters {
         crate::wire::PublisherCounters {
             channel: self.spec.channel,
@@ -222,7 +191,6 @@ impl Outlet {
 /// Publishes one stream. Cheap to share: `publish` takes `&self`.
 pub struct SamplePublisher {
     outlet: Arc<Outlet>,
-    /// An event stream's answer to late joiners (`h/{robot}/{path}`).
     _last: Option<zenoh::query::Queryable<()>>,
 }
 
@@ -248,8 +216,6 @@ impl SamplePublisher {
         .await?;
         let fixed = spec.event || clock_mode != ClockMode::Wall;
         let ceiling_hz = ceiling_hz.filter(|_| !fixed);
-        // Before any demand the default plan applies: every sample within
-        // the `send` ceiling.
         let gate = ceiling_hz.map(Gate::new);
         let outlet = Arc::new(Outlet {
             fixed,
@@ -308,7 +274,6 @@ impl SamplePublisher {
     }
 
     /// The installed publication plan and its demand revision (`None`, 0:
-    /// no demand, every sample within the `send` ceiling).
     pub fn plan(&self) -> (Option<Plan>, u64) {
         self.outlet
             .state
@@ -344,8 +309,6 @@ impl SamplePublisher {
 
     /// Publishes one packed value, captured at `capture_ns` (this
     /// participant's clock): its seq, or `None` when the plan coalesced it.
-    /// The payload is checked against the stream's layout and sent without
-    /// a copy; never blocks on a DROP stream.
     pub fn publish(&self, capture_ns: i64, payload: Bytes) -> Result<Option<u64>, SessionError> {
         self.publish_sample(capture_ns, 0, payload, None)
     }
@@ -461,10 +424,8 @@ pub struct SubscribeOptions {
 
 struct SubState {
     spec: StreamSpec,
-    /// The data key samples are sealed to.
     key: String,
     sealer: Sealer,
-    /// This subscription's replay windows.
     windows: Mutex<StreamWindows>,
     me: ParticipantId,
     clock: Arc<dyn Clock>,
@@ -473,11 +434,8 @@ struct SubState {
     latest: Mutex<Option<Received>>,
     depth: usize,
     window: Mutex<VecDeque<Received>>,
-    /// While warming from history, live samples wait here.
     warming: Mutex<Option<Vec<Sample>>>,
-    /// Shared with the participant's heartbeat (`last_seq_seen`).
     seen: Arc<AtomicU64>,
-    /// Publisher clock to subscriber clock, refreshed from the view.
     offset_ns: AtomicI64,
     on_sample: Option<OnSample>,
 }
@@ -516,8 +474,6 @@ impl SubState {
 
     fn on_sample(&self, sample: Sample, from_history: bool) {
         let receive_ns = self.clock.now_ns();
-        // The key's stream, and the payload against the declared layout
-        // (O(fields), before any view of the value).
         if let Err(reason) = check_sample(&self.spec, &sample) {
             debug!(channel = %self.spec.channel, reason, "malformed sample");
             self.bump(|s| s.malformed += 1);
@@ -557,8 +513,6 @@ impl SubState {
         }
     }
 
-    /// The robot restarted under a newer stream key, its `seq`s from 1: the high-water
-    /// and what was kept from before go.
     fn restart(&self) {
         self.bump(|s| s.last_seq = 0);
         if let Ok(mut latest) = self.latest.lock() {
@@ -575,8 +529,6 @@ impl SubState {
         }
     }
 
-    /// session = participant + offset, so publisher → subscriber is
-    /// `offset(publisher) − offset(me)`.
     fn refresh_offset(&self) {
         let view = self.view.borrow();
         let Some(view) = view.as_ref() else {
@@ -776,10 +728,6 @@ impl Drop for SampleSubscriber {
     }
 }
 
-/// Queries the host's history store for `stream`, sealed under this
-/// participant's `k_up`: every page of the reply that opens (under
-/// its `k_down`, or an event stream's last sample under the stream's key)
-/// and falls in the query's range, in order.
 pub(crate) async fn fetch_history(
     transport: &Transport,
     sealer: &Sealer,
@@ -914,7 +862,6 @@ mod tests {
         state.on_sample(sample(1, 2, 24), false);
         state.on_sample(sample(2, 3, 24), false);
         state.on_sample(sample(3, 3, 20), false);
-        // Anything that doesn't open under the stream's key is dropped.
         state.on_live(&ZBytes::from(vec![1_u8, 2, 3]));
         let stats = *state.stats.lock().expect("stats");
         assert_eq!((stats.stale_epoch, stats.received), (1, 1));
@@ -926,7 +873,6 @@ mod tests {
         let mut gate = Gate::new(10.0);
         let admitted = (0..100_i64).filter(|i| gate.admit(i * 10_000_000)).count();
         assert!((10..=12).contains(&admitted), "{admitted} of 100 at 100 Hz");
-        // Jitter around the declared rate is not decimation.
         let mut gate = Gate::new(30.0);
         let admitted = (0..300_i64)
             .filter(|i| gate.admit(i * 33_333_333 + if i % 2 == 0 { 2_000_000 } else { 0 }))
@@ -938,10 +884,8 @@ mod tests {
     fn live_samples_wait_while_warming_and_merge_by_seq() {
         let (_tx, view) = watch::channel(None);
         let state = state(8, view);
-        // Live samples, opened, wait in the warming buffer.
         *state.warming.lock().expect("lock") = Some(vec![sample(5, 1, 24), sample(6, 1, 24)]);
         assert_eq!(state.stats.lock().expect("stats").received, 0, "buffered");
-        // History up to the first live seq, overlapping it by one.
         for seq in [3, 4, 5] {
             state.on_sample(sample(seq, 1, 24), true);
         }

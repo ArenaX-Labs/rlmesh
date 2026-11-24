@@ -1,5 +1,3 @@
-//! Cancellation of a server's startup, serve and shutdown.
-
 use super::*;
 use crate::ext::CancelToken;
 use std::sync::atomic::{AtomicUsize, Ordering};

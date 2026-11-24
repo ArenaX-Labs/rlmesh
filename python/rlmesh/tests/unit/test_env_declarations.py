@@ -1,12 +1,3 @@
-"""An env's camera dial and its episode-cap requirement, end to end.
-
-`EnvFactory.render_params` names the two `make` params that set the camera
-resolution, and `requires_episode_cap` says the env never truncates on its own.
-Both ride the env's metadata; a sandbox driver binds the model's
-`Image(render=...)` size on the dial before `make`, and a run against an env
-that needs a cap is refused when it has none.
-"""
-
 from __future__ import annotations
 
 from typing import Any, ClassVar
@@ -30,7 +21,7 @@ class _TinyEnv:
         return 0, {}
 
     def step(self, action: object) -> tuple[int, float, bool, bool, dict]:
-        return 0, 0.0, False, False, {}  # never ends on its own
+        return 0, 0.0, False, False, {}
 
     def close(self) -> None:
         pass
@@ -79,7 +70,7 @@ def test_serve_binds_the_render_size_under_the_explicit_binding(
 
     assert serve.main(["--env", "pkg:Env"]) == 0
     assert captured["cam_height"] == 224
-    assert captured["cam_width"] == 300  # the caller's own param wins
+    assert captured["cam_width"] == 300
 
 
 def _spec(**images: adapt.Image) -> adapt.ModelSpec:

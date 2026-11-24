@@ -1,14 +1,4 @@
-"""Shared remote-client base for single- and vector-environment clients.
-
-Holds the connection/handshake/lifecycle and the space accessors common to
-:class:`rlmesh._client._remote_env.RemoteEnvBase` and
-:class:`rlmesh._client._remote_vector_env.RemoteVectorEnvBase`. The arity- and
-backend-specific pieces -- which native client to build (``_make_client``),
-metadata adaptation (``_adapt_metadata``), and the step/reset shapes +
-space-cache attributes -- are subclass hooks/overrides. The native client dials,
-handshakes and checks the endpoint's arity in its constructor. Not part of the
-public API.
-"""
+"""Shared remote-client base for single- and vector-environment clients."""
 
 from __future__ import annotations
 
@@ -25,7 +15,6 @@ from . import _gym
 from ._endpoint import normalize_connect_address, redact_address
 from ._metadata import EMPTY_METADATA
 
-# The contract metadata key the served env's `EnvSpec` travels under.
 _GYM_SPEC_KEY = "rlmesh.gym.spec"
 
 ValueT = TypeVar("ValueT")
@@ -41,9 +30,7 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
     """
 
     _bridge: ClassVar[ValueBridge]
-    #: Whether this client is a Gymnasium env: with gymnasium installed, it
-    #: exposes the env's own Gymnasium spaces and info; the NumPy backend
-    #: also takes Gymnasium's value types (see ``_gym_values``).
+    #: Whether this client is a Gymnasium env.
     _gym: ClassVar[bool] = False
     _address: str
     _client: Any
@@ -72,16 +59,11 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         workflow_edition: str | None = None,
     ) -> None:
         self._bridge.ensure_available()
-        # This client is the runtime tier of its session, so it declares an
-        # edition like any other participant: the explicit keyword, else the
-        # process / project surfaces (see :mod:`rlmesh._editions`).
         workflow_edition = resolve_workflow_edition(call=workflow_edition)
         normalized_address = normalize_connect_address(
             address,
         )
         refuse_v1_address(type(self).__name__, normalized_address)
-        # Dials, handshakes and checks the arity; a dial failure already
-        # reads "could not connect to an env at ...".
         self._client = self._make_client(
             normalized_address,
             connect_timeout_seconds,
@@ -89,16 +71,11 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
             workflow_edition,
         )
         self._address = self._client.address()
-        # A local conversion of the handshake's contract; no I/O.
         self._env_contract: EnvContract = self._client.handshake()
-        # Accessors read state outside the client's per-call borrow, so they
-        # work while another thread is in a call.
         self._env_id: str = self._client.env_id()
-        # A v2-native robot's Gym view, not a served Gym env.
         self._drives_view: bool = self._client.drives_view()
         self._edition_cell = self._client.edition_cell()
 
-    # --- arity / backend hooks -------------------------------------------------
     def _make_client(
         self,
         address: str,
@@ -106,21 +83,18 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         request_timeout_seconds: float | None,
         workflow_edition: str | None,
     ) -> Any:
-        """Build and return the native client. Overridden per arity."""
         raise NotImplementedError
 
     def _adapt_metadata(self, metadata: Mapping[str, object]) -> Metadata:
-        """Post-process endpoint metadata. Default: return it unchanged."""
         return metadata
 
-    # --- shared properties -----------------------------------------------------
     @property
     def address(self) -> str:
         """Endpoint address this client is connected to."""
         return self._address
 
     def __repr__(self) -> str:
-        # The address may carry its session's key: the repr leaves it out.
+        # The address may carry the session's key; the repr omits it.
         address = getattr(self, "_address", None)
         shown = "<unconnected>" if address is None else redact_address(address)
         return f"{type(self).__name__}(address={shown!r})"
@@ -190,7 +164,6 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         """Native action space spec reported by the endpoint."""
         return self._space_spec("action")
 
-    # --- shared methods --------------------------------------------------------
     def render(self, *, env_index: int = 0) -> ValueT | None:
         """Render a frame from the remote environment.
 
@@ -222,7 +195,6 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
 
     @property
     def _gym_values(self) -> bool:
-        """Whether values convert to Gymnasium's NumPy types; torch and jax stay tensors."""
         return self._gym_active and getattr(self._bridge, "name", None) == "numpy"
 
     def _load_observation_space(self) -> Space[ValueT]:

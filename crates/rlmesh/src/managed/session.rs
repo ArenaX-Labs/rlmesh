@@ -1,9 +1,4 @@
 //! Access-token lifecycle for a signed-in profile.
-//!
-//! A stored access token is used until it is about to expire; only then is
-//! the single-use refresh token exchanged, under a per-profile lock so two
-//! concurrent commands (a parallel `docker push`, a script looping over
-//! `rlmesh token`) rotate the session once instead of racing each other.
 
 use super::sign_in::{discover_sign_in_endpoints, exchange_refresh_token};
 use super::store::{Credentials, ProfileStore, ResolvedProfile, ensure_private_dir};
@@ -16,22 +11,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// A token this close to expiry is refreshed ahead of time so a request
-/// started now does not land on the server after it lapses.
 const REFRESH_LEEWAY: Duration = Duration::from_secs(60);
-// The lock guards exactly one request (the token exchange), which the HTTP
-// client bounds at 10s connect + 30s total. The stale window must exceed
-// that worst case, and a waiter must outlast the window so it can reclaim
-// an abandoned lock instead of giving up first.
+// The stale window must exceed the HTTP client's worst case (10s connect + 30s total),
+// and a waiter must outlast it so it can reclaim an abandoned lock.
 const LOCK_STALE_AFTER: Duration = Duration::from_secs(60);
 const LOCK_WAIT: Duration = Duration::from_secs(90);
 const LOCK_POLL: Duration = Duration::from_millis(100);
 
-/// The one claim the client reads from an access token: the standard `exp`.
-/// The payload is decoded without verifying the signature; the platform
-/// validates tokens, the client only schedules refreshes. Everything else
-/// about a session (the active organization included) comes from /v1/me,
-/// so no provider-specific claim name ever leaks into the client.
 #[derive(Deserialize, Default)]
 struct Claims {
     #[serde(default)]
@@ -48,12 +34,9 @@ fn decode_claims(jwt: &str) -> Option<Claims> {
 
 fn access_token_expires_at(jwt: &str) -> Option<SystemTime> {
     let exp = decode_claims(jwt)?.exp?;
-    // An absurd exp from a hostile or buggy endpoint is "unknown", not a panic.
     UNIX_EPOCH.checked_add(Duration::from_secs(exp))
 }
 
-/// False when the expiry is unknown (an opaque token): those are refreshed
-/// on every use, as the CLI did before it read `exp` at all.
 fn is_fresh_at(jwt: &str, now: SystemTime) -> bool {
     access_token_expires_at(jwt).is_some_and(|expires_at| expires_at > now + REFRESH_LEEWAY)
 }
@@ -125,12 +108,10 @@ async fn refresh_session(
         return Ok(Session::from_credentials(credentials));
     }
 
-    // Discovery (and the pin check) run before the lock so the critical
-    // section is exactly one request: the token exchange itself.
+    // Discovery runs before the lock so the critical section is exactly one request.
     let endpoints = discover_sign_in_endpoints(client, profile).await?;
     let _lock = acquire_session_lock(&profiles.lock_path(&profile.name)).await?;
-    // Another process may have rotated the session while this one waited
-    // for the lock; its refresh token is the only one that still works.
+    // Another process may have rotated the session while this one waited for the lock.
     let credentials = stored_credentials(profiles, profile, true)?;
     if refresh == Refresh::IfStale && is_fresh_at(&credentials.access_token, SystemTime::now()) {
         return Ok(Session::from_credentials(credentials));
@@ -176,9 +157,6 @@ fn stored_credentials(
     })
 }
 
-/// A `create_new` lock file: atomic on every platform the CLI ships for,
-/// with no extra dependency. A crashed holder is detected by age, since the
-/// critical section is one bounded HTTP request.
 struct SessionLock {
     path: PathBuf,
 }
@@ -198,8 +176,7 @@ async fn acquire_session_lock(path: &Path) -> Result<SessionLock> {
         match OpenOptions::new().write(true).create_new(true).open(path) {
             Ok(mut file) => {
                 let _ = writeln!(file, "{}", std::process::id());
-                // The handle closes here, before the guard is handed out, so
-                // the file can be removed on Windows too.
+                // Close the handle before handing out the guard so the file can be removed on Windows.
                 drop(file);
                 return Ok(SessionLock {
                     path: path.to_owned(),
@@ -249,7 +226,6 @@ mod tests {
         let claims = decode_claims(&token).unwrap();
         assert_eq!(claims.exp, Some(1_700_000_000));
 
-        // Padded payloads and payloads without exp still decode.
         let padded = format!(
             "h.{}=.s",
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("{}")
@@ -268,7 +244,6 @@ mod tests {
         assert!(!is_fresh_at(&stale, now));
         assert!(!is_fresh_at(&jwt("{}"), now));
         assert!(!is_fresh_at("opaque-token", now));
-        // An exp beyond what SystemTime can hold is unknown, never a panic.
         assert!(access_token_expires_at(&jwt(r#"{"exp":18446744073709551615}"#)).is_none());
         assert!(!is_fresh_at(&jwt(r#"{"exp":18446744073709551615}"#), now));
     }
@@ -286,7 +261,6 @@ mod tests {
         drop(held);
         assert!(!path.exists());
 
-        // A lock left behind by a crashed process is old, so it is reclaimed.
         fs::write(&path, "1\n").unwrap();
         let file = fs::File::options().write(true).open(&path).unwrap();
         file.set_modified(SystemTime::now() - LOCK_STALE_AFTER - Duration::from_secs(5))

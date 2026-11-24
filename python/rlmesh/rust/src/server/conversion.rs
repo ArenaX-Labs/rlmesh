@@ -1,7 +1,3 @@
-//! Conversions between gymnasium Python objects and RLMesh native values:
-//! reset/step result normalization, render-frame PNG encoding, and env metadata
-//! extraction (render mode, autoreset convention).
-
 use image::ColorType;
 use image::ImageEncoder;
 use image::codecs::png::PngEncoder;
@@ -32,8 +28,6 @@ fn extract_optional_meta_attr(
 /// `EnvSpec.to_json()` (a client strips it from the metadata it reports).
 pub(super) const GYM_SPEC_KEY: &str = "rlmesh.gym.spec";
 
-/// `spec_json(env)`: the env's `EnvSpec` as JSON, or `None`. A spec whose
-/// kwargs or entry points are not JSON keeps its basic fields.
 const SPEC_JSON: &std::ffi::CStr = cr#"
 import dataclasses
 
@@ -88,17 +82,8 @@ pub(super) fn extract_render_mode(obj: &Bound<'_, PyAny>) -> PyResult<String> {
     value.extract::<String>()
 }
 
-/// Derive the per-lane autoreset convention from the env's
-/// `metadata["autoreset_mode"]` (gymnasium vector envs always set it). The value
-/// is either a gymnasium `AutoresetMode` enum (whose `.value` is one of
-/// `"NextStep"`/`"SameStep"`/`"Disabled"`) or that plain string.
-///
-/// An absent key, or no metadata at all, defaults to `Disabled`; a scalar/custom
-/// env naturally needs explicit reset. A present value is held to the contract:
-/// an explicit `None`, a non-string, or an unrecognized string raises
-/// `ValueError` rather than silently downgrading to `Disabled`, which would
-/// double-reset a mislabeled self-autoresetting env. `SameStep` is served on
-/// v2 sessions (the v1 wire and `Model.run` refuse it).
+/// Derive the per-lane autoreset convention from the env's `metadata["autoreset_mode"]`: a
+/// gymnasium `AutoresetMode` enum (`NextStep`/`SameStep`/`Disabled`) or that plain string.
 pub(super) fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<AutoresetMode> {
     if !obj.hasattr("metadata")? {
         return Ok(AutoresetMode::Disabled);
@@ -107,9 +92,6 @@ pub(super) fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<Autorese
     if metadata.is_none() {
         return Ok(AutoresetMode::Disabled);
     }
-    // A missing key or non-subscriptable metadata defaults to Disabled; a
-    // scalar/custom env legitimately omits it. A present key with `None` is a
-    // deliberate value held to the contract, not the same as absent.
     let mode_obj = match metadata.get_item("autoreset_mode") {
         Err(_) => return Ok(AutoresetMode::Disabled),
         Ok(value) if value.is_none() => {
@@ -122,9 +104,6 @@ pub(super) fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<Autorese
         Ok(value) => value,
     };
 
-    // A gymnasium AutoresetMode enum carries the canonical string in `.value`;
-    // a wire-degraded value is already a plain string. The key is present (past
-    // the get_item guard), so a non-string value is a contract violation.
     let non_string_err = || {
         PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "metadata[\"autoreset_mode\"] must be a gymnasium AutoresetMode enum or one of \
@@ -144,9 +123,6 @@ pub(super) fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<Autorese
         "NextStep" => Ok(AutoresetMode::NextStep),
         "Disabled" => Ok(AutoresetMode::Disabled),
         "SameStep" => Ok(AutoresetMode::SameStep),
-        // Present but unrecognized: either a typo or a mode this runtime does
-        // not know. Erroring beats silently downgrading to DISABLED, which would
-        // double-reset a self-autoresetting env.
         other => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "unrecognized metadata[\"autoreset_mode\"] {other:?}; expected a gymnasium \
              AutoresetMode enum or one of \"NextStep\"/\"SameStep\"/\"Disabled\""
@@ -478,8 +454,6 @@ mod tests {
         });
     }
 
-    /// Build a gymnasium-like env whose `metadata["autoreset_mode"]` is `value`
-    /// (or omit the key entirely when `value` is None).
     fn env_with_mode<'py>(py: Python<'py>, value: Option<Bound<'py, PyAny>>) -> Bound<'py, PyAny> {
         let metadata = PyDict::new(py);
         if let Some(v) = value {
@@ -495,7 +469,6 @@ mod tests {
             .unwrap()
     }
 
-    /// A gymnasium `AutoresetMode` enum stand-in: an object exposing `.value`.
     fn enum_like<'py>(py: Python<'py>, value: Bound<'py, PyAny>) -> Bound<'py, PyAny> {
         let kwargs = PyDict::new(py);
         kwargs.set_item("value", value).unwrap();
@@ -514,33 +487,25 @@ mod tests {
     #[test]
     fn derive_autoreset_mode_table() {
         Python::attach(|py| {
-            // (env, expected): Some(mode) is accepted; None means it must error.
             let cases: Vec<(Bound<'_, PyAny>, Option<AutoresetMode>)> = vec![
-                // gymnasium enum carries the canonical string in `.value`
                 (
                     env_with_mode(py, Some(enum_like(py, pystr(py, "NextStep")))),
                     Some(AutoresetMode::NextStep),
                 ),
-                // wire-degraded plain string
                 (
                     env_with_mode(py, Some(pystr(py, "Disabled"))),
                     Some(AutoresetMode::Disabled),
                 ),
-                // metadata present, no autoreset_mode key -> default Disabled
                 (env_with_mode(py, None), Some(AutoresetMode::Disabled)),
-                // no metadata attribute at all (scalar/custom env) -> Disabled
                 (
                     7i64.into_pyobject(py).unwrap().into_any(),
                     Some(AutoresetMode::Disabled),
                 ),
-                // key present but explicitly None -> error, not a downgrade
                 (env_with_mode(py, Some(py.None().into_bound(py))), None),
-                // present non-string -> error
                 (
                     env_with_mode(py, Some(1i64.into_pyobject(py).unwrap().into_any())),
                     None,
                 ),
-                // enum-like whose `.value` is non-string -> error
                 (
                     env_with_mode(
                         py,
@@ -548,7 +513,6 @@ mod tests {
                     ),
                     None,
                 ),
-                // unrecognized string -> error
                 (env_with_mode(py, Some(pystr(py, "Bogus"))), None),
                 (
                     env_with_mode(py, Some(pystr(py, "SameStep"))),

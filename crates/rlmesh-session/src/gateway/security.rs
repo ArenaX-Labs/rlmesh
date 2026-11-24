@@ -1,25 +1,18 @@
 //! Who may open a gateway WebSocket, and what one connection may do.
 //!
 //! - **Bind:** loopback (127.0.0.1) by default.
-//! - **Token:** every socket needs one (no tokenless loopback), carried in the WebSocket
-//!   subprotocol list, as `rlmesh.token.<token>`, next to `rlmesh.v2`. Browsers cannot set headers
-//!   on a WebSocket, so the choice was the subprotocol or a `?token=` query. The subprotocol wins:
-//!   URLs end up in access logs, proxy logs, tracing spans and devtools/resource-timing entries,
-//!   while the `Sec-WebSocket-Protocol` header normally is not logged. The gateway answers with
-//!   `rlmesh.v2` only, never echoes the token, and keeps only hashes of tokens
-//!   ([`pairing::token_hash`]). A token is either
-//!   - this machine's page token (`RLMESH_GATEWAY_TOKEN` or `--token-file`, which the page gets in
-//!     its URL fragment, `/#t=…`, never sent to a server): its browser attaches with the gateway's
-//!     own credential, at `--max-priority` at most; or
-//!   - a browser token paired with the host (`rlmesh pair HOST --browser`): a device of
-//!     its own, whose key the gateway attaches its browser with, so the host applies that device's
-//!     cap, parts and verbs, and revoking it detaches exactly that browser.
-//! - **Origin:** an allowlist. The default is the origin(s) this gateway serves its own page from,
-//!   computed from the bind address and port (`http(s)://127.0.0.1:P`, `localhost:P`, `[::1]:P`),
-//!   never from the request's `Host` header, so DNS rebinding (evil.example resolving to 127.0.0.1)
-//!   does not pass. A request without `Origin` is not from a browser page and is allowed; the token
-//!   still applies to it.
-//! - **Limits per connection:** a maximum inbound message (and frame) size, and a cap on stream
+//! - **Token:** every socket needs one, carried in the WebSocket subprotocol list as
+//!   `rlmesh.token.<token>` next to `rlmesh.v2`, never in the URL. The gateway answers with
+//!   `rlmesh.v2` only, never echoes the token, and keeps only token hashes
+//!   ([`pairing::token_hash`]). A token is either this machine's page token
+//!   (`RLMESH_GATEWAY_TOKEN` or `--token-file`; the page gets it in its URL fragment), whose
+//!   browser attaches with the gateway's own credential at `--max-priority` at most, or a
+//!   browser token paired with the host (`rlmesh pair HOST --browser`), a device of its own
+//!   whose cap, parts and verbs the host applies and which can be revoked alone.
+//! - **Origin:** an allowlist, by default the origins this gateway serves its page from,
+//!   computed from the bind address and port, never from the request's `Host` header, so DNS
+//!   rebinding does not pass. A request without `Origin` is allowed; the token still applies.
+//! - **Limits per connection:** a maximum inbound message and frame size, and a cap on stream
 //!   subscriptions. Over-cap and duplicate subscriptions are ignored and logged.
 
 use axum::extract::ws::{CloseFrame, Message, WebSocketUpgrade};
@@ -174,7 +167,6 @@ pub fn validate_token(t: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The offered subprotocols, across repeated headers and comma lists.
 fn offered_protocols(h: &HeaderMap) -> impl Iterator<Item = &str> {
     h.get_all(header::SEC_WEBSOCKET_PROTOCOL)
         .iter()
@@ -238,10 +230,9 @@ pub async fn guard(State(policy): State<Arc<Policy>>, mut req: Request, next: Ne
         .unwrap_or("-")
         .to_string();
     warn!(path = %req.uri().path(), origin = %peer, "rejected: {r}");
-    // A browser cannot read the status of a refused upgrade, so a WebSocket
-    // is accepted here, never reaching the route, and closed with the
-    // reason (4401, 4403) for the page to report at once.
     let (mut parts, _) = req.into_parts();
+    // A browser cannot read the status of a refused upgrade, so the WebSocket is accepted and
+    // closed with the reason (4401, 4403) for the page to report.
     match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
         Ok(ws) => {
             let (code, reason) = (r.close_code(), r.to_string());
@@ -411,7 +402,6 @@ mod tests {
         let ok = Some(ok.as_str());
         assert_eq!(check(&p, Some("http://127.0.0.1:18080"), ok), Ok(()));
         assert_eq!(check(&p, Some("HTTP://LOCALHOST:18080"), ok), Ok(()));
-        // DNS rebinding: the page origin is evil even though it resolves to loopback.
         let r = check(&p, Some("http://evil.example:18080"), ok);
         assert_eq!(
             r,
@@ -419,7 +409,6 @@ mod tests {
         );
         assert_eq!(r.unwrap_err().status(), StatusCode::FORBIDDEN);
         assert!(check(&p, Some("http://127.0.0.1:9999"), ok).is_err());
-        // No Origin: not a browser page; allowed (the token still applies).
         assert_eq!(check(&p, None, ok), Ok(()));
         let any = Policy {
             origins: Origins::Any,

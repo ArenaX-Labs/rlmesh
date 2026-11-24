@@ -34,7 +34,6 @@ wasm-bindgen = "=0.2.129"
 web-time = "1"
 
 [dev-dependencies]
-# Test fixtures: robot maps normalised as the host would.
 wasm-bindgen-test = "0.3"
 
 [lints]

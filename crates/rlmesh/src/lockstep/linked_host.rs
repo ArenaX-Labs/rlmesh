@@ -1,6 +1,5 @@
 //! For tests: a session host whose participants open links of their own
 //! (the lockstep session included), and a check that dropping what holds
-//! them takes no wakeup of another future on the dropping thread.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -12,12 +11,9 @@ use rlmesh_session::transport::{Transport, TransportConfig, open_local_listener}
 use rlmesh_session::wire::{ParticipantId, PriorityClass, Role, SessionKeys};
 use rlmesh_session::{HostConfig, Participant, ParticipantConfig, SessionHost};
 
-/// A host on free local ports, not registered as this process's: a
-/// participant joining it links to it rather than riding its sessions.
 pub(crate) struct LinkedHost {
     transport: Transport,
     host: SessionHost,
-    /// Its address (only the base and the session matter here).
     pub(crate) address: SessionAddress,
 }
 
@@ -39,7 +35,6 @@ impl LinkedHost {
         }
     }
 
-    /// Attaches `id` over links of its own.
     pub(crate) async fn attach(
         &self,
         id: &str,
@@ -63,12 +58,10 @@ impl LinkedHost {
             .expect("attach")
     }
 
-    /// The session's keys.
     pub(crate) fn keys(&self) -> SessionKeys {
         SessionKeys::new(&self.address.tenant, self.address.session)
     }
 
-    /// Waits until something answers a query on `key` (a refusal counts).
     pub(crate) async fn answered(&self, key: &str) {
         loop {
             let replies = self
@@ -86,10 +79,6 @@ impl LinkedHost {
     }
 }
 
-/// Polls `sibling` once, on a thread blocking on a future of a multi-thread
-/// runtime, with a timer pending whose wakeup has fired; then waits only for
-/// that timer. A sibling that took the wakeup (a Zenoh close in a nested
-/// `block_on` on the same thread) leaves it waiting forever.
 pub(crate) fn timer_survives(sibling: impl Future<Output = ()> + Send + 'static) -> bool {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -107,9 +96,7 @@ pub(crate) fn timer_survives(sibling: impl Future<Output = ()> + Send + 'static)
                     return Poll::Ready(());
                 }
                 if let Some(mut polled) = sibling.take() {
-                    // The timer fires meanwhile: its wakeup is pending here.
                     std::thread::sleep(Duration::from_millis(50));
-                    // Kept pending or not, it is not polled again.
                     let _ = polled.as_mut().poll(cx);
                     std::mem::forget(polled);
                 }

@@ -3,21 +3,15 @@
 //! links, where one lost frame holds back everything behind it until it is
 //! sent again (see [`rlmesh_session_core::datagram`]).
 //!
-//! The host is the relay. Down, it subscribes to each routed part's chunk
-//! key as any subscriber would and sends the sealed bytes on in a datagram,
-//! the newest only: a chunk that finds the previous one still waiting for the
-//! socket replaces it. Up, it opens each sample datagram under the stream's
-//! key (with a replay window of its own) and publishes the bytes on their key
-//! as the board would have, so policies, the recorder, history and viewers
-//! see the same samples whichever path they took. It never unseals a chunk.
+//! The host is the relay. Down, it subscribes to each routed part's chunk key and forwards the
+//! sealed bytes in a datagram, newest only: a chunk that finds the previous one still waiting for
+//! the socket replaces it. Up, it opens each sample datagram under the stream's key (with its own
+//! replay window) and publishes the bytes on their key, so every reader sees the same samples
+//! whichever path they took. It never unseals a chunk.
 //!
-//! It sends a robot nothing before it opened a probe from it under the
-//! robot's `k_up`, and only to the address of the newest probe that opened:
-//! no other key moves it, since a stream key is every reader's. It answers
-//! nothing it could not open, and nothing at all to a probe.
-//!
-//! One relay serves every session a host process runs, on one UDP port: a
-//! datagram's route names its robot and session.
+//! It sends a robot nothing before it opened a probe from it under the robot's `k_up`, and only to
+//! the address of the newest probe that opened. It answers nothing it could not open, and nothing
+//! at all to a probe. One relay serves every session of a host process on one UDP port.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -79,7 +73,6 @@ enum Route {
     Up(Arc<RobotPath>, Arc<Up>),
 }
 
-/// One part's chunks, host to board.
 pub(super) struct Down {
     pub(super) id: u16,
     pub(super) channel: ChannelId,
@@ -91,7 +84,6 @@ pub(super) struct Down {
     subscriber: Mutex<Option<zenoh::pubsub::Subscriber<()>>>,
 }
 
-/// One stream's samples, board to host.
 pub(super) struct Up {
     pub(super) id: u16,
     pub(super) channel: ChannelId,
@@ -101,7 +93,6 @@ pub(super) struct Up {
     windows: Mutex<StreamWindows>,
 }
 
-/// One robot generation on the datagram path.
 pub(super) struct RobotPath {
     pub(super) robot: ParticipantId,
     pub(super) generation: u32,
@@ -127,8 +118,6 @@ struct PathState {
     relay: RelayTiming,
 }
 
-/// What one end of a robot's path counted, for judging it: datagrams the
-/// host sent, and the probes and samples from the board that opened.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct PathCounts {
     pub(super) sent: u64,
@@ -137,7 +126,6 @@ pub(super) struct PathCounts {
 }
 
 impl RobotPath {
-    /// What this end counted.
     pub(super) fn stats(&self) -> DatagramStats {
         let state = lock(&self.state);
         DatagramStats {
@@ -151,12 +139,10 @@ impl RobotPath {
         }
     }
 
-    /// How long its chunks took through the relay.
     pub(super) fn relay_timing(&self) -> RelayTiming {
         lock(&self.state).relay
     }
 
-    /// Its counts, for judging the path.
     pub(super) fn counts(&self) -> PathCounts {
         let state = lock(&self.state);
         PathCounts {
@@ -166,13 +152,11 @@ impl RobotPath {
         }
     }
 
-    /// Since the newest probe that opened (`None`: none has).
     pub(super) fn probe_age(&self, now: Instant) -> Option<std::time::Duration> {
         let state = lock(&self.state);
         state.last_probe.map(|at| now.saturating_duration_since(at))
     }
 
-    /// The host moves the robot's parts back to the session's links.
     pub(super) fn fall_back(&self) {
         let mut state = lock(&self.state);
         if state.active {
@@ -181,12 +165,10 @@ impl RobotPath {
         }
     }
 
-    /// And onto the path again.
     pub(super) fn reactivate(&self) {
         lock(&self.state).active = true;
     }
 
-    /// A probe that opens under the robot's `k_up`.
     fn open_probe(&self, payload: &[u8]) -> bool {
         let mut msg = payload.to_vec();
         matches!(
@@ -195,8 +177,6 @@ impl RobotPath {
         )
     }
 
-    /// A sample that opens under its stream's key, and is no copy of one
-    /// that did.
     fn open_sample(&self, up: &Up, payload: &[u8]) -> bool {
         let mut windows = lock(&up.windows);
         let opening = lock(&self.host_keys).begin_open_stream(
@@ -209,7 +189,6 @@ impl RobotPath {
         let Ok((opening, version)) = opening else {
             return false;
         };
-        // Decrypted in a copy: the bytes go on as they came.
         let mut copy = payload.to_vec();
         match opening.finish(&up.key, &mut copy) {
             Ok(opened) => windows.commit(&opened.header, version).is_ok(),
@@ -219,15 +198,12 @@ impl RobotPath {
 }
 
 impl Down {
-    /// The chunk too large for a datagram that arrived, if one did.
     pub(super) fn oversize(&self) -> Option<usize> {
         *lock(&self.oversize)
     }
 }
 
 /// How a host carries boards' realtime parts (`rlmesh host --board-data`).
-/// Every host this crate starts, embedded or `rlmesh host`, takes its
-/// default from here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BoardData {
     /// Over the session's TCP links.
@@ -353,7 +329,6 @@ impl DatagramRelay {
         self.inner.unrouted.load(Ordering::Relaxed)
     }
 
-    /// A robot generation on the path, with its probe route.
     pub(super) fn add_robot(
         &self,
         robot: ParticipantId,
@@ -386,8 +361,6 @@ impl DatagramRelay {
         Some(path)
     }
 
-    /// Part `channel`'s chunks on `key` down to `path`'s board, from
-    /// `session`'s subscriber.
     pub(super) async fn add_down(
         &self,
         path: &Arc<RobotPath>,
@@ -435,8 +408,6 @@ impl DatagramRelay {
         Some(down)
     }
 
-    /// Stream `channel`'s samples up from `path`'s board, published on `key`
-    /// by `publisher`.
     pub(super) fn add_up(
         &self,
         path: &Arc<RobotPath>,
@@ -459,18 +430,15 @@ impl DatagramRelay {
         Some(up)
     }
 
-    /// Drops `path`'s down route `down`: its subscriber goes with it.
     pub(super) fn remove_down(&self, down: &Down) {
         self.remove(down.id);
         lock(&down.subscriber).take();
     }
 
-    /// Drops `path`'s up route `up`.
     pub(super) fn remove_up(&self, up: &Up) {
         self.remove(up.id);
     }
 
-    /// Drops `path`'s probe route: nothing of it is routed after this.
     pub(super) fn remove_probe(&self, path: &RobotPath) {
         self.remove(path.probe);
     }
@@ -489,7 +457,6 @@ impl Drop for DatagramRelay {
 }
 
 impl Inner {
-    /// Sends one chunk on `down` to its robot, the newest only.
     fn forward(&self, path: &RobotPath, down: &Down, payload: &[u8]) {
         let got = Instant::now();
         let mut state = lock(&path.state);
@@ -507,8 +474,6 @@ impl Inner {
             *lock(&down.oversize) = Some(payload.len());
             return;
         };
-        // The newest goes first: one still waiting for the socket is
-        // replaced, never sent behind it.
         let mut waiting = lock(&down.waiting);
         if waiting.take().is_some() {
             waiting.replaced += 1;
@@ -526,7 +491,6 @@ impl Inner {
         }
     }
 
-    /// Takes one datagram from `from`.
     async fn take(&self, datagram: &[u8], from: SocketAddr) {
         let Ok((header, payload)) = Header::parse(datagram) else {
             self.unrouted.fetch_add(1, Ordering::Relaxed);
@@ -581,10 +545,7 @@ impl Inner {
     }
 }
 
-/// Takes every datagram that arrives, until cancelled.
 async fn receive(inner: Arc<Inner>, cancel: CancellationToken) {
-    // One byte past the largest a sender may send, so an oversize one is
-    // seen whole enough to refuse.
     let mut buf = vec![0_u8; MAX_RECEIVED + 1];
     loop {
         let received = tokio::select! {
@@ -593,18 +554,13 @@ async fn receive(inner: Arc<Inner>, cancel: CancellationToken) {
         };
         match received {
             Ok((n, from)) => inner.take(&buf[..n], from).await,
-            // An ICMP error from a robot that went away, on some systems.
             Err(err) => debug!(%err, "datagram path receive"),
         }
     }
 }
 
-/// How often a chunk the socket had no room for is tried again: a socket
-/// that refused one need not say when it has room.
 const RETRY: std::time::Duration = std::time::Duration::from_millis(2);
 
-/// Sends the chunks the socket had no room for when they arrived, the newest
-/// of each route only, until cancelled.
 async fn flush(inner: Arc<Inner>, cancel: CancellationToken) {
     loop {
         tokio::select! {

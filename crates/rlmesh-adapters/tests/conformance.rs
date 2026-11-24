@@ -1,16 +1,3 @@
-//! Run the v1 adapter conformance vectors against this implementation.
-//!
-//! Snapshot-style: expectations live in `conformance/v1/cases/*.json`.
-//! `UPDATE_VECTORS=1 cargo test -p rlmesh-adapters` rewrites the `expect`
-//! blocks (and normalizes resolve/apply input specs) from current
-//! behavior — review the diff before committing; a changed vector is a
-//! semantic change to v1 and must be additive. New resolve/apply cases are
-//! authored by hand: write the inputs with an empty `expect`, then run
-//! update mode once. `serialization` vectors are the FROZEN wire contract:
-//! their `doc` is NEVER rewritten (auto-normalizing would let a renamed or
-//! removed serde field self-heal green), so author the canonical `doc` by
-//! hand and let the round-trip assertion verify it.
-
 use std::fs;
 use std::path::PathBuf;
 
@@ -23,17 +10,10 @@ use rlmesh_spaces::scalar::{Scalar, decode_scalars, encode_scalars};
 use rlmesh_spaces::{DType, Tensor};
 use serde_json::{Value as Json, json};
 
-/// Whether a dtype is a float family (controls integer-vs-float JSON output).
 fn is_float_dtype(dtype: DType) -> bool {
     matches!(dtype, DType::Float16 | DType::Float32 | DType::Float64)
 }
 
-/// Assert every hand-curated `advisories_contain` substring still matches one of
-/// the resolve's advisories, as `"<severity>: <message>"`.
-///
-/// Hand-authored and never machine-written (the `error_contains` idiom): a
-/// vector states only the advisory it is *about*, so adding a case cannot
-/// silently re-pin every other note a resolve happens to raise.
 fn assert_advisories(name: &str, adapter: &rlmesh_adapters::v1::ResolvedAdapter, expect: &Json) {
     let Some(expected) = expect["advisories_contain"].as_array() else {
         return;
@@ -71,7 +51,6 @@ fn parse_inputs(case: &Json) -> (EnvTags, SpaceView, SpaceView, ModelSpec) {
     (tags, observation_space, action_space, model_spec)
 }
 
-/// Decode the conformance value encoding into an engine [`Value`].
 fn dec(value: &Json) -> Value {
     match value["kind"].as_str().expect("value kind") {
         "text" => Value::Text(value["data"].as_str().expect("text data").to_owned()),
@@ -116,8 +95,6 @@ fn dec(value: &Json) -> Value {
     }
 }
 
-/// Encode an engine [`Value`] into the conformance value encoding
-/// (inverse of [`dec`]); used by update mode to write expectations.
 fn enc(value: &Value) -> Json {
     match value {
         Value::None | Value::Bool(_) | Value::Int(_) | Value::Tuple(_) => {
@@ -168,13 +145,9 @@ fn enc(value: &Value) -> Json {
     }
 }
 
-/// Assert one produced value matches its expected conformance encoding.
 fn assert_value(name: &str, key: &str, actual: &Value, expected: &Json, atol: f64) {
     match expected["kind"].as_str().expect("expected kind") {
         "map" => {
-            // The assembled obs payload is now a single `Value::Map` tree
-            // (placement-keyed), pinned by update mode as one `map`-kind value;
-            // recurse into each entry so a leaf mismatch still localizes.
             let Value::Map(entries) = actual else {
                 panic!("{name}/{key}: expected map, got {actual:?}");
             };
@@ -282,13 +255,6 @@ fn assert_value(name: &str, key: &str, actual: &Value, expected: &Json, atol: f6
     }
 }
 
-/// Recompute a case's normalized spec documents and `expect` block from
-/// current behavior (update mode).
-///
-/// Cases with `"preserve_inputs": true` keep their spec documents
-/// verbatim — used by defaults-pinning cases whose specs are
-/// deliberately minimal (every omitted field must resolve to the same
-/// default in every implementation).
 fn updated_case(name: &str, case: &Json) -> Json {
     let preserve_inputs = case["preserve_inputs"] == Json::Bool(true);
     let mut out = case.clone();
@@ -307,8 +273,6 @@ fn updated_case(name: &str, case: &Json) -> Json {
             out["expect"] = match resolve(&tags, &obs_space, &action_space, &model_spec, false) {
                 Ok(adapter) => {
                     let mut expect = json!({"ok": true, "describe": adapter.describe()});
-                    // Curated, so carried through verbatim rather than rewritten
-                    // -- and checked here so update mode cannot bless a stale one.
                     if let Some(curated) = case["expect"].get("advisories_contain") {
                         assert_advisories(name, &adapter, &case["expect"]);
                         expect["advisories_contain"] = curated.clone();
@@ -316,8 +280,6 @@ fn updated_case(name: &str, case: &Json) -> Json {
                     expect
                 }
                 Err(error) => {
-                    // Keep a hand-curated substring when it still matches;
-                    // otherwise pin the full current message.
                     let existing = case["expect"]["error_contains"].as_str();
                     let pinned = match existing {
                         Some(sub) if error.message.contains(sub) => sub.to_owned(),
@@ -345,8 +307,6 @@ fn updated_case(name: &str, case: &Json) -> Json {
             let action = transform_action(&adapter, &dec(&case["model_output"]))
                 .unwrap_or_else(|e| panic!("{name}: transform_action failed: {e}"));
             let atol = case["expect"]["atol"].clone();
-            // The assembled payload is now a Value tree; the conformance schema
-            // pins it as a single encoded value.
             out["expect"] = json!({
                 "payload": enc(&payload),
                 "action": enc(&Value::Tensor(action)),
@@ -378,12 +338,6 @@ fn updated_case(name: &str, case: &Json) -> Json {
     out
 }
 
-/// Drive a case's `observations` through the stateful assemble seam, one
-/// episode, and collect the payload each step produced.
-///
-/// The stateful entry point ([`assemble_obs`]) rather than the stateless one:
-/// what these vectors pin is the frame window across steps, which does not exist
-/// in a single `transform_obs`.
 fn sequence_payloads(
     name: &str,
     adapter: &rlmesh_adapters::v1::ResolvedAdapter,
@@ -466,8 +420,6 @@ fn verify_case(name: &str, case: &Json) {
             };
             let payload = transform_obs(&adapter, &raw_obs, &NoCustoms)
                 .unwrap_or_else(|e| panic!("{name}: transform_obs failed: {e}"));
-            // The assembled payload is now a Value tree; the conformance schema
-            // pins it as a single encoded value compared structurally.
             assert_value(name, "payload", &payload, &case["expect"]["payload"], atol);
 
             let action = transform_action(&adapter, &dec(&case["model_output"]))
@@ -480,10 +432,6 @@ fn verify_case(name: &str, case: &Json) {
                 atol,
             );
         }
-        // The publish-gate role policy: `doc` is a spec, `policy` names the
-        // tier, and the expectation is acceptance or a pinned rejection
-        // substring. Frozen like `serialization` — the policy table IS the
-        // contract, so update mode never rewrites it.
         "role_policy" => {
             let policy = match case["policy"].as_str().expect("case policy") {
                 "passthrough" => RolePolicy::Passthrough,
@@ -513,9 +461,6 @@ fn verify_case(name: &str, case: &Json) {
                 ),
             }
         }
-        // A frame window only exists ACROSS steps, so this kind drives a sequence
-        // of observations through the stateful assemble seam and pins the payload
-        // each step produced. The `apply` kind stays single-shot.
         "apply_sequence" => {
             let (tags, obs_space, action_space, model_spec) = parse_inputs(case);
             let adapter = resolve(&tags, &obs_space, &action_space, &model_spec, false)
@@ -564,25 +509,13 @@ fn conformance_vectors() {
             text.push('\n');
             fs::write(&path, text).expect("writable case");
         } else {
-            // Serialization and role_policy vectors are the FROZEN v1
-            // contract: never rewritten, even under UPDATE_VECTORS
-            // (auto-normalizing let a renamed serde field, or a role quietly
-            // added to the registry, self-heal green). verify_case is their
-            // sole authority and runs in both modes.
             verify_case(&name, &case);
         }
         ran += 1;
     }
-    // Pinned to the committed vector count: a deleted vector must fail here,
-    // not vanish green. Bump when vectors are added.
     assert!(ran >= 118, "expected at least 118 vectors, ran {ran}");
 }
 
-/// The `zeros(n)` / `, pad to N` wording predates constant parts and fills, and
-/// Describe tokens (`const(n)=v`, `fill(n)=v`, `(post_rotate)`,
-/// `(*s +o)`) must render only when the new fields are used. Pinning the text
-/// here as a literal catches a rewrite that `UPDATE_VECTORS=1` would happily
-/// bless into the vector itself.
 #[test]
 fn existing_pad_and_zero_fill_text_is_unchanged() {
     let path = cases_dir().join("resolve_rot6d_with_optional_zero_fill.json");

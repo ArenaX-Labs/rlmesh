@@ -43,7 +43,6 @@ pub fn decode_binding(buf: &[u8]) -> Result<BindingRecord, WireError> {
     binding_from_pb(pb::BindingRecord::decode(buf)?)
 }
 
-/// Every code with its wire value, so both directions read one table.
 const REASON_CODES: [(ReasonCode, pb::ReasonCode); 30] = [
     (ReasonCode::Unspecified, pb::ReasonCode::Unspecified),
     (ReasonCode::Armed, pb::ReasonCode::Armed),
@@ -84,8 +83,6 @@ pub(super) fn reason_code_to_pb(code: ReasonCode) -> i32 {
         .map_or(0, |(_, pb)| *pb as i32)
 }
 
-/// A code this peer does not know yet (a newer minor's) reads as
-/// unspecified: reasons explain, they never gate.
 pub(super) fn reason_code_from_pb(raw: i32) -> ReasonCode {
     REASON_CODES
         .iter()

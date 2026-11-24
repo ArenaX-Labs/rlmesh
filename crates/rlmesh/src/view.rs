@@ -205,7 +205,6 @@ impl fmt::Display for View {
     }
 }
 
-/// A normalized uint8 HWC frame, shared by viewing and recording.
 pub(crate) struct Frame {
     pub(crate) data: Vec<u8>,
     pub(crate) width: u32,
@@ -213,7 +212,6 @@ pub(crate) struct Frame {
     pub(crate) channels: u32,
 }
 pub(crate) fn frame(value: &Value) -> Option<Frame> {
-    // Metadata's tensor conversion handles strided tensors and nested numeric lists.
     fn shape_values(
         v: &Value,
         shape: &mut Vec<usize>,
@@ -304,9 +302,8 @@ pub(crate) fn read_frame(read: &crate::ReadFn, camera: &str) -> Option<Frame> {
 
 /// HUD payload, formatted per-backend (JSON for HTTP, a line for the terminal).
 ///
-/// `fps` is the viewer's own draw rate (filled in by the viewer);
-/// every other field is supplied by the caller each step. A sentinel of `0` (or
-/// `-1` for `seed`) means "unknown / not applicable" and the backends omit it.
+/// `fps` is filled in by the viewer; the caller supplies every other field each step. A
+/// sentinel of `0` (or `-1` for `seed`) means unknown, and the backends omit it.
 #[derive(Clone)]
 #[cfg_attr(not(feature = "viewer"), allow(dead_code))]
 pub struct Hud {
@@ -343,8 +340,6 @@ pub struct Hud {
 }
 
 impl Default for Hud {
-    /// All-unknown HUD: zeroed counters/timings and the `-1` "no seed" sentinel (a
-    /// derived default would make `seed` read as a real seed of `0`).
     fn default() -> Self {
         Self {
             step: 0,

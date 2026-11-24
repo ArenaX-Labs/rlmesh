@@ -87,10 +87,8 @@ def test_numpy_asarray_is_writable_copy() -> None:
     tensor = Tensor(np.arange(4, dtype=np.float32).tobytes(), [4], "float32")
     array = rlmesh_numpy.asarray(tensor)
 
-    # Matches Gymnasium: decoded observations are writable.
     assert array.flags.writeable is True
     array[0] = 1.0
-    # Writing the decoded array must not corrupt the tensor buffer.
     np.testing.assert_array_equal(
         rlmesh_numpy.asarray(tensor),
         np.arange(4, dtype=np.float32),

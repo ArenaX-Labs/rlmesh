@@ -1,10 +1,8 @@
-//! Many routes against one model in one process: each route is one env
-//! target driven by the single-route run, beside the others. Routes start
-//! together behind a [`StartBarrier`], retry their env connect, and end with
-//! a verdict of their own: one route failing never stops its siblings.
-//!
-//! A served model batches across routes on its own side, so each route joins it
-//! from its own session; an in-process [`Model`](crate::Model) drives one route at a time.
+//! Many routes against one model in one process: each route is one env target.
+//! Routes start together, retry their env connect, and end with a verdict of their
+//! own: one route failing never stops its siblings. A served model batches across
+//! routes on its own side; an in-process [`Model`](crate::Model) drives one route
+//! at a time.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -20,16 +18,10 @@ use super::targets::ModelTarget;
 use super::{EnvTarget, RunOptions, RunResult, drive};
 use crate::{Error, Result};
 
-/// How long the first connected route waits for the rest, as the managed
-/// controller's default (`RLMESH_START_BARRIER_SECONDS`).
 const START_BARRIER_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// The env connect deadline of a route, retries included: the runtime's
-/// `env_connect_timeout` default.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// The first retry backoff, doubled per failed attempt up to
-/// [`MAX_BACKOFF`].
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_BACKOFF: Duration = Duration::from_secs(2);
 
@@ -45,7 +37,6 @@ pub struct Route<'a> {
     /// Derive each episode's reset seed from this base, the seed key and the
     /// episode's trial slot (`trial_index_base` + the route's slot), so
     /// routes that split one trial range draw the episodes one route would.
-    /// Explicit `options.seeds` win.
     pub base_seed: Option<i64>,
     /// What the seeds key on besides the base and the slot; `None` keys on
     /// the env's own id, which every container of one env image shares.
@@ -65,7 +56,6 @@ impl<'a> Route<'a> {
 }
 
 thread_local! {
-    /// Set on a route's own thread, where its hooks and local env run.
     static IN_ROUTE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -87,13 +77,12 @@ fn refuse_in_route() -> Result<()> {
     Ok(())
 }
 
-/// Drive `model` against every route at once and return each route's own
-/// result, in route order: a route that fails holds its error while the
-/// others run to completion. The outer error is one refused before any
-/// route starts. An in-process [`Model`](crate::Model) drives one route; reach a shared
-/// model at its served address (a [`RemoteModel`](crate::RemoteModel)) to
-/// fan it out. Each route runs on a thread of its own, so its hooks and
-/// local env are called there.
+/// Drive `model` against every route at once and return each route's own result, in route
+/// order: a route that fails holds its error while the others run to completion. The outer
+/// error is one refused before any route starts. An in-process [`Model`](crate::Model) drives
+/// one route; reach a shared model at its served address (a
+/// [`RemoteModel`](crate::RemoteModel)) to fan it out. Each route runs on a thread of its own,
+/// so its hooks and local env are called there.
 pub fn run_routes<'a>(
     model: impl Into<ModelTarget<'a>>,
     routes: Vec<Route<'a>>,
@@ -164,8 +153,6 @@ pub fn merge_results<'r>(results: impl IntoIterator<Item = &'r RunResult>) -> Ru
     }
 }
 
-/// One driven model per route: a served model and the random baseline fan
-/// out; an in-process model drives a single route.
 fn fan_out(model: Driven<'_>, routes: usize) -> Result<Vec<Driven<'_>>> {
     if routes <= 1 {
         return Ok((routes == 1).then_some(model).into_iter().collect());
@@ -185,8 +172,6 @@ fn fan_out(model: Driven<'_>, routes: usize) -> Result<Vec<Driven<'_>>> {
         .collect()
 }
 
-/// Every route on a thread of its own, each driven exactly as a sync run.
-/// This thread waits, polling the caller's signals as a sync run does.
 fn run_sync(routes: Vec<(Driven<'_>, Route<'_>)>) -> Vec<Result<RunResult>> {
     let barrier = Arc::new(StartBarrier::new(routes.len(), START_BARRIER_TIMEOUT));
     let total = routes.len();
@@ -197,8 +182,6 @@ fn run_sync(routes: Vec<(Driven<'_>, Route<'_>)>) -> Vec<Result<RunResult>> {
             .into_iter()
             .enumerate()
             .map(|(index, (model, route))| {
-                // Made before the spawn: a route whose thread never starts
-                // still counts at the barrier, and as done.
                 let finished = Finished(&done, waiter.clone());
                 let arrival = Arrival(Some(Arc::clone(&barrier)));
                 std::thread::Builder::new()
@@ -229,7 +212,6 @@ fn run_sync(routes: Vec<(Driven<'_>, Route<'_>)>) -> Vec<Result<RunResult>> {
     })
 }
 
-/// Counts a route done and wakes the waiting caller, however it ends.
 struct Finished<'d>(&'d AtomicUsize, std::thread::Thread);
 
 impl Drop for Finished<'_> {
@@ -268,7 +250,6 @@ async fn run_one(
     .await
 }
 
-/// What a route adds to a single run.
 #[derive(Default)]
 pub(crate) struct RouteSpec {
     pub(crate) start: Option<RouteStart>,
@@ -276,20 +257,14 @@ pub(crate) struct RouteSpec {
     pub(crate) seed_key: Option<String>,
 }
 
-/// A route's place in its run's start: its barrier arrival and its env
-/// connect deadline.
 pub(crate) struct RouteStart {
     pub(crate) arrival: Arrival,
     pub(crate) connect_timeout: Duration,
 }
 
-/// A route's arrival at the start barrier. Dropped before
-/// [`arrive`](Self::arrive), as a route that failed before it was ready, it
-/// counts toward the target without waiting.
 pub(crate) struct Arrival(Option<Arc<StartBarrier>>);
 
 impl Arrival {
-    /// Hold until the routes start together; see [`StartBarrier::arrive`].
     pub(crate) async fn arrive(mut self, cancellation: &CancellationToken) {
         if let Some(barrier) = self.0.take() {
             barrier.arrive(cancellation).await;
@@ -305,10 +280,6 @@ impl Drop for Arrival {
     }
 }
 
-/// Holds a run's routes after they connect until they can step together.
-/// Without it, routes whose envs come up first run a whole wave ahead of the
-/// slow ones, the waves never overlap, and a batching model's batches run
-/// half empty.
 pub(crate) struct StartBarrier {
     target: usize,
     timeout: Duration,
@@ -319,13 +290,10 @@ pub(crate) struct StartBarrier {
 #[derive(Default)]
 struct BarrierState {
     arrived: usize,
-    // The clock starts when a route is first held, not at run start, so a
-    // slow model or env startup does not spend the timeout.
     first_ready: Option<Instant>,
 }
 
 impl StartBarrier {
-    /// A target of one or none is open from the start.
     pub(crate) fn new(target: usize, timeout: Duration) -> Self {
         Self {
             target,
@@ -339,8 +307,6 @@ impl StartBarrier {
         self.state.lock().unwrap_or_else(|err| err.into_inner())
     }
 
-    /// A route that failed before it was ready counts toward the target
-    /// without waiting, so it cannot hold the others.
     fn arrive_failed(&self) {
         let mut state = self.state();
         state.arrived += 1;
@@ -349,8 +315,6 @@ impl StartBarrier {
         }
     }
 
-    /// Waits until every route has arrived, the timeout since the first held
-    /// route passes, or the route is cancelled. Once open, never waits.
     async fn arrive(&self, cancellation: &CancellationToken) {
         if *self.opened.borrow() {
             return;
@@ -391,11 +355,6 @@ impl StartBarrier {
     }
 }
 
-/// Retry `attempt` until it succeeds, fails for good, `timeout` passes or
-/// the route is cancelled, backing off from [`RETRY_BACKOFF`] to
-/// [`MAX_BACKOFF`]. Only a transient failure (a refused or timed-out
-/// connect) is retried; a refusal such as an edition mismatch or an env
-/// another driver holds is final. The last failure is the error.
 pub(crate) async fn connect_with_retry<T, F, Fut>(
     timeout: Duration,
     cancellation: &CancellationToken,
@@ -448,7 +407,6 @@ mod tests {
 
     #[tokio::test]
     async fn the_start_barrier_opens_on_the_last_arrival_or_a_timeout_from_the_first() {
-        // Every route arrives: the held ones start with the last.
         let barrier = Arc::new(StartBarrier::new(3, Duration::from_secs(60)));
         let first = spawn_arrival(&barrier);
         let second = spawn_arrival(&barrier);
@@ -458,8 +416,6 @@ mod tests {
         let opened = Instant::now();
         assert!(first.await.unwrap() >= opened && second.await.unwrap() >= opened);
 
-        // Fewer arrive: the timeout runs from the first held route, not
-        // from the run's start.
         let barrier = Arc::new(StartBarrier::new(3, 4 * TICK));
         tokio::time::sleep(4 * TICK).await;
         let first_ready = Instant::now();
@@ -470,7 +426,6 @@ mod tests {
         assert!(released >= first_ready + 4 * TICK, "held for the timeout");
         assert!(second.await.unwrap() >= released);
 
-        // A failed route counts without waiting; a dropped arrival is one.
         let barrier = Arc::new(StartBarrier::new(3, Duration::from_secs(60)));
         let held = spawn_arrival(&barrier);
         tokio::time::sleep(TICK).await;
@@ -482,7 +437,6 @@ mod tests {
             .expect("the barrier opened")
             .unwrap();
 
-        // Cancellation ends a wait without opening the barrier.
         let barrier = StartBarrier::new(2, Duration::from_secs(60));
         let cancellation = CancellationToken::new();
         cancellation.cancel();

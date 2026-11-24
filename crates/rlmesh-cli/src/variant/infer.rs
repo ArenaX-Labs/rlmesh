@@ -11,12 +11,12 @@ use super::declaration::Variant;
 use super::requires::{Requirement, Requires, requires_vendor};
 use crate::image_check::{CheckReport, DESCRIBE_LABEL, ImageConfig};
 
-/// What an image says about its accelerator without declaring it, read the
-/// way the parser reads an undeclared image.
+/// What an image says about its accelerator without declaring it, read the way
+/// the parser reads an undeclared image.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Inferred {
-    /// `accel` (`cuda`, `rocm`, `cpu`; absent when the image carries both
-    /// CUDA and ROCm markers) and `framework` (from the describe label).
+    /// `accel` (`cuda`, `rocm`, `cpu`; absent when the image carries both CUDA and
+    /// ROCm markers) and `framework` (from the describe label).
     pub facets: BTreeMap<String, String>,
     pub requires: Requires,
     /// The CUDA toolkit found, as major.minor.
@@ -28,8 +28,8 @@ pub struct Inferred {
 }
 
 impl Inferred {
-    /// The key an undeclared child of an index is named for when its
-    /// platform has several: `cuda12`, `rocm6`, `cpu`, else `default`.
+    /// The key an undeclared child of an index is named for when its platform has
+    /// several: `cuda12`, `rocm6`, `cpu`, else `default`.
     pub fn stack_key(&self) -> String {
         let major = |version: &Option<String>| {
             version
@@ -47,7 +47,6 @@ impl Inferred {
     }
 }
 
-/// `12.4.1` → `12.4`; `None` when a part is not a number.
 fn major_minor(version: &str) -> Option<String> {
     let parts: Vec<&str> = version
         .trim()
@@ -61,7 +60,6 @@ fn major_minor(version: &str) -> Option<String> {
         .then(|| parts.join("."))
 }
 
-/// `describe.runtime.framework_versions`, keys lowercased.
 fn framework_versions(config: &ImageConfig) -> BTreeMap<String, String> {
     config
         .labels
@@ -81,8 +79,6 @@ fn framework_versions(config: &ImageConfig) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
-/// The `framework_versions` packages that name each framework facet, in
-/// precedence order for an image that ships more than one.
 const FRAMEWORK_PACKAGES: [(&str, &str); 4] = [
     ("torch", "torch"),
     ("jax", "jax"),
@@ -92,9 +88,8 @@ const FRAMEWORK_PACKAGES: [(&str, &str); 4] = [
 
 /// Infer an image's accelerator from its markers: `CUDA_VERSION` (else the
 /// `cuda>=X.Y` in `NVIDIA_REQUIRE_CUDA`) means NVIDIA with `accel.cuda>=X.Y`;
-/// `ROCM_VERSION` means AMD; without either, a torch build tag in the
-/// describe label (`2.3.0+cu121`, `+rocm6.0`) decides; else a CPU image. An
-/// image with both markers gets neither accel nor requires.
+/// `ROCM_VERSION` means AMD; without either, a torch build tag in the describe
+/// label (`2.3.0+cu121`, `+rocm6.0`) decides; else a CPU image.
 pub fn infer(config: &ImageConfig) -> Inferred {
     let mut out = Inferred::default();
     let mut evidence = Vec::new();
@@ -118,8 +113,6 @@ pub fn infer(config: &ImageConfig) -> Inferred {
     out
 }
 
-/// The toolkit environment markers: `CUDA_VERSION`, else the floor in
-/// `NVIDIA_REQUIRE_CUDA`, and `ROCM_VERSION`.
 fn read_toolkit_markers(config: &ImageConfig, out: &mut Inferred, evidence: &mut Vec<String>) {
     let env = |key: &str| {
         config
@@ -140,8 +133,6 @@ fn read_toolkit_markers(config: &ImageConfig, out: &mut Inferred, evidence: &mut
     }
 }
 
-/// The first `cuda>=X.Y` anywhere in an `NVIDIA_REQUIRE_CUDA` value, as the
-/// parser reads it.
 fn cuda_floor(value: &str) -> Option<String> {
     value.match_indices("cuda>=").find_map(|(at, _)| {
         let rest = &value[at + "cuda>=".len()..];
@@ -159,8 +150,6 @@ fn cuda_floor(value: &str) -> Option<String> {
     })
 }
 
-/// Without toolkit markers, a torch build tag (`+cu121`, `+rocm6.0`) names
-/// the stack.
 fn read_torch_build_tag(torch: &str, out: &mut Inferred, evidence: &mut Vec<String>) {
     let Some((_, tag)) = torch.rsplit_once('+') else {
         return;
@@ -176,7 +165,6 @@ fn read_torch_build_tag(torch: &str, out: &mut Inferred, evidence: &mut Vec<Stri
         return;
     }
     let version = if stack == "cu" && version.len() >= 3 && !version.contains('.') {
-        // cu121 is CUDA 12.1; cu118 is 11.8.
         format!(
             "{}.{}",
             &version[..version.len() - 1],
@@ -193,8 +181,6 @@ fn read_torch_build_tag(torch: &str, out: &mut Inferred, evidence: &mut Vec<Stri
     evidence.push(format!("torch {torch}"));
 }
 
-/// The `accel` facet and requires from the stack found: CUDA, ROCm, neither
-/// (a CPU image), or both (nothing).
 fn derive_accel(out: &mut Inferred, evidence: &mut Vec<String>) {
     match (&out.cuda, &out.rocm) {
         (Some(cuda), None) => {
@@ -219,8 +205,6 @@ fn derive_accel(out: &mut Inferred, evidence: &mut Vec<String>) {
             out.facets.insert("accel".to_owned(), "cpu".to_owned());
             evidence.push("no CUDA or ROCm markers".to_owned());
         }
-        // Both markers: a base that layers one toolkit on the other says
-        // nothing reliable, so neither accel nor requires is guessed.
         (Some(_), Some(_)) => evidence.push("both CUDA and ROCm markers, so nothing".to_owned()),
     }
 }
@@ -242,9 +226,7 @@ pub(super) fn marker_vendor_warning(
     }
 }
 
-/// `variant_requires_vs_env`: a declaration the image's own markers
-/// contradict. Warnings only: the markers are evidence, and a probe on real
-/// hardware settles it.
+/// `variant_requires_vs_env`: a declaration the image's own markers contradict.
 pub(super) fn check_against_markers(
     variant: &Variant,
     config: &ImageConfig,
@@ -391,7 +373,6 @@ mod tests {
             assert_eq!(format_requires(&inferred.requires), requires, "{name}");
             assert_eq!(inferred.stack_key(), stack, "{name}");
         }
-        // The env markers beat the torch tag; the framework facet comes from describe.
         let inferred = infer(&with_torch(
             image(&["ROCM_VERSION=6.2"], None),
             json!({"jaxlib": "0.4.30", "torch": "2.3.0+cu121"}),
@@ -428,8 +409,6 @@ mod tests {
             &[],
             &["accel.cuda<12 admits no driver that can run the image's CUDA 12.4"],
         );
-        // The whole constraint decides: no lower bound admits older drivers,
-        // and a cap below the runtime is the stronger complaint.
         for (constraint, warnings) in [
             (
                 "<13",
@@ -489,7 +468,6 @@ mod tests {
             &[],
             &["facets.framework jax is not among describe.runtime.framework_versions"],
         );
-        // A declared stack the markers do not show keeps only its vendor.
         let package = object(json!({"variant": {"key": "v", "facets": {"accel": "rocm"}}}));
         let (blocks, _) = parse_compute_blocks(&package);
         let (requires, facets) = effective(&blocks, &infer(&image(&["CUDA_VERSION=12.4.1"], None)));
@@ -505,7 +483,6 @@ mod tests {
                 "brand=tesla,driver>=470 cuda>=11.8 brand=nvidia",
                 Some("11.8"),
             ),
-            // A floor without a minor version is skipped for the next one.
             ("cuda>=12 cuda>=11.8", Some("11.8")),
             ("cuda>=12.4rc1", Some("12.4")),
             ("cuda>=12.", None),
@@ -531,7 +508,6 @@ mod tests {
                 with_torch(image(&[], None), json!({"torch": "2.3.0+cu121"})),
                 "torch 2.3.0+cu121",
             ),
-            // Tags that name no stack version are not evidence.
             (
                 with_torch(image(&[], None), json!({"torch": "2.3.0+cu12x"})),
                 "no CUDA or ROCm markers",

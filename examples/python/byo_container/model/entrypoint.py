@@ -22,25 +22,18 @@ from rlmesh.serve import serve_model
 
 
 class MyPolicy(Model):
-    """Subclass ``rlmesh.numpy.Model``: set ``spec`` (optional), implement load + predict."""
-
-    # spec = ModelSpec(...)  # declare inputs/outputs to get automatic adapters.
-
     def load(self) -> None:
         # Load weights INTO self (a baked path or mount, from_pretrained, ...).
         # Keep heavy imports inside here, not at module top.
         self.bias = 0
 
     def predict(self, observation: object) -> int:
-        return self.bias  # always push the cart left
+        return self.bias
 
 
 def main() -> None:
     address = os.environ.get("RLMESH_ADDRESS", "0.0.0.0:7447")
     name = os.environ.get("RLMESH_NAME", "model")
-    # Loads the weights, then prints "RLMesh serving model on ..." once the
-    # model answers. Equivalent one-liner:
-    # `python -m rlmesh.serve <this_module>:MyPolicy`.
     serve_model(MyPolicy, address, name=name)
 
 

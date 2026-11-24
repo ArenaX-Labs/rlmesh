@@ -110,8 +110,6 @@ pub(crate) fn conform_dict(space: &SpaceSpec, value: &SpaceValue, path: &str) ->
         _ => return Conformance::Structural(SpaceError::invalid(path, "space is not Dict")),
     };
 
-    // A structural deviation in any child outranks a range deviation anywhere, so
-    // return immediately on the first structural one but keep the first range one.
     let mut range: Option<SpaceError> = None;
     for (i, key) in d.keys.iter().enumerate() {
         match dict_val.get(key) {

@@ -84,14 +84,11 @@ pub fn contiguous_strides(shape: &[i64]) -> Vec<i64> {
 
 /// An n-dimensional, immutable tensor backed by shared [`Storage`].
 ///
-/// The layout follows DLPack conventions: C-order shape, element-unit
-/// strides (`None` means C-contiguous), and a byte offset into the backing
-/// storage. Constructors validate that every addressable element falls
-/// inside the storage, so accessors never fail.
+/// The layout follows DLPack: C-order shape, element-unit strides (`None` means
+/// C-contiguous) and a byte offset into the storage. Constructors validate that every
+/// addressable element falls inside the storage, so accessors never fail.
 ///
-/// Equality is logical: two tensors are equal when dtype, shape, and
-/// element bytes (in C order) match, regardless of how they are laid out
-/// in storage.
+/// Equality is logical: dtype, shape and element bytes in C order, whatever the layout.
 #[derive(Debug, Clone)]
 pub struct Tensor {
     storage: Storage,
@@ -103,9 +100,6 @@ pub struct Tensor {
 
 impl Tensor {
     /// Adopt `data` as a C-contiguous tensor without copying.
-    ///
-    /// `data.len()` must equal exactly `numel * dtype_size`. The buffer keeps
-    /// its original allocation, so no alignment is guaranteed.
     pub fn from_vec(data: Vec<u8>, shape: Vec<i64>, dtype: DType) -> Result<Self, TensorError> {
         let expected = checked_nbytes(&shape, dtype)?;
         if data.len() != expected {
@@ -118,8 +112,6 @@ impl Tensor {
     }
 
     /// Copy `data` into a fresh 64-byte-aligned C-contiguous tensor.
-    ///
-    /// `data.len()` must equal exactly `numel * dtype_size`.
     pub fn from_slice(data: &[u8], shape: &[i64], dtype: DType) -> Result<Self, TensorError> {
         let expected = checked_nbytes(shape, dtype)?;
         if data.len() != expected {
@@ -139,9 +131,8 @@ impl Tensor {
 
     /// A tensor view over `storage` with full layout control.
     ///
-    /// `strides` are in element units; `None` means C-contiguous. Dims and
-    /// strides must be non-negative and every addressable element must fall
-    /// inside the storage.
+    /// `strides` are in element units; `None` means C-contiguous. Dims and strides
+    /// must be non-negative and every addressable element must fall inside the storage.
     pub fn from_storage(
         storage: Storage,
         dtype: DType,
@@ -166,8 +157,7 @@ impl Tensor {
             }
         }
         let required = required_bytes(&shape, strides.as_deref(), dtype)?;
-        // The offset must stay inside the storage even for zero-element
-        // views: accessors slice `storage[byte_offset..]` unconditionally.
+        // Holds even for zero-element views: accessors slice `storage[byte_offset..]` unconditionally.
         if byte_offset > storage.len() || required > storage.len() - byte_offset {
             return Err(TensorError::OutOfBounds {
                 required,
@@ -212,7 +202,7 @@ impl Tensor {
         self.byte_offset
     }
 
-    /// Device the storage lives on. Always [`Device::Cpu`] today.
+    /// Device the storage lives on.
     pub fn device(&self) -> Device {
         Device::Cpu
     }
@@ -254,10 +244,8 @@ impl Tensor {
 
     /// A tensor with the same elements and a new shape.
     ///
-    /// At most one dimension may be `-1`, which is inferred from the
-    /// element count. Returns a zero-copy view sharing this tensor's
-    /// storage when the layout is contiguous, and a contiguous copy
-    /// otherwise.
+    /// At most one dimension may be `-1`, inferred from the element count. Returns a
+    /// zero-copy view when the layout is contiguous, and a contiguous copy otherwise.
     pub fn reshape(&self, shape: &[i64]) -> Result<Self, TensorError> {
         let shape = self.resolve_reshape_dims(shape)?;
         let to = checked_numel(&shape)?;
@@ -279,8 +267,6 @@ impl Tensor {
         }
     }
 
-    /// Replace a single `-1` dimension with the size inferred from this
-    /// tensor's element count.
     fn resolve_reshape_dims(&self, shape: &[i64]) -> Result<Vec<i64>, TensorError> {
         let wildcards = shape.iter().filter(|&&dim| dim == -1).count();
         if wildcards > 1 {
@@ -312,9 +298,6 @@ impl Tensor {
     }
 
     /// The element bytes in C order.
-    ///
-    /// Borrows from storage when the layout is contiguous; gathers into a
-    /// fresh buffer otherwise.
     pub fn to_contiguous_bytes(&self) -> Cow<'_, [u8]> {
         if self.is_contiguous() {
             let start = self.byte_offset;
@@ -326,9 +309,6 @@ impl Tensor {
     }
 
     /// Stack tensors of identical dtype and shape along a new leading axis.
-    ///
-    /// The result is a fresh 64-byte-aligned contiguous tensor of shape
-    /// `[tensors.len(), ..shape]`.
     pub fn stack(tensors: &[Tensor]) -> Result<Tensor, TensorError> {
         let Some(first) = tensors.first() else {
             return Err(TensorError::EmptyStack);
@@ -379,7 +359,6 @@ impl Tensor {
             .collect()
     }
 
-    /// Copy the element bytes in C order into `out`.
     fn gather_into(&self, out: &mut Vec<u8>) {
         let itemsize = dtype_size(self.dtype);
         let strides = self.effective_strides();
@@ -434,8 +413,6 @@ fn checked_nbytes(shape: &[i64], dtype: DType) -> Result<usize, TensorError> {
         .ok_or(TensorError::Overflow)
 }
 
-/// Bytes a view must be able to address past its byte offset: one item plus
-/// the span reached by the largest in-bounds index on every axis.
 fn required_bytes(
     shape: &[i64],
     strides: Option<&[i64]>,
@@ -535,7 +512,6 @@ mod tests {
                 available: 8
             })
         );
-        // Strided view reaching past the storage end.
         assert_eq!(
             Tensor::from_storage(
                 Storage::zeroed(12),
@@ -617,11 +593,9 @@ mod tests {
     fn test_reshape_inference_on_empty_tensors() {
         let empty = Tensor::zeros(&[0, 3], DType::Float32).expect("valid tensor");
 
-        // 0 elements / 3 known => inferred 0.
         let inferred = empty.reshape(&[-1, 3]).expect("valid reshape");
         assert_eq!(inferred.shape(), &[0, 3]);
 
-        // A zero-sized known dimension leaves -1 ambiguous.
         assert_eq!(
             empty.reshape(&[0, -1]),
             Err(TensorError::NumelMismatch { from: 0, to: 0 })
@@ -630,8 +604,6 @@ mod tests {
 
     #[test]
     fn test_reshape_strided_copies() {
-        // Column-major 2x2 layout: storage [1, 3, 2, 4] viewed with strides [1, 2]
-        // reads as [[1, 2], [3, 4]].
         let storage = Storage::from_slice(&f32_bytes(&[1.0, 3.0, 2.0, 4.0]));
         let tensor = Tensor::from_storage(storage, DType::Float32, vec![2, 2], Some(vec![1, 2]), 0)
             .expect("valid tensor");
@@ -663,7 +635,6 @@ mod tests {
 
     #[test]
     fn test_strided_gather_multi_dimensional() {
-        // 3x4 storage; view the 3x2 sub-tensor of even columns.
         let values: Vec<f32> = (0..12).map(|v| v as f32).collect();
         let storage = Storage::from_slice(&f32_bytes(&values));
         let view = Tensor::from_storage(storage, DType::Float32, vec![3, 2], Some(vec![4, 2]), 0)
@@ -726,8 +697,6 @@ mod tests {
 
     #[test]
     fn test_partial_eq_is_logical() {
-        // Strided view of [1, 3] vs a contiguous [1, 3]: equal content,
-        // different storage layout.
         let storage = Storage::from_slice(&f32_bytes(&[1.0, 2.0, 3.0, 4.0]));
         let strided = Tensor::from_storage(storage, DType::Float32, vec![2], Some(vec![2]), 0)
             .expect("valid tensor");
@@ -758,8 +727,6 @@ mod tests {
 
     #[test]
     fn test_empty_view_offset_must_stay_inside_storage() {
-        // Zero-element views need no bytes, but an offset past the storage
-        // would make to_contiguous_bytes() slice out of bounds.
         let storage = Storage::zeroed(8);
         assert_eq!(
             Tensor::from_storage(storage.clone(), DType::Float32, vec![0], None, 9),
@@ -769,7 +736,6 @@ mod tests {
                 available: 8
             })
         );
-        // An offset exactly at the end is fine for an empty view.
         let at_end = Tensor::from_storage(storage, DType::Float32, vec![0], None, 8)
             .expect("valid empty view");
         assert!(at_end.to_contiguous_bytes().is_empty());

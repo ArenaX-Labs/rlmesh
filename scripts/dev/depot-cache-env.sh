@@ -1,9 +1,3 @@
-# Sourced by mise (`_.source` in mise.toml); exports nothing unless opted in.
-#
-# On a machine with RLMESH_BUILDER=depot, point sccache at Depot Cache with the
-# credentials `depot login` stored, so local builds and CI share one cache.
-# Depot runners preset SCCACHE_WEBDAV_*, so an existing endpoint always wins.
-# A user token covers several organizations, hence org ID as the username.
 
 if [ "${RLMESH_BUILDER:-}" = depot ] && [ -z "${SCCACHE_WEBDAV_ENDPOINT:-}" ]; then
   _depot_config="${XDG_CONFIG_HOME:-$HOME/.config}/depot/depot.yaml"

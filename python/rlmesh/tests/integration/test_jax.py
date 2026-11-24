@@ -8,7 +8,6 @@ jax = pytest.importorskip("jax")
 
 import jax.numpy as jnp  # noqa: E402
 
-# int64/uint64/float64 round-trips require 64-bit mode; set it before any op.
 jax.config.update("jax_enable_x64", True)
 
 if TYPE_CHECKING:

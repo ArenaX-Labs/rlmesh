@@ -218,8 +218,6 @@ def generate(root: Path, surfaces: dict) -> dict:
                     )
                 if owner == "WorkflowEditionWarning":
                     candidates = ["rlmesh::WarningCategory::WorkflowEditionWarning"]
-            # Exact native paths mentioned in the matching area table are a
-            # second source of candidates; no fuzzy match is silently accepted.
             for key in (symbol, owner, "." + member if member else owner):
                 for _, texts in hints.get(key, []):
                     text = texts[LANGUAGES.index(lang)]
@@ -243,7 +241,6 @@ def generate(root: Path, surfaces: dict) -> dict:
             mapping = {"status": "present", "path": target, "params": {}}
             if obj["params"]:
                 types = [target, target.rsplit("::", 1)[0]]
-                # Options are discoverable on the callable's native parameter.
                 functions = [target]
                 if obj["kind"] == "class":
                     functions += [
@@ -265,7 +262,6 @@ def generate(root: Path, surfaces: dict) -> dict:
                                 prefix + token,
                                 target.rsplit("::", 1)[0] + "::" + token,
                             ]
-                # Common options ownership follows R-6.
                 options = (
                     owner
                     + ("" if not member else member.title().replace("_", ""))

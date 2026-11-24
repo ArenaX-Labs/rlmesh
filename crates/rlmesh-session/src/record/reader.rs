@@ -11,8 +11,6 @@ use crate::wire::{
 use bytes::Bytes;
 use tracing::{debug, warn};
 
-// --- reading ------------------------------------------------------------------
-
 /// One topic of a recording.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TopicSummary {
@@ -156,20 +154,17 @@ pub struct RecordedMessage {
     pub message: Recorded,
 }
 
-/// Every sample, chunk, authority snapshot and health message of a
-/// recording (one MCAP file, or a directory of them: rolling segments, an
-/// incident, an episode), ordered by
-/// log time (stable, so each channel keeps its recorded order). Binding
-/// records are skipped (the snapshots carry them), as are envelopes that do
-/// not decode ([`summarize`] counts those). A file cut short (the recorder
-/// crashed or lost power) yields what was written before the cut.
+/// Every sample, chunk, authority snapshot and health message of a recording
+/// (one MCAP file, or a directory of them), ordered by log time (stable, so
+/// each channel keeps its recorded order). Binding records are skipped (the
+/// snapshots carry them), as are envelopes that do not decode ([`summarize`]
+/// counts those). A file cut short yields what was written before the cut.
 pub fn read(path: impl AsRef<Path>) -> Result<Vec<RecordedMessage>, RecordError> {
     let path = path.as_ref();
     let mut out = Vec::new();
     for file in mcap_files(path)? {
         match read_file(&file) {
             Ok(messages) => out.extend(messages),
-            // A segment still being written may hold no finished chunk yet.
             Err(err) if path.is_dir() => {
                 warn!(%err, file = %file.display(), "segment skipped");
             }
@@ -197,9 +192,6 @@ pub fn mcap_files(path: &Path) -> Result<Vec<PathBuf>, RecordError> {
     Ok(files)
 }
 
-/// Refuses a recording in a newer format than [`RECORDING_FORMAT`]: its
-/// `rlmesh.recording` record comes before the first chunk. A file without
-/// one (written before formats were marked) is format 1.
 fn check_format(path: &Path, bytes: &[u8]) -> Result<(), RecordError> {
     for record in mcap::read::LinearReader::new(bytes)? {
         match record {
@@ -223,7 +215,6 @@ fn check_format(path: &Path, bytes: &[u8]) -> Result<(), RecordError> {
 
 fn read_file(path: &Path) -> Result<Vec<RecordedMessage>, RecordError> {
     // TODO: reads the whole file into memory; stream it chunk by chunk when
-    // recordings outgrow RAM (long camera sessions, rolling segments).
     let bytes = std::fs::read(path).map_err(|source| RecordError::Io {
         path: path.to_path_buf(),
         source,
@@ -288,14 +279,11 @@ pub struct DecodedSample {
     /// `publish_time`): what frames align on.
     pub capture_ns: i64,
     /// Its fields, in declared order; a JPEG frame decoded to raw RGB.
-    /// None for an `_applied` tick that dispatched nothing.
     pub fields: Vec<Field>,
 }
 
 /// Every sample of `messages` (as [`read`] returns them) split into its
 /// fields, through the parts the authority snapshots before it declare.
-/// A sample of a channel not declared yet, or that does not decode, is
-/// skipped.
 pub fn decode_samples(messages: &[RecordedMessage]) -> Vec<DecodedSample> {
     let mut decoder = SampleDecoder::default();
     messages.iter().filter_map(|m| decoder.decode(m)).collect()
@@ -336,7 +324,6 @@ impl SampleDecoder {
         };
         let spec = self.streams.get(&sample.channel)?;
         let fields = if sample.applied.is_some_and(|a| !a.present) {
-            // An edge tick that dispatched nothing (hold, safe, e-stop).
             Vec::new()
         } else if matches!(spec.encoding, Encoding::Jpeg { .. }) {
             if self.skip_images {
@@ -376,10 +363,9 @@ impl SampleDecoder {
 
 /// Every sample of a recording (one MCAP file, or a directory of them) split
 /// into its fields, one at a time: only one file's messages, still encoded,
-/// are held at once, and each camera frame is decoded as it is taken.
-/// Within a file samples come in log-time order; files in name (opening)
-/// order. A segment still being written that holds no finished chunk is
-/// skipped, as [`read`] does.
+/// are held at once, and each camera frame is decoded as it is taken. Within a
+/// file samples come in log-time order; files in name order. A segment still
+/// being written that holds no finished chunk is skipped, as [`read`] does.
 pub struct Samples {
     files: std::collections::VecDeque<PathBuf>,
     messages: std::vec::IntoIter<RecordedMessage>,

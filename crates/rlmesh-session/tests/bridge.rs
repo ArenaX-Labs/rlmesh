@@ -1,9 +1,4 @@
 #![cfg(feature = "gateway")]
-//! The gateway against a real session host and robot: a browser connection
-//! is a participant of its own, its heartbeats and chunks are its own, its
-//! leases are the host's, and samples arrive byte for byte as published. A
-//! paired browser token is a device of its own: the host applies its entry,
-//! revoking it detaches exactly its browser, and no token reaches a log.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;
@@ -40,7 +35,6 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 const WAIT: Duration = Duration::from_secs(10);
-/// This machine's page token.
 const PAGE: &str = "page-token-0123456789abcdef";
 const ROBOT: &str = r#"{"arm": {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 200, "command": "position", "safe": "stop",
                        "hold_max_ms": 100, "max_action_age_ms": 1000}}"#;
@@ -156,9 +150,6 @@ impl World {
         tokio_tungstenite::connect_async(request).await.unwrap().0
     }
 
-    /// A browser token paired as `device` with `access`, as `rlmesh pair
-    /// --browser` and `pair approve` leave it: the host admits the device,
-    /// the gateway's file keeps the token's hash and key.
     async fn browser(&self, device: &str, access: DeviceAccess) -> String {
         let key = StaticKeypair::generate(&mut OsRng).unwrap();
         self.host
@@ -185,8 +176,6 @@ impl World {
         token
     }
 
-    /// A control socket with `token`, its hello at `priority` answered:
-    /// the socket and its participant.
     async fn control_with(&self, token: &str, priority: &str) -> (Ws, ParticipantId) {
         let mut control = self.socket_with("control", token).await;
         control
@@ -224,7 +213,6 @@ async fn text(ws: &mut Ws) -> Value {
     }
 }
 
-/// The next binary frame with `tag`, skipping others.
 async fn frame_with(ws: &mut Ws, tag: u8) -> Bytes {
     loop {
         if let tg::Message::Binary(b) = next(ws).await
@@ -235,7 +223,6 @@ async fn frame_with(ws: &mut Ws, tag: u8) -> Bytes {
     }
 }
 
-/// Snapshots until `predicate` holds.
 async fn state_until(
     ws: &mut Ws,
     mut predicate: impl FnMut(&AuthoritySnapshot) -> bool,
@@ -289,8 +276,6 @@ async fn a_browser_is_a_participant_with_the_hosts_leases_and_its_own_heartbeats
     assert!(me.as_str().starts_with("web-"));
     assert_eq!(hello["session"], world.session.to_string());
 
-    // The host's view: the browser is in the roster at its class, bound to
-    // the robot's commandable part.
     let state = state_until(&mut control, |s| s.binding(&me).is_some()).await;
     let info = state.participant(&me).expect("in the roster");
     assert_eq!(info.priority, PriorityClass::Operator);
@@ -301,7 +286,6 @@ async fn a_browser_is_a_participant_with_the_hosts_leases_and_its_own_heartbeats
     let binding = state.binding(&me).unwrap();
     assert_eq!(binding.channels, vec![arm]);
 
-    // Heartbeats are the browser's: the echo carries its own t1.
     control
         .send(tg::Message::binary(heartbeat(
             &me,
@@ -314,7 +298,6 @@ async fn a_browser_is_a_participant_with_the_hosts_leases_and_its_own_heartbeats
     let echo = frame_with(&mut control, frame::ECHO).await;
     let echo = codec::decode_echo(&echo[1..]).unwrap();
     assert_eq!((echo.seq, echo.t1_ns), (100, 123_456));
-    // Someone else's heartbeat is refused.
     let stranger = ParticipantId::new("someone").unwrap();
     control
         .send(tg::Message::binary(heartbeat(&stranger, 1, state.epoch, 0)))
@@ -322,7 +305,6 @@ async fn a_browser_is_a_participant_with_the_hosts_leases_and_its_own_heartbeats
         .unwrap();
     assert_eq!(text(&mut control).await["type"], "error");
 
-    // The lease is the host's: granted through the browser's participant.
     let request = Request {
         from: me.clone(),
         epoch: Some(state.epoch),
@@ -350,7 +332,6 @@ async fn a_browser_is_a_participant_with_the_hosts_leases_and_its_own_heartbeats
     assert_eq!((lease.holder.clone(), lease.channel), (me.clone(), arm));
     assert_eq!(reply.state.mode, Mode::Active);
 
-    // A verb sent as somebody else is refused by the gateway.
     let forged = Request {
         from: stranger,
         epoch: None,
@@ -368,12 +349,9 @@ async fn a_browser_is_a_participant_with_the_hosts_leases_and_its_own_heartbeats
     let refused = frame_with(&mut control, frame::REPLY).await;
     assert!(codec::decode_reply(&refused[5..]).unwrap().result.is_err());
 
-    // Without heartbeats the host lapses the lease (2 s ttl), and nothing
-    // else stops for it.
     let lapsed = state_until(&mut control, |s| s.lease(arm).is_none()).await;
     assert_eq!(lapsed.mode, Mode::Armed);
 
-    // Dropping the connection drops the participant.
     drop(control);
     let observer = world.observer().await;
     let deadline = Instant::now() + WAIT;
@@ -408,8 +386,6 @@ impl World {
 #[tokio::test(flavor = "multi_thread")]
 async fn samples_arrive_as_published_and_subscriptions_are_checked() {
     let world = World::start().await;
-    // A raw subscriber on the same key: what the publisher put on the wire
-    // (signed: its body is in clear).
     let transport = open(world.base).await;
     let keys = SessionKeys::new(&world.tenant, world.session);
     let (raw_tx, mut raw_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
@@ -449,7 +425,6 @@ async fn samples_arrive_as_published_and_subscriptions_are_checked() {
         }
     };
     assert!(matched, "the gateway re-encoded a sample");
-    // The camera-class socket refuses a state stream, and garbage is an error.
     let mut bulk = world.socket("bulk").await;
     bulk.send(tg::Message::text(
         r#"{"type": "subscribe", "id": 0, "path": "bot/arm"}"#,
@@ -468,7 +443,6 @@ async fn samples_arrive_as_published_and_subscriptions_are_checked() {
     assert_eq!(text(&mut bulk).await["type"], "error");
 }
 
-/// The close code `ws` is closed with, skipping what comes before it.
 async fn closed_with(ws: &mut Ws) -> u16 {
     loop {
         match tokio::time::timeout(WAIT, ws.next())
@@ -482,7 +456,6 @@ async fn closed_with(ws: &mut Ws) -> u16 {
     }
 }
 
-/// Sends verb `command` as `me` and returns the host's verdict.
 async fn verb(
     control: &mut Ws,
     me: &ParticipantId,
@@ -527,7 +500,6 @@ async fn a_browser_token_attaches_as_its_device_with_its_cap_parts_and_verbs() {
             },
         )
         .await;
-    // Above its cap: the host refuses, and the socket closes with 4403.
     let mut over = world.socket_with("control", &token).await;
     over.send(tg::Message::text(
         r#"{"type": "hello", "priority": "operator"}"#,
@@ -539,7 +511,6 @@ async fn a_browser_token_attaches_as_its_device_with_its_cap_parts_and_verbs() {
     let (mut control, me) = world.control_with(&token, "model").await;
     let state = state_until(&mut control, |s| s.participant(&me).is_some()).await;
     assert_eq!(state.participant(&me).unwrap().device, "web-a");
-    // No arm verb, and bot/arm outside its parts.
     assert_eq!(
         verb(&mut control, &me, 1, Command::Arm).await,
         Some(CtlStatus::NotAuthorized)
@@ -577,18 +548,12 @@ async fn revoking_a_browser_token_detaches_exactly_its_browser() {
     world.host.revoke("web-a").await.unwrap();
     assert_eq!(closed_with(&mut control_a).await, 4409);
     assert_eq!(closed_with(&mut state_a).await, 4409);
-    // The other browser is untouched: its heartbeats are echoed. Checked
-    // before the refused reconnect below, which takes longer than this
-    // browser may stay silent (a refused handshake waits out a possible
-    // host restart).
     control_b
         .send(tg::Message::binary(heartbeat(&me_b, 1, state.epoch, 42)))
         .await
         .unwrap();
     let echo = frame_with(&mut control_b, frame::ECHO).await;
     assert_eq!(codec::decode_echo(&echo[1..]).unwrap().t1_ns, 42);
-    // The revoked browser's reconnect is refused: the host no longer knows
-    // its key.
     let mut again = world.socket_with("control", &a).await;
     again
         .send(tg::Message::text(
@@ -599,7 +564,6 @@ async fn revoking_a_browser_token_detaches_exactly_its_browser() {
     assert_eq!(closed_with(&mut again).await, 4401);
 }
 
-/// A `tracing` writer into a shared buffer.
 #[derive(Clone, Default)]
 struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
 
@@ -617,8 +581,6 @@ impl std::io::Write for Captured {
 async fn tokens_never_reach_the_logs() {
     let logs = Captured::default();
     tracing_subscriber::fmt()
-        // Everything but zenoh and this test's own client, which logs
-        // the requests it sends.
         .with_env_filter("trace,zenoh=warn,tungstenite::handshake::client=off")
         .with_ansi(false)
         .with_writer({

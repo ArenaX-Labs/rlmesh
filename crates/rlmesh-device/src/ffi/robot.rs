@@ -1,5 +1,3 @@
-//! The robot's C ABI: `rlmesh_device_robot_*`.
-
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::string::String;
@@ -31,8 +29,7 @@ use crate::robot::{
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RlmeshDeviceRobotConfig {
-    /// The address the host printed, with its key; null for a provisioned
-    /// board.
+    /// The address the host printed, with its key; null for a provisioned board.
     pub address: *const c_char,
     /// A provisioned board's device key (32 bytes), with `address` null.
     pub device_key: *const u8,
@@ -58,23 +55,19 @@ pub const RLMESH_DEVICE_TOKEN: u8 = 2;
 pub const RLMESH_DEVICE_QUERY: u8 = 3;
 /// Publish.
 pub const RLMESH_DEVICE_PUBLISH: u8 = 4;
-/// Drop every subscription and token (the robot moves to another session
-/// on the same host).
+/// Drop every subscription and token (the robot moves to another session on the same host).
 pub const RLMESH_DEVICE_RESET: u8 = 5;
-/// Close every session to the host, however healthy it looks: replies
-/// stopped. The next action on a class opens it again.
+/// Close every session to the host, however healthy it looks: replies stopped.
 pub const RLMESH_DEVICE_RECONNECT: u8 = 6;
 /// Open the datagram socket to the host on UDP `port`.
 pub const RLMESH_DEVICE_DATAGRAM_OPEN: u8 = 7;
-/// Send `payload` on the datagram socket, in place of one not yet sent on
-/// lane `key`.
+/// Send `payload` on the datagram socket, in place of one not yet sent on lane `key`.
 pub const RLMESH_DEVICE_DATAGRAM: u8 = 8;
 /// Close the datagram socket.
 pub const RLMESH_DEVICE_DATAGRAM_CLOSE: u8 = 9;
 pub const RLMESH_DEVICE_UNSUBSCRIBE: u8 = 10;
 
-/// `rlmesh_device_action_t`: borrowed from the robot until the next call
-/// on it.
+/// `rlmesh_device_action_t`: borrowed from the robot until the next call on it.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RlmeshDeviceAction {
@@ -104,19 +97,17 @@ pub struct RlmeshDeviceAction {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RlmeshDeviceRobotStatus {
-    /// 0 reading the host, 1 handshake, 2 attach, 3 declaring its parts, 4
-    /// running, 5 waiting to retry, 6 waiting in the lobby for a run, 7
-    /// stopped (another process of this device took its name).
+    /// 0 reading the host, 1 handshake, 2 attach, 3 declaring its parts, 4 running, 5 waiting
+    /// to retry, 6 waiting in the lobby for a run, 7 stopped (another process of this device
+    /// took its name).
     pub phase: u8,
-    /// Why it last started over: 0 never, 1 no reply, 2 the host's state
-    /// unsigned, 3 the handshake failed (another host's key), 4 refused
-    /// (`refused_status`, the proto's `CtlStatus` number), 5 the host lost,
-    /// 6 internal.
+    /// Why it last started over: 0 never, 1 no reply, 2 the host's state unsigned, 3 the
+    /// handshake failed (another host's key), 4 refused (`refused_status`, the proto's
+    /// `CtlStatus` number), 5 the host lost, 6 internal.
     pub fault: u8,
     /// The host's status code for a refusal.
     pub refused_status: u8,
-    /// The session mode: 0 none yet, 1 disarmed, 2 armed, 3 active, 4
-    /// safe, 5 e-stop.
+    /// The session mode: 0 none yet, 1 disarmed, 2 armed, 3 active, 4 safe, 5 e-stop.
     pub mode: u8,
     /// This attach's generation.
     pub generation: u32,
@@ -126,16 +117,15 @@ pub struct RlmeshDeviceRobotStatus {
     pub echoes: u64,
     /// Command chunks the edges accepted.
     pub chunks_accepted: u64,
-    /// The e-stop latch: 0 clear, 1 this robot's own stop, 2 a member's
-    /// signal.
+    /// The e-stop latch: 0 clear, 1 this robot's own stop, 2 a member's signal.
     pub estop: u8,
     /// Whether it is in a run it joined from the lobby.
     pub in_run: u8,
     /// Every home address failed in a row: look for the home (mDNS, by
     /// `rlmesh_device_robot_home_id`) and give it `_add_home`.
     pub home_unreachable: u8,
-    /// Why it last left a run: 0 never, 1 the run closed, 2 the run lost it,
-    /// 3 superseded (it stopped).
+    /// Why it last left a run: 0 never, 1 the run closed, 2 the run lost it, 3 superseded (it
+    /// stopped).
     pub left: u8,
     /// Why the edges last refused a chunk, this attach: 0 none, or the code
     /// `rlmesh_device_refusal_name` names.
@@ -147,21 +137,19 @@ pub struct RlmeshDeviceRobotStatus {
 /// No part: `rlmesh_device_tick_t.part` and the handover's.
 pub const RLMESH_DEVICE_NO_PART: u8 = 0xFF;
 
-/// `rlmesh_device_tick_t`: borrowed from the robot until the next call on
-/// it.
+/// `rlmesh_device_tick_t`: borrowed from the robot until the next call on it.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct RlmeshDeviceTick {
     /// The edge mode: 0 idle, 1 driving, 2 hold, 3 safe, 4 e-stop.
     pub mode: u8,
-    /// The part it concerns (the active or last-driven member of the
-    /// group), or `RLMESH_DEVICE_NO_PART`.
+    /// The part it concerns (the active or last-driven member of the group), or
+    /// `RLMESH_DEVICE_NO_PART`.
     pub part: u8,
     /// Whether `value` is an action to dispatch to `part`.
     pub has_action: u8,
-    /// A handover between members starts: switch the control mode from
-    /// `handover_from` to `handover_to`, then call
-    /// `rlmesh_device_robot_handover_done`.
+    /// A handover between members starts: switch the control mode from `handover_from` to
+    /// `handover_to`, then call `rlmesh_device_robot_handover_done`.
     pub handover: u8,
     /// The handover's parts.
     pub handover_from: u8,
@@ -171,13 +159,12 @@ pub struct RlmeshDeviceTick {
     pub value: *const u8,
     /// Its length.
     pub value_len: usize,
-    /// The declared safe behaviour to run now (`"hold"`, `"stop"`, ...),
-    /// NUL-terminated, or null.
+    /// The declared safe behaviour to run now (`"hold"`, `"stop"`, ...), NUL-terminated, or
+    /// null.
     pub safe: *const c_char,
 }
 
-/// `rlmesh_device_chunk_timing_t`: how one commanded part's chunks arrived
-/// this attach.
+/// `rlmesh_device_chunk_timing_t`: how one commanded part's chunks arrived this attach.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RlmeshDeviceChunkTiming {
@@ -187,8 +174,8 @@ pub struct RlmeshDeviceChunkTiming {
     pub accepted: u64,
     /// Gaps in the seqs of accepted chunks under one lease token.
     pub lost: u32,
-    /// Accepted chunks by lateness on arrival against their first slot:
-    /// `[0, 1)` ms, `[1, 2)`, `[2, 4)`, ... `[32, 64)`, `[64, inf)`.
+    /// Accepted chunks by lateness on arrival against their first slot: `[0, 1)` ms, `[1,
+    /// 2)`, `[2, 4)`, ...
     pub late_ms: [u32; LATE_BUCKETS],
     /// The latest any accepted chunk arrived, in microseconds.
     pub late_max_us: u32,
@@ -196,26 +183,19 @@ pub struct RlmeshDeviceChunkTiming {
     pub gap_max_us: u32,
 }
 
-/// `rlmesh_device_robot_t`: the robot, its randomness, and what the caller
-/// borrows from it.
+/// `rlmesh_device_robot_t`: the robot, its randomness, and what the caller borrows from it.
 pub struct DeviceRobot {
     robot: Box<Robot>,
     rng: CRng,
     queue: VecDeque<Action>,
-    /// Where it connects now, NUL-terminated (refreshed by each `_next`).
     host: Vec<u8>,
-    /// The home's host id, NUL-terminated.
     home_id: Vec<u8>,
-    /// The action last handed out: its key with a NUL, and its payload.
     key: Vec<u8>,
     payload: Vec<u8>,
-    /// The tick last handed out: its action and safe behaviour.
     value: Vec<u8>,
     safe: Vec<u8>,
 }
 
-/// # Safety
-/// `p` is null or a NUL-terminated string.
 unsafe fn text<'a>(p: *const c_char) -> Option<&'a str> {
     if p.is_null() {
         return None;
@@ -224,7 +204,6 @@ unsafe fn text<'a>(p: *const c_char) -> Option<&'a str> {
     unsafe { CStr::from_ptr(p) }.to_str().ok()
 }
 
-/// `text` with a NUL.
 fn nul(text: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len() + 1);
     out.extend_from_slice(text.as_bytes());
@@ -232,25 +211,15 @@ fn nul(text: &str) -> Vec<u8> {
     out
 }
 
-/// Where a robot joins, and as which device.
 struct Target {
     session: String,
     credential: Credential,
     name: Option<String>,
-    /// A provisioned board of a `fleet` build waits in its home's lobby
-    /// for runs; otherwise it joins the home's default session.
     lobby: bool,
-    /// Every base address of the home, and its host id (empty: unknown).
     homes: Vec<(String, u16)>,
     home_id: String,
 }
 
-/// The target of `address` (device `local`), or of a provisioned board's
-/// device key and record: the home's session `default`, at the record's
-/// addresses in order (see `Config::provisioned`).
-///
-/// # Safety
-/// The config's key and record are null or valid for their lengths.
 unsafe fn target(address: Option<&str>, c: &RlmeshDeviceRobotConfig) -> Result<Target, c_int> {
     if let Some(address) = address {
         let address = address::parse(address).ok_or(RLMESH_DEVICE_ERR_CONFIG)?;
@@ -296,8 +265,7 @@ unsafe fn target(address: Option<&str>, c: &RlmeshDeviceRobotConfig) -> Result<T
     })
 }
 
-/// A new robot, joining on the first `rlmesh_device_robot_next`. The
-/// config's strings are copied.
+/// A new robot, joining on the first `rlmesh_device_robot_next`.
 ///
 /// # Safety
 /// `config` and `out` are null or valid; the config's strings are null or
@@ -329,7 +297,6 @@ pub unsafe extern "C" fn rlmesh_device_robot_new(
     }) else {
         return RLMESH_DEVICE_ERR_ARG;
     };
-    // A session's name (`default`) or its UUID.
     let session = target
         .session
         .parse::<SessionId>()
@@ -355,7 +322,6 @@ pub unsafe extern "C" fn rlmesh_device_robot_new(
     let robot = Box::new(DeviceRobot {
         robot,
         rng: CRng(random),
-        // Room for a poll's actions, kept: see `Robot::poll_into`.
         queue: VecDeque::with_capacity(16),
         host,
         home_id,
@@ -381,15 +347,13 @@ pub unsafe extern "C" fn rlmesh_device_robot_free(robot: *mut DeviceRobot) {
     }
 }
 
-/// # Safety
-/// `robot` is null or from `rlmesh_device_robot_new`.
 unsafe fn robot_mut<'a>(robot: *mut DeviceRobot) -> Option<&'a mut DeviceRobot> {
     // SAFETY: per the contract.
     unsafe { robot.as_mut() }
 }
 
-/// The host to connect to, NUL-terminated (owned by the robot), and in
-/// `*port` its port, which every class dials.
+/// The host to connect to, NUL-terminated (owned by the robot), and in `*port` its port,
+/// which every class dials.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `port` null or valid.
@@ -409,8 +373,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_host(
     r.host.as_ptr().cast()
 }
 
-/// The index of the part at `path` in the robot's map, which every part
-/// argument takes, or -1.
+/// The index of the part at `path` in the robot's map, which every part argument takes, or
+/// -1.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `path` null or
@@ -430,9 +394,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_part(
         .unwrap_or(-1)
 }
 
-/// Runs the robot's timers and hands out its next action: 1 with `*out`
-/// written (valid until the next call on `robot`), 0 when there is none
-/// for now. Call it until it returns 0, every loop.
+/// Runs the robot's timers and hands out its next action: 1 with `*out` written (valid until
+/// the next call on `robot`), 0 when there is none for now.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `out` null or valid.
@@ -451,8 +414,6 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
     }
     if r.queue.is_empty() {
         r.robot.poll_into(now_us, &mut r.queue);
-        // A new host (a run elsewhere, another home address) comes with a
-        // reset: the transport reads it then.
         if r.host.split_last().map(|(_, h)| h) != Some(r.robot.host().0.as_bytes()) {
             r.host = nul(r.robot.host().0);
         }
@@ -476,7 +437,6 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
             key,
             payload,
         } => {
-            // The actions before it may have taken a while (opening a link).
             r.robot.query_sent(id, now_us);
             (RLMESH_DEVICE_QUERY, class, 0, id, timeout_ms, key, payload)
         }
@@ -504,8 +464,6 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
             None,
         ),
     };
-    // NUL-terminated into the buffer kept for it: no allocation once it has
-    // held a key this long (one that can't grow keeps the action's own).
     r.key.clear();
     if r.key.try_reserve(key.len() + 1).is_ok() {
         r.key.extend_from_slice(key.as_bytes());
@@ -533,8 +491,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_next(
     1
 }
 
-/// A datagram from the host on the socket `RLMESH_DEVICE_DATAGRAM_OPEN`
-/// opened (at most 1472 bytes: anything longer is dropped unread).
+/// A datagram from the host on the socket `RLMESH_DEVICE_DATAGRAM_OPEN` opened (at most 1472
+/// bytes: anything longer is dropped unread).
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `data` valid for
@@ -554,8 +512,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_datagram(
     RLMESH_DEVICE_OK
 }
 
-/// Whether `data` is a chunk datagram, and its route and statistics
-/// sequence, into `*route` and `*seq`: 1, or 0 for anything else.
+/// Whether `data` is a chunk datagram, and its route and statistics sequence, into `*route`
+/// and `*seq`: 1, or 0 for anything else.
 ///
 /// # Safety
 /// `data` valid for `len` bytes; `route` and `seq` null or valid.
@@ -588,9 +546,8 @@ pub unsafe extern "C" fn rlmesh_device_datagram_lane(
     1
 }
 
-/// A datagram it asked to send failed (the socket refused it or would not
-/// open; not one that would only have blocked): the robot opens the socket
-/// again, at most once a second.
+/// A datagram it asked to send failed (the socket refused it or would not open; not one that
+/// would only have blocked): the robot opens the socket again, at most once a second.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -607,9 +564,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_datagram_failed(
     RLMESH_DEVICE_OK
 }
 
-/// Whether the robot takes the host's datagram path when offered (`on`
-/// nonzero, the default) or keeps every part on the session's links (0),
-/// from its next attach.
+/// Whether the robot takes the host's datagram path when offered (`on` nonzero, the default)
+/// or keeps every part on the session's links (0), from its next attach.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -626,8 +582,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_use_datagram(
     RLMESH_DEVICE_OK
 }
 
-/// `rlmesh_device_datagram_stats_t`: the robot's end of the host's datagram
-/// path this attach.
+/// `rlmesh_device_datagram_stats_t`: the robot's end of the host's datagram path this attach.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RlmeshDeviceDatagramStats {
@@ -641,25 +596,22 @@ pub struct RlmeshDeviceDatagramStats {
     pub sent: u64,
     /// Chunk datagrams received that opened.
     pub received: u64,
-    /// Gaps in the host's statistics sequence, and datagrams that arrived
-    /// after a later one.
+    /// Gaps in the host's statistics sequence, and datagrams that arrived after a later one.
     pub lost: u64,
     /// Arrived after a later one.
     pub reordered: u64,
     /// Received but unreadable, or failed to open.
     pub unopened: u64,
-    /// Times they came back to the path in the same attach, over every
-    /// attach.
+    /// Times they came back to the path in the same attach, over every attach.
     pub returns: u32,
-    /// Milliseconds running with them on the path, and on the session's
-    /// links, over every attach.
+    /// Milliseconds running with them on the path, and on the session's links, over every
+    /// attach.
     pub datagram_ms: u64,
     pub session_ms: u64,
 }
 
 /// The robot's end of the datagram path this attach, into `*out`:
-/// `RLMESH_DEVICE_ERR_NOT_READY` when the host offered none (or the robot
-/// does not take it).
+/// `RLMESH_DEVICE_ERR_NOT_READY` when the host offered none (or the robot does not take it).
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `out` null or valid.
@@ -698,8 +650,6 @@ pub unsafe extern "C" fn rlmesh_device_robot_datagram_stats(
     RLMESH_DEVICE_OK
 }
 
-/// # Safety
-/// `data` is null with `len` 0, or valid for `len` bytes.
 unsafe fn bytes<'a>(data: *const u8, len: usize) -> Option<&'a [u8]> {
     if data.is_null() {
         return (len == 0).then_some(&[]);
@@ -729,9 +679,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_reply(
     RLMESH_DEVICE_OK
 }
 
-/// Query `query_id` is over: every reply has arrived, or it timed out. The
-/// robot gives up on a query by itself soon after its timeout; this only
-/// tells it sooner.
+/// Query `query_id` is over: every reply has arrived, or it timed out.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -749,8 +697,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_query_done(
     RLMESH_DEVICE_OK
 }
 
-/// A sample on subscription `sub`, received on key `key` (`key_len`
-/// bytes, UTF-8: an e-stop signal names its sender in it).
+/// A sample on subscription `sub`, received on key `key` (`key_len` bytes, UTF-8: an e-stop
+/// signal names its sender in it).
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `key` valid for
@@ -780,8 +728,6 @@ pub unsafe extern "C" fn rlmesh_device_robot_sample(
         r.robot.drop_received(sub, Dropped::TooLarge);
         return RLMESH_DEVICE_OK;
     }
-    // Opened in place: the transport's buffer is its own. The copy may
-    // fail: dropped and counted, never an abort.
     let mut copy = Vec::new();
     if copy.try_reserve_exact(data.len()).is_err() {
         r.robot.drop_received(sub, Dropped::NoMemory);
@@ -792,10 +738,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_sample(
     RLMESH_DEVICE_OK
 }
 
-/// Microseconds from `now_us` until the robot next has something to do
-/// without new input (`Robot::next_due`): 0 when that is now, `UINT64_MAX`
-/// when nothing is scheduled. A board's loop sleeps until then, or until the
-/// transport has input.
+/// Microseconds from `now_us` until the robot next has something to do without new input
+/// (`Robot::next_due`): 0 when that is now, `UINT64_MAX` when nothing is scheduled.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -816,8 +760,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_next_due(
         .map_or(u64::MAX, |due| due.saturating_sub(now_us))
 }
 
-/// Whether the transport should still check signed views for this robot (1)
-/// or drop them unchecked (0): not once its link has taken a sealed view.
+/// Whether the transport should still check signed views for this robot (1) or drop them
+/// unchecked (0): not once its link has taken a sealed view.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -829,8 +773,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_wants_signed_views(
     unsafe { robot.as_ref() }.map_or(1, |r| c_int::from(r.robot.wants_signed_views()))
 }
 
-/// Sealed views taken, signed views taken, and views refused, over every
-/// attach; any out-pointer may be null.
+/// Sealed views taken, signed views taken, and views refused, over every attach; any out-
+/// pointer may be null.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; each pointer null or
@@ -864,8 +808,8 @@ pub struct DeviceChecker(SignedChecker);
 #[derive(Debug)]
 pub struct DeviceChecked(Checked);
 
-/// The verifier for the robot's current link, once per link (the caller
-/// frees it with `_checker_free`); null when there is no new one.
+/// The verifier for the robot's current link, once per link (the caller frees it with
+/// `_checker_free`); null when there is no new one.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -897,9 +841,7 @@ pub unsafe extern "C" fn rlmesh_device_checker_free(checker: *mut DeviceChecker)
 }
 
 /// Verifies a signed broadcast received on `key`: the verified message, for
-/// `_robot_sample_checked`, or null when it isn't the host's. A pure
-/// function of the bytes and the checker, on any task but one at a time per
-/// checker. About 9 KB of stack.
+/// `_robot_sample_checked`, or null when it isn't the host's.
 ///
 /// # Safety
 /// `checker` is null or from `rlmesh_device_robot_take_checker`; `key` valid
@@ -975,10 +917,9 @@ pub unsafe extern "C" fn rlmesh_device_robot_sample_checked(
     RLMESH_DEVICE_OK
 }
 
-/// Latches this robot's e-stop for its own stop (an e-stop pin,
-/// `ESTOP_LOCAL`, `reason` NUL-terminated or null): every part stops at
-/// once, with or without a host, and the host is told. Only
-/// `rlmesh_device_robot_clear_estop` clears it.
+/// Latches this robot's e-stop for its own stop (an e-stop pin, `ESTOP_LOCAL`, `reason` NUL-
+/// terminated or null): every part stops at once, with or without a host, and the host is
+/// told.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `reason` null or
@@ -999,10 +940,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_estop(
     RLMESH_DEVICE_OK
 }
 
-/// Clears the e-stop latch, whoever set it: the only way to. Call it only
-/// from a local action on the board (a reset button, with the e-stop
-/// released). The host ends in ESTOP, unlatched; leaving that still needs
-/// disarm and arm.
+/// Clears the e-stop latch, whoever set it: the only way to.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -1021,12 +959,10 @@ fn part_u8(part: Option<usize>) -> u8 {
         .unwrap_or(RLMESH_DEVICE_NO_PART)
 }
 
-/// One control tick of part `part`'s command group: 1 with `*out` written
-/// (valid until the next call on `robot`) when there is something to do (an
-/// action, a safe behaviour to run, or a handover), 0 when there is
-/// nothing, `RLMESH_DEVICE_ERR_NOT_READY` before the robot runs or for a
-/// part that takes no commands. Call it at the part's control rate; it
-/// publishes the group's applied samples.
+/// One control tick of part `part`'s command group: 1 with `*out` written (valid until the
+/// next call on `robot`) when there is something to do (an action, a safe behaviour to run,
+/// or a handover), 0 when there is nothing, `RLMESH_DEVICE_ERR_NOT_READY` before the robot
+/// runs or for a part that takes no commands.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `out` null or valid.
@@ -1100,9 +1036,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_tick(
     1
 }
 
-/// The robot finished the handover of `part`'s group (it switched its
-/// control mode and neutralised the old member's target): the group may
-/// dispatch again.
+/// The robot finished the handover of `part`'s group (it switched its control mode and
+/// neutralised the old member's target): the group may dispatch again.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -1119,11 +1054,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_handover_done(
     RLMESH_DEVICE_OK
 }
 
-/// Publishes a sample of part `part`: `value` in its dense layout,
-/// captured at `capture_us` (this board's clock).
-/// `RLMESH_DEVICE_ERR_NOT_READY` before the robot runs or its key arrived,
-/// `_ERR_INVALID` for a value not in the part's layout, `_ERR_ARG` for no
-/// such part.
+/// Publishes a sample of part `part`: `value` in its dense layout, captured at `capture_us`
+/// (this board's clock).
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `value` valid for
@@ -1153,8 +1085,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_publish(
     }
 }
 
-/// The home's host id (`rlm-…`, NUL-terminated, owned by the robot), empty
-/// when not known: what an mDNS answer's TXT `id` must equal.
+/// The home's host id (`rlm-…`, NUL-terminated, owned by the robot), empty when not known:
+/// what an mDNS answer's TXT `id` must equal.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -1167,8 +1099,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_home_id(robot: *const DeviceRobot) 
     }
 }
 
-/// Another base address of the home (`host:port`, NUL-terminated), found by
-/// the platform (mDNS): tried next, at once.
+/// Another base address of the home (`host:port`, NUL-terminated), found by the platform
+/// (mDNS): tried next, at once.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `address` null or
@@ -1190,7 +1122,6 @@ pub unsafe extern "C" fn rlmesh_device_robot_add_home(
     RLMESH_DEVICE_OK
 }
 
-/// The proto's `CtlStatus` number.
 fn status_code(status: CtlStatus) -> u8 {
     match status {
         CtlStatus::InvalidRequest => 2,
@@ -1215,24 +1146,21 @@ fn status_code(status: CtlStatus) -> u8 {
     }
 }
 
-// The header's `RLMESH_DEVICE_REFUSALS` and `RLMESH_DEVICE_DROPPED`.
 const _: () = assert!(Rejection::ALL.len() == 17);
 const _: () = assert!(Dropped::ALL.len() == 6);
 
-/// A refusal's code: its place in [`Rejection::ALL`], from 1.
 fn refusal_code(reason: Rejection) -> u8 {
     u8::try_from(reason.index() + 1).unwrap_or(0)
 }
 
-/// The refusal with `code`.
 fn refusal(code: u8) -> Option<Rejection> {
     Rejection::ALL
         .get(usize::from(code.checked_sub(1)?))
         .copied()
 }
 
-/// The name of a refusal's code (1 to `RLMESH_DEVICE_REFUSALS`), static and
-/// NUL-terminated, or null for any other. The names are the wire's.
+/// The name of a refusal's code (1 to `RLMESH_DEVICE_REFUSALS`), static and NUL-terminated,
+/// or null for any other.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_device_refusal_name(code: u8) -> *const c_char {
     let Some(reason) = refusal(code) else {
@@ -1260,8 +1188,8 @@ pub extern "C" fn rlmesh_device_refusal_name(code: u8) -> *const c_char {
     name.as_ptr()
 }
 
-/// The name of a drop reason's code (1 to `RLMESH_DEVICE_DROPPED`), static
-/// and NUL-terminated, or null for any other.
+/// The name of a drop reason's code (1 to `RLMESH_DEVICE_DROPPED`), static and NUL-
+/// terminated, or null for any other.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_device_dropped_name(code: u8) -> *const c_char {
     let Some(why) = dropped(code) else {
@@ -1278,15 +1206,13 @@ pub extern "C" fn rlmesh_device_dropped_name(code: u8) -> *const c_char {
     name.as_ptr()
 }
 
-/// The drop reason with `code`.
 fn dropped(code: u8) -> Option<Dropped> {
     Dropped::ALL.get(usize::from(code.checked_sub(1)?)).copied()
 }
 
-/// What the robot received and dropped for drop reason `code`, over every
-/// attach: `what` 0 for its views, 1 for replies, 2 for chunks that did not
-/// open, 3 for anything else; 0 for any other `what` or code. A view, reply or message it cannot afford
-/// or read is dropped and counted here, and the robot keeps what it held.
+/// What the robot received and dropped for drop reason `code`, over every attach: `what` 0
+/// for its views, 1 for replies, 2 for chunks that did not open, 3 for anything else; 0 for
+/// any other `what` or code.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -1311,7 +1237,6 @@ pub unsafe extern "C" fn rlmesh_device_robot_dropped(
 }
 
 /// Chunks refused this attach for the refusal `code`; 0 for any other code.
-/// Costlier than the status: call it to report, not every loop.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -1324,8 +1249,8 @@ pub unsafe extern "C" fn rlmesh_device_robot_refusals(robot: *const DeviceRobot,
     refusal(code).map_or(0, |reason| r.robot.refusals(reason))
 }
 
-/// Chunks refused for the refusal `code` over every attach, this one
-/// included; `code` 0 counts every reason, and any other code past them 0.
+/// Chunks refused for the refusal `code` over every attach, this one included; `code` 0
+/// counts every reason, and any other code past them 0.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -1344,8 +1269,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_refusals_total(
     refusal(code).map_or(0, |reason| r.robot.refusals_total(reason))
 }
 
-/// Attaches the host accepted, in any session: one more each time the robot
-/// joined again.
+/// Attaches the host accepted, in any session: one more each time the robot joined again.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`.
@@ -1377,8 +1301,8 @@ pub struct RlmeshDevicePublishing {
     pub applied_hz: f32,
 }
 
-/// Part `part`'s streams as they are published, into `*out`:
-/// `RLMESH_DEVICE_ERR_ARG` for a part the map doesn't have.
+/// Part `part`'s streams as they are published, into `*out`: `RLMESH_DEVICE_ERR_ARG` for a
+/// part the map doesn't have.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `out` null or valid.
@@ -1398,7 +1322,7 @@ pub unsafe extern "C" fn rlmesh_device_robot_publishing(
     let Some(p) = r.robot.publishing(usize::from(part)) else {
         return RLMESH_DEVICE_ERR_ARG;
     };
-    #[allow(clippy::cast_possible_truncation)] // a rate, to print
+    #[allow(clippy::cast_possible_truncation)]
     let hz = |rate: Option<f64>| rate.map_or(0.0, |hz| hz as f32);
     // SAFETY: checked non-null; valid for a write per the contract.
     unsafe {
@@ -1415,8 +1339,6 @@ pub unsafe extern "C" fn rlmesh_device_robot_publishing(
 }
 
 /// How part `part`'s chunks arrived this attach, into `*out`.
-/// `RLMESH_DEVICE_ERR_NOT_READY` before the robot runs or for a part that
-/// takes no commands.
 ///
 /// # Safety
 /// `robot` is null or from `rlmesh_device_robot_new`; `out` null or valid.
@@ -1639,8 +1561,6 @@ mod tests {
             RLMESH_DEVICE_OK
         );
         assert_eq!((status.phase, status.fault, status.mode), (0, 0, 0));
-        // A reply that isn't a signed state is ignored; the query's end
-        // with none fails the attempt, and it retries later.
         let rc = unsafe { rlmesh_device_robot_reply(robot, 1, b"plain".as_ptr(), 5, 10) };
         assert_eq!(rc, RLMESH_DEVICE_OK);
         unsafe { rlmesh_device_robot_status(robot, &mut status) };
@@ -1649,7 +1569,6 @@ mod tests {
         assert_eq!(rc, RLMESH_DEVICE_OK);
         unsafe { rlmesh_device_robot_status(robot, &mut status) };
         assert_eq!((status.phase, status.fault), (5, 1));
-        // Not running: nothing to tick or publish.
         let mut tick = core::mem::MaybeUninit::<RlmeshDeviceTick>::uninit();
         let rc = unsafe { rlmesh_device_robot_tick(robot, 0, 10, tick.as_mut_ptr()) };
         assert_eq!(rc, RLMESH_DEVICE_ERR_NOT_READY);
@@ -1658,8 +1577,6 @@ mod tests {
         assert_eq!(rc, RLMESH_DEVICE_ERR_NOT_READY);
         let rc = unsafe { rlmesh_device_robot_publish(robot, 9, 10, value.as_ptr(), 8, 10) };
         assert_eq!(rc, RLMESH_DEVICE_ERR_ARG);
-        // The pin's latch holds before any session, and only a clear
-        // clears it.
         assert_eq!(
             unsafe { rlmesh_device_robot_estop(robot, c"pin".as_ptr(), 20) },
             RLMESH_DEVICE_OK
@@ -1704,8 +1621,6 @@ mod tests {
         );
     }
 
-    /// A query's timeout runs from when it was handed out, not from when
-    /// the robot wanted it: opening the link first can take seconds.
     #[test]
     fn a_query_is_timed_from_when_it_is_handed_out() {
         let addr = address("");
@@ -1713,7 +1628,6 @@ mod tests {
         let rc = unsafe { rlmesh_device_robot_new(&config(&addr, Some(c"eyes"), MAP), &mut robot) };
         assert_eq!(rc, RLMESH_DEVICE_OK);
         let mut action = empty_action();
-        // The subscriptions and the token, the first taking 3 s to link.
         let sent = 3_000_000;
         assert_eq!(
             unsafe { rlmesh_device_robot_next(robot, 0, &mut action) },
@@ -1767,7 +1681,6 @@ mod tests {
         let host = unsafe { CStr::from_ptr(rlmesh_device_robot_host(robot, &mut port)) };
         assert_eq!((host.to_str().unwrap(), port), ("[fe80::1]", 7447));
         unsafe { rlmesh_device_robot_free(robot) };
-        // A record that isn't one, and no key at all.
         config.record_len = 3;
         assert_eq!(
             unsafe { rlmesh_device_robot_new(&config, &mut robot) },

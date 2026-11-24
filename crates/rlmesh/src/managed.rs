@@ -1,16 +1,13 @@
 //! Submit and read evaluations on a managed RLMesh platform (Experimental,
 //! feature `managed`).
 //!
-//! [`Client`] is a thin client over the platform's public `/v1` HTTP API,
-//! the same client as Python's `rlmesh.managed.Client`. It signs in the way
-//! the `rlmesh` CLI does and shares the CLI's profiles: after `rlmesh login`,
-//! [`Client::connect`] uses the default profile's session and refreshes it
-//! the way the CLI does, so the two never race over the single-use refresh
-//! token. `RLMESH_API_KEY` (with `RLMESH_PLATFORM_URL`) bypasses profiles.
-//!
-//! Requests and responses are the platform's own JSON shapes, as
-//! [`serde_json::Value`]; `EvaluationRequest` in the platform's OpenAPI
-//! contract lists every field a request accepts.
+//! [`Client`] is a thin client over the platform's public `/v1` HTTP API, the
+//! same client as Python's `rlmesh.managed.Client`. It shares the `rlmesh` CLI's
+//! profiles: after `rlmesh login`, [`Client::connect`] uses the default
+//! profile's session and refreshes it the way the CLI does, so the two never
+//! race over the single-use refresh token. `RLMESH_API_KEY` (with
+//! `RLMESH_PLATFORM_URL`) bypasses profiles. Requests and responses are the
+//! platform's own JSON shapes, as [`serde_json::Value`].
 //!
 //! ```no_run
 //! use rlmesh::managed::{Client, ClientOptions, WaitOptions};
@@ -61,8 +58,8 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// or a failure before any response (no signed-in profile, a refresh the
 /// identity provider refused, an unreachable platform).
 ///
-/// `Display` is the outermost description and [`source`] walks the causes,
-/// so `{:#}` through `anyhow` prints the whole chain as the CLI does.
+/// `Display` is the outermost description and [`source`] walks the causes, so
+/// `{:#}` through `anyhow` prints the whole chain.
 ///
 /// [`source`]: std::error::Error::source
 pub struct Error(anyhow::Error);
@@ -104,11 +101,11 @@ impl std::error::Error for Error {
 
 /// How [`Client::connect`] authenticates (Python's `Client(...)` keywords).
 ///
-/// A `token` (else `RLMESH_API_KEY`) is used as the bearer credential on
-/// `url` (else `RLMESH_PLATFORM_URL`, else `https://api.rlmesh.dev`).
-/// Without one, the CLI profile `profile` (else the CLI's default profile)
-/// is used on its own platform; `url` then is an error, so a profile's
-/// session is never sent to another host.
+/// A `token` (else `RLMESH_API_KEY`) is the bearer credential on `url` (else
+/// `RLMESH_PLATFORM_URL`, else `https://api.rlmesh.dev`). Without one, the CLI
+/// profile `profile` (else the default profile) is used on its own platform,
+/// and setting `url` is an error, so a profile's session never goes to another
+/// host.
 #[derive(Clone, Default)]
 pub struct ClientOptions {
     /// The CLI profile to use; default: the CLI's default profile.
@@ -182,11 +179,9 @@ pub struct Client {
     url: String,
     token: String,
     expires_at: Option<SystemTime>,
-    /// The profile the token came from; `None` for a static token.
     session: Option<(ProfileStore, ResolvedProfile)>,
 }
 
-/// Where [`Client::connect`] gets its credential from.
 #[derive(Debug, PartialEq, Eq)]
 enum Source {
     Token { url: String, token: String },
@@ -234,8 +229,6 @@ impl Client {
         })
     }
 
-    /// The CLI's own path: `RLMESH_API_KEY` from the store's settings first,
-    /// then the named (or default) profile.
     pub(crate) async fn from_store(store: ProfileStore, profile: Option<&str>) -> Result<Self> {
         if let Some((token, url)) = store.api_key() {
             return Self::with_token(url.to_owned(), token.to_owned());
@@ -443,8 +436,6 @@ impl Client {
             .map_err(Error)
     }
 
-    /// Rotates the session after the platform rejected the current token;
-    /// false when the credential cannot be refreshed at all.
     async fn refresh_forced(&mut self) -> Result<bool> {
         let Some((store, profile)) = &mut self.session else {
             return Ok(false);
@@ -488,7 +479,6 @@ mod tests {
                 &bare,
                 Some(Source::Profile(Some("staging".to_owned()))),
             ),
-            // The environment's key beats a named profile, as in the CLI.
             (
                 options(Some("staging"), None, None),
                 &keyed,

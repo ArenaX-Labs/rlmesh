@@ -24,14 +24,12 @@ mod cancellation_tests;
 use runner::{BackgroundCancel, CancelProbe, cleanup_ready, run};
 pub(crate) use wrappers::Tagged;
 
-/// The bound an env server puts on a drain or close the options leave unset.
 const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// Options for constructing an environment server.
 ///
 /// Defaults: the session address `:0/env`, no serve options or tags, and
-/// `close_env_on_shutdown` true. Build one with `..Default::default()`;
-/// appending a field is a minor change by project policy.
+/// `close_env_on_shutdown` true. Build one with `..Default::default()`.
 #[derive(Clone)]
 pub struct EnvServerOptions {
     /// Session participant address; `None` binds `:0/env`.
@@ -48,7 +46,6 @@ pub struct EnvServerOptions {
     pub ext: Option<crate::ext::EnvServerOptions>,
 }
 
-// The address may carry a key: `Debug` leaves it out.
 impl fmt::Debug for EnvServerOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EnvServerOptions")
@@ -76,19 +73,15 @@ impl Default for EnvServerOptions {
     }
 }
 
-/// A factory serve's describe publication: the factory's full envelope, or
-/// why it could not be built (step 5 is best-effort).
 pub(crate) struct Publish {
     pub(crate) envelope: Result<String>,
 }
 
-/// What the server serves.
 enum Served {
     Lanes(Vec<Box<dyn Env + Send>>),
     Vector(Box<dyn VectorEnv + Send>),
 }
 
-/// A bound robot participant in a session.
 enum Listener {
     Lockstep(Box<crate::lockstep::LockstepBinding>),
 }
@@ -120,8 +113,6 @@ impl Listener {
 
     fn release(self, runtime: &tokio::runtime::Runtime) {
         match self {
-            // Off this thread: a failed serve_async start releases from
-            // inside an executor.
             Self::Lockstep(binding) => std::thread::scope(|scope| {
                 scope.spawn(|| runtime.block_on(binding.close()));
             }),
@@ -136,7 +127,6 @@ struct Resources {
     options: ServeOptions,
     close_timeout: Duration,
     close_env_on_shutdown: bool,
-    /// Announce the env once it answers (`None` for a run's own server).
     announce: Option<crate::binding::Announce>,
 }
 
@@ -156,19 +146,12 @@ struct Shared {
     shutdown: ShutdownTrigger,
     background_cancel: Mutex<std::sync::Weak<CancelProbe>>,
     state: Mutex<State>,
-    /// A serve thread nobody waits on any more (a dropped `serve_async`,
-    /// `shutdown_async`), or a live serve_async's result-owned drain.
-    /// The server's Drop joins it.
     detached: Mutex<Option<Arc<Drain>>>,
     abandoned: super::lanes::JoinThreads,
-    /// Serialize only state transitions and handle publication, never a drain
-    /// wait: a suspended future must not block synchronous observers.
     drain: futures::lock::Mutex<()>,
-    /// Notify after start publication or any joined drain, including ready close.
     done: tokio::sync::watch::Sender<bool>,
 }
 
-/// One join operation, shared by observers without sharing result ownership.
 struct Drain {
     result: Mutex<Option<Result<()>>>,
     done: tokio::sync::watch::Sender<bool>,
@@ -226,18 +209,16 @@ impl Drain {
 ///
 /// The server binds at construction, so [`address`](Self::address) and
 /// [`env_contract`](Self::env_contract) are readable before serving. Then
-/// [`serve`](Self::serve) blocks with lane 0 (or the vector env) on the
-/// calling thread, or [`start`](Self::start) serves from library threads and
-/// [`wait`](Self::wait) / [`shutdown`](Self::shutdown) observe the stop.
-/// Each lane runs on one thread for the server's life.
+/// [`serve`](Self::serve) blocks with lane 0 (or the vector env) on the calling thread, or
+/// [`start`](Self::start) serves from library threads and [`wait`](Self::wait) /
+/// [`shutdown`](Self::shutdown) observe the stop. Each lane runs on one thread for the
+/// server's life.
 ///
-/// Dropping a server runs [`shutdown`](Self::shutdown) and discards its
-/// error; call `shutdown()` to observe it. Inside an async runtime, Drop
-/// triggers the drain and leaves the rest to the server's own threads.
-/// Rust detaches close/actor threads that exceed their timeout or teardown
-/// grace; only the C binding's free is an unbounded join point. A callback must
-/// call shutdown directly rather than joining a helper thread that calls it
-/// (a cross-thread join cycle).
+/// Dropping a server runs [`shutdown`](Self::shutdown) and discards its error; call it to
+/// observe the error. Inside an async runtime, Drop triggers the drain and leaves the rest to
+/// the server's own threads. Close and actor threads that exceed their timeout are detached. A
+/// callback must call `shutdown` directly, never join a helper thread that calls it (a
+/// cross-thread join cycle).
 pub struct EnvServer {
     shared: Arc<Shared>,
 }
@@ -245,12 +226,9 @@ pub struct EnvServer {
 static NEXT_SERVER: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
-    /// The server whose env callback this thread is running, if any.
     static IN_CALLBACK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Run `body` marked as a callback of server `id` (so a `shutdown()` from it
-/// only triggers the drain).
 pub(crate) fn in_callback<R>(id: u64, body: impl FnOnce() -> R) -> R {
     struct Restore(u64);
     impl Drop for Restore {
@@ -266,14 +244,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|err| err.into_inner())
 }
 
-/// Async-context condition: the thread is polling a tokio task or a library
-/// driver segment.
 pub(crate) fn in_async_context() -> bool {
     crate::run::drive::in_async_context()
 }
 
-/// A blocking call made from async code fails with the RuntimeError class
-/// naming its `_async` twin, before it blocks.
 pub(crate) fn refuse_in_async_context(call: &str) -> Result<()> {
     if in_async_context() {
         return Err(Error::Runtime(format!(
@@ -296,8 +270,6 @@ impl EnvServer {
 
     /// Serve in the foreground until the server stops: lane 0 (or the vector
     /// env) runs on this thread, every other lane on its own. SIGINT stops the
-    /// server and this returns the cancellation class after the drain and
-    /// close; SIGTERM stops it and this returns `Ok`.
     pub fn serve(&self) -> Result<()> {
         refuse_in_async_context("serve")?;
         let resources = self.take_resources("serve", State::Foreground)?;
@@ -378,15 +350,12 @@ impl EnvServer {
 
     /// Wait for a started server to stop: `Ok(false)` when `timeout` passes
     /// first, `Ok(true)` once it has stopped. The call that observes the stop
-    /// returns the serve error, once. `timeout` may be zero.
     pub fn wait(&self, timeout: Option<Duration>) -> Result<bool> {
         self.wait_outcome(timeout)?
             .transpose()
             .map(|stopped| stopped.is_some())
     }
 
-    /// Keep a stopped server's serve result separate from wait misuse, so
-    /// bindings can report the stopped flag even when serving failed.
     pub(crate) fn wait_outcome(&self, timeout: Option<Duration>) -> Result<Option<Result<()>>> {
         refuse_in_async_context("wait")?;
         let started = Instant::now();
@@ -408,8 +377,6 @@ impl EnvServer {
         }
     }
 
-    /// `Some` once the started server has stopped (joining it), `None` while
-    /// it runs; misuse is the RuntimeError class.
     fn poll_wait(&self) -> Result<Option<Result<()>>> {
         if IN_CALLBACK.with(std::cell::Cell::get) == self.shared.id {
             return Ok(if matches!(*lock(&self.shared.state), State::Stopped) {
@@ -441,7 +408,6 @@ impl EnvServer {
             return Ok(None);
         }
         crate::run::drive::run_sync(drain.wait());
-        // Retain the shared task if another observer already transitioned it.
         let mut state = lock(&self.shared.state);
         if matches!(*state, State::Background(_)) {
             *state = State::Stopped;
@@ -452,9 +418,8 @@ impl EnvServer {
 
     /// Stop the server: release a never-served listener (closing the envs if
     /// `close_env_on_shutdown`), or trigger the drain and join a started one,
-    /// returning its serve error unless a `wait()` already returned it.
-    /// Called from one of this server's own env callbacks, it only triggers
-    /// the drain.
+    /// returning its serve error unless a `wait()` already returned it. Called
+    /// from one of this server's own env callbacks, it only triggers the drain.
     pub fn shutdown(&self) -> Result<()> {
         refuse_in_async_context("shutdown")?;
         self.shared.trigger_shutdown("local shutdown");
@@ -501,8 +466,6 @@ impl EnvServer {
 
     /// The async twin of [`serve`](Self::serve): every lane, lane 0 included,
     /// runs on library threads and no signal handler is installed; resolves
-    /// with the serve error when the server stops. Dropping it stops the
-    /// server (the drain and close finish detached).
     pub async fn serve_async(&self) -> Result<()> {
         let drain = {
             let _transition = self.shared.drain.lock().await;
@@ -522,12 +485,10 @@ impl EnvServer {
     /// as it was.
     pub async fn wait_async(&self, timeout: Option<Duration>) -> Result<bool> {
         let mut done = self.shared.done.subscribe();
-        // At most one timer for the entire timeout; None creates no timer.
         let timer = timeout.map(sleep_off_runtime);
         futures::pin_mut!(timer);
         loop {
-            // Snapshot before inspecting state, so a publication or completion
-            // between the poll and changed().await cannot be missed.
+            // Snapshot before inspecting state so a publication between the poll and `changed().await` is not missed.
             done.borrow_and_update();
             if let Some(result) = self.poll_wait()? {
                 return result.map(|()| true);
@@ -557,8 +518,7 @@ impl EnvServer {
         if IN_CALLBACK.with(std::cell::Cell::get) == self.shared.id {
             return Ok(());
         }
-        // No transition lock is retained by a suspended future. A synchronous
-        // observer can therefore join even while this future remains unpolled.
+        // No transition lock is held across a suspension, so a synchronous observer can join an unpolled future.
         if let Some(drain) = self.begin_shutdown() {
             drain.wait().await;
             drain.result(false)
@@ -590,13 +550,10 @@ impl EnvServer {
         }
     }
 
-    /// The trigger that stops this server without waiting (a factory
-    /// serve's cancel).
     pub(crate) fn shutdown_handle(&self) -> ShutdownTrigger {
         self.shared.shutdown.clone()
     }
 
-    /// C free's unbounded join point, after the binding released its borrows.
     pub(crate) fn join_abandoned(&self) {
         if IN_CALLBACK.with(std::cell::Cell::get) == self.shared.id {
             return;
@@ -619,8 +576,7 @@ fn background_outcome(
     shared: &Shared,
     watcher: Option<BackgroundCancel>,
 ) -> Result<()> {
-    // Early setup errors can return before drive() triggers shutdown. Select
-    // their stop before retiring the watcher so a later firing cannot mask them.
+    // Select early setup stops before retiring the watcher so a later firing cannot mask them.
     shared.shutdown.trigger("serve ended");
     if watcher.is_some_and(BackgroundCancel::stop) {
         Err(Error::Cancelled)
@@ -629,8 +585,6 @@ fn background_outcome(
     }
 }
 
-/// A dropped `serve_async`: stop the server, as `shutdown()` does on a
-/// foreground serve.
 struct StopOnDrop<'a>(&'a Shared);
 
 impl Drop for StopOnDrop<'_> {
@@ -649,8 +603,7 @@ impl Drop for EnvServer {
         let previous = std::mem::replace(&mut *lock(&self.shared.state), State::Stopped);
         let detached = lock(&self.shared.detached).take();
         if in_async_context() || IN_CALLBACK.with(std::cell::Cell::get) == self.shared.id {
-            // Never join a callback's own drain, directly or via its joiner.
-            // ENV-10: never block an executor; the server's own threads finish.
+            // Never join a callback's own drain, and never block an executor.
             if let State::Ready(resources) = previous {
                 let shared = Arc::clone(&self.shared);
                 std::thread::spawn(move || {
@@ -675,7 +628,6 @@ impl Drop for EnvServer {
 
 impl fmt::Display for EnvServer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // `address()` hands over the key; what prints leaves it out.
         let address = crate::address::redact(&self.shared.address);
         write!(f, "EnvServer(address='{address}')")
     }
@@ -687,8 +639,6 @@ impl fmt::Debug for EnvServer {
     }
 }
 
-/// A sleep that needs no runtime timer (the twin runs on the caller's
-/// executor, whatever it is).
 fn sleep_off_runtime(duration: Duration) -> impl std::future::Future<Output = ()> {
     let (tx, rx) = futures::channel::oneshot::channel::<()>();
     std::thread::spawn(move || {

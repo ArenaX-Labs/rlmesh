@@ -30,7 +30,6 @@ public sealed unsafe class AbiTests
             foreach (var field in fields)
             {
                 source.AppendLine($"_Static_assert(offsetof({name}, {field.Name}) == {Marshal.OffsetOf(type, field.Name)}, \"{name}.{field.Name}\");");
-                // Fixed buffers and the bound union are checked as complete fields.
                 int size = field.FieldType.IsPointer || field.FieldType == typeof(IntPtr) || field.FieldType == typeof(UIntPtr) ? 8 : field.FieldType.IsEnum ? 4 : Marshal.SizeOf(field.FieldType);
                 source.AppendLine($"_Static_assert(sizeof((({name}*)0)->{field.Name}) == {size}, \"{name}.{field.Name} size\");");
             }

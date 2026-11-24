@@ -19,7 +19,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = ROOT / "CHANGELOG.md"
 
-# conventional-commit type -> Keep a Changelog section
 SECTION = {"feat": "Added", "fix": "Fixed", "perf": "Changed", "refactor": "Changed"}
 ORDER = ["Breaking", "Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]
 

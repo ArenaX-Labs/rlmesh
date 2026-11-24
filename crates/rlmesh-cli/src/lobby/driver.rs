@@ -28,9 +28,6 @@ pub(super) enum Outcome {
     Failed(CtlError),
 }
 
-/// Each member's stage in `snapshot`, from what it had: present, declared,
-/// bound; a member present before and absent now is lost. A robot back in
-/// the lobby stays returned: a snapshot from before it left can still arrive.
 fn stage_in(snapshot: &AuthoritySnapshot, scene: &Scene, m: &MemberState) -> MemberStage {
     if m.stage == MemberStage::Returned {
         return MemberStage::Returned;
@@ -48,7 +45,6 @@ fn stage_in(snapshot: &AuthoritySnapshot, scene: &Scene, m: &MemberState) -> Mem
     if !present {
         return if joined { MemberStage::Lost } else { m.stage };
     }
-    // A robot back from a loss stays `left` until it declared again.
     let declared = info.is_some_and(|p| p.left.is_none());
     if robot && declared && snapshot.parts.iter().any(|p| p.owner == m.name) {
         MemberStage::Declared
@@ -90,7 +86,6 @@ impl Driver {
         self.tear_down(session, outcome).await;
     }
 
-    /// Stages 3 to 8, until the run stops or fails.
     async fn stages(&mut self, config: HostConfig) -> Outcome {
         let snapshots = match self.host(config).await {
             Ok(snapshots) => snapshots,
@@ -111,13 +106,10 @@ impl Driver {
             if let Err(outcome) = self.rejoin(snapshots.clone()).await {
                 return outcome;
             }
-            // Back from a loss, the run arms only when asked.
             manual = true;
         }
     }
 
-    /// Stage 3: the run's session, hosted here or on its satellite, and the
-    /// daemon in it.
     async fn host(
         &mut self,
         config: HostConfig,
@@ -154,9 +146,6 @@ impl Driver {
         Ok(snapshots)
     }
 
-    /// Stage 3 on satellite `device`: its host order, its answer, and the
-    /// daemon attached there as `local`, the run's state followed through
-    /// it until the satellite's host is gone.
     async fn host_on(
         &mut self,
         device: &str,
@@ -224,8 +213,6 @@ impl Driver {
         Ok(snapshots)
     }
 
-    /// Stages 4 to 6: robots assigned as they wait, declared, and every
-    /// controller bound, all by `wait`.
     async fn gather(
         &mut self,
         mut snapshots: watch::Receiver<AuthoritySnapshot>,
@@ -263,8 +250,6 @@ impl Driver {
         }
     }
 
-    /// Sends a join to every robot member waiting in the lobby that has
-    /// none yet.
     fn assign(&self) {
         let state = self.state();
         let Some(session) = state.session else {
@@ -280,9 +265,6 @@ impl Driver {
             let Some(host_key) = state.host_key else {
                 return;
             };
-            // A satellite's run host has keys of its own and no host id:
-            // a robot finds it at the join's addresses, or through this
-            // lobby again.
             let host_id = match self.satellite {
                 Some(_) => String::new(),
                 None => self.home.identity().host_id(),
@@ -301,8 +283,6 @@ impl Driver {
                 .send(Ok(LobbyReply::Assignment(Assignment::Join(join.clone()))));
             if sent.is_ok() {
                 lock(&self.run.joins).insert(robot.clone(), join);
-                // The robot may already be back in the lobby, returned,
-                // between the answer and this line.
                 member(&self.run.state, &robot, |m| {
                     if m.stage != MemberStage::Returned {
                         m.stage = MemberStage::Assigned;
@@ -312,7 +292,6 @@ impl Driver {
         }
     }
 
-    /// Every member's stage from `snapshot`.
     fn refresh(&self, snapshot: &AuthoritySnapshot) {
         let scene = &self.scene;
         self.update(|s| {
@@ -322,7 +301,6 @@ impl Driver {
         });
     }
 
-    /// Why the run failed at `wait`: its first member not done.
     fn late(&self, state: &RunState) -> CtlError {
         let wait = self.scene.wait.as_secs_f64();
         for m in &state.members {
@@ -353,8 +331,6 @@ impl Driver {
         refused(CtlStatus::NotReady, "the run did not get ready in time")
     }
 
-    /// Stage 7: armed by the daemon, or on an `ArmScene` (or straight at
-    /// the host by an operator).
     async fn arm_stage(
         &mut self,
         mut snapshots: watch::Receiver<AuthoritySnapshot>,
@@ -389,7 +365,6 @@ impl Driver {
         }
     }
 
-    /// Arms the run's session as the daemon; `RUNNING` once armed.
     async fn arm(&mut self) -> Result<(), CtlError> {
         let daemon = self
             .daemon
@@ -406,11 +381,6 @@ impl Driver {
         }
     }
 
-    /// Stage 8: until stopped (`Some`), or a member is lost or the session
-    /// is no longer armed (`None`). A loss and its rejoin may come in one
-    /// snapshot (a watch keeps only the latest), so a session that left
-    /// ARMED and ACTIVE after the arm needs an arm again whether or not the
-    /// rejoin window was seen.
     async fn running(
         &mut self,
         mut snapshots: watch::Receiver<AuthoritySnapshot>,
@@ -422,6 +392,8 @@ impl Driver {
                 .scene
                 .as_ref()
                 .is_some_and(|s| s.rejoin_until_ns.is_some());
+            // A loss and its rejoin may arrive in one snapshot (a watch keeps only the latest), so a
+            // session that left ARMED and ACTIVE after the arm needs an arm again.
             let disarmed = snapshot.revision >= self.armed
                 && !matches!(snapshot.mode, Mode::Armed | Mode::Active);
             if rejoining || disarmed {
@@ -441,11 +413,6 @@ impl Driver {
         }
     }
 
-    /// Stage 8a: waits for every lost member to come back (a robot
-    /// re-sent its join through the lobby, declaring its map again) until
-    /// the session's rejoin window closes, which fails the run. Back means
-    /// the host closed the window and every member is where it was: robots
-    /// declared, controllers bound.
     async fn rejoin(
         &mut self,
         mut snapshots: watch::Receiver<AuthoritySnapshot>,
@@ -459,7 +426,6 @@ impl Driver {
                 return Ok(());
             }
             self.update(|s| s.stage = RunStage::Rejoining);
-            // On the host's clock, as of this snapshot.
             let left = window.map_or(self.scene.rejoin, |until| {
                 Duration::from_nanos(until.saturating_sub(snapshot.host_ns).max(0).unsigned_abs())
             });
@@ -498,9 +464,6 @@ impl Driver {
         }
     }
 
-    /// Stage 9: closes the scene, waits up to 2 s for its members to
-    /// detach, stops its host, and frees the claims of robots that never
-    /// left the lobby (the others' on their return, or after `wait`).
     async fn tear_down(mut self, session: SessionId, outcome: Outcome) {
         let (code, by, detail, error) = match &outcome {
             Outcome::Stopped(by) => (ReasonCode::SceneEnded, by.to_string(), String::new(), None),
@@ -528,7 +491,6 @@ impl Driver {
                 }),
             );
             if let Some(daemon) = self.daemon.take() {
-                // The satellite gives the members 2 s, then stops its host.
                 let mut present = daemon.host_present();
                 let _ = tokio::time::timeout(STRAGGLERS * 2, present.wait_for(|p| !p)).await;
                 let _ = daemon.detach().await;
@@ -565,9 +527,6 @@ impl Driver {
             .filter(|r| !lock(&self.run.joins).contains_key(r))
             .collect();
         self.home.release(&self.id, &never_left);
-        // A robot back in the lobby within milliseconds may come after the
-        // host stopped: the run ends once its robots are back (their claims
-        // released, `RETURNED`), or 2 s on.
         let joined: Vec<ParticipantId> = lock(&self.run.joins).keys().cloned().collect();
         let mut states = self.run.state.subscribe();
         let _ = tokio::time::timeout(
@@ -600,7 +559,6 @@ impl Driver {
     }
 }
 
-/// `daemon`'s authority state as it changes, until its host is gone.
 async fn follow(daemon: &Participant) -> Result<watch::Receiver<AuthoritySnapshot>, SessionError> {
     let mut states = daemon.watch();
     let mut present = daemon.host_present();
@@ -629,9 +587,6 @@ async fn follow(daemon: &Participant) -> Result<watch::Receiver<AuthoritySnapsho
     Ok(snapshots)
 }
 
-/// The stage a run gathering its members is at: `ASSIGNING` while a robot
-/// has no join, `DECLARING` while one hasn't declared, `BINDING` while a
-/// controller hasn't bound, else ready to arm.
 fn gathering(state: &RunState, robots: &[ParticipantId]) -> RunStage {
     let robot = |m: &&MemberState| robots.contains(&m.name);
     let members = || state.members.iter();

@@ -1,4 +1,3 @@
-/* ABI 5 Describe: static declarations, factory branches and server snapshots. */
 #include <rlmesh.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -151,7 +150,6 @@ static void models(void) {
   ext.tail = 0;
   CHECK(rlmesh_model_vtable_describe(&v, &ext.o, &desc) == RLMESH_OK);
   rlmesh_value_free(desc);
-  /* Type form shares declaration validation with Model construction, never load. */
   RLMeshModel* model = NULL;
   uint32_t saved = v.context_corners;
   v.context_corners = RLMESH_CORNER_PREDICT_BATCH;
@@ -167,7 +165,6 @@ static void models(void) {
   CHECK(rlmesh_model_new(&v, NULL, NULL, &model) == RLMESH_ERR_INVALID_ARGUMENT);
   v.native_chunk = 3;
   CHECK(loads == 0 && loaded_reads == 0 && model_frees == 0 && model_closes == 0);
-  /* A refused declaration edition is recorded, rather than failing describe. */
   v.workflow_edition = "2099.01";
   CHECK(rlmesh_model_vtable_describe(&v, NULL, &desc) == RLMESH_OK);
   CHECK(get(get(desc, "runtime"), "workflow_edition_error") != NULL);
@@ -328,7 +325,6 @@ static void factories(void) {
   CHECK(rlmesh_discrete_new(9, NULL, &space) == RLMESH_OK);
   RLMeshVectorEnvVtable vv = RLMESH_VECTOR_ENV_VTABLE_INIT;
   RLMeshVectorEnv* vector = NULL;
-  /* Dummy callbacks are never invoked by describe; match their vector signatures below. */
   extern RLMeshStatus vector_reset(void*, const int64_t*, size_t, const RLMeshValue*, RLMeshValue**,
                                    RLMeshValue**);
   extern RLMeshStatus vector_step(void*, const RLMeshValue*, RLMeshValue**, double*, bool*, bool*,

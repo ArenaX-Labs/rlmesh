@@ -10,9 +10,6 @@ use crate::{
     UniformBounds,
 };
 
-/// Bounds requested at the builder, before the dtype is known. Integer
-/// entry points defer byte encoding until [`BoxSpaceBuilder::build`], when the
-/// dtype has been selected.
 enum PendingBounds {
     Ready(BoxBounds),
     IntUniform { low: i64, high: i64 },
@@ -53,10 +50,8 @@ impl BoxSpaceBuilder {
         }
     }
 
-    /// A uniform integer bound pair, carried as dtype-typed bytes so values
-    /// such as `i64::MAX`/`u64::MAX` round-trip exactly. The dtype defaults to
-    /// `Float32`; set an integer dtype with [`BoxSpaceBuilder::dtype`] before
-    /// building.
+    /// A uniform integer bound pair, carried as dtype-typed bytes so values such as
+    /// `i64::MAX`/`u64::MAX` round-trip exactly.
     pub fn int_scalar(low: i64, high: i64, shape: impl Into<Vec<i64>>) -> Self {
         Self {
             shape: shape.into(),
@@ -75,7 +70,7 @@ impl BoxSpaceBuilder {
     }
 
     /// A uniform unsigned-integer bound pair, carried as dtype-typed bytes so
-    /// values up to `u64::MAX` round-trip exactly. Defaults to `Uint64`.
+    /// values up to `u64::MAX` round-trip exactly.
     pub fn uint_scalar(low: u64, high: u64, shape: impl Into<Vec<i64>>) -> Self {
         Self {
             shape: shape.into(),
@@ -85,7 +80,7 @@ impl BoxSpaceBuilder {
     }
 
     /// Per-element unsigned-integer bounds (row-major), carried as dtype-typed
-    /// bytes so values up to `u64::MAX` round-trip exactly. Defaults to `Uint64`.
+    /// bytes so values up to `u64::MAX` round-trip exactly.
     pub fn uint_tensor(low: Vec<u64>, high: Vec<u64>, shape: impl Into<Vec<i64>>) -> Self {
         Self {
             shape: shape.into(),
@@ -140,9 +135,6 @@ impl BoxSpaceBuilder {
     }
 }
 
-/// Encode signed-integer bounds, failing fast if any value falls outside the
-/// dtype's exact integer range rather than silently wrapping (which would build
-/// a "valid" space whose bounds differ from what the caller requested).
 fn encode_int_bound(values: &[i64], dtype: DType) -> Result<Vec<u8>, SpaceError> {
     for &value in values {
         check_int_in_dtype_range(value, dtype).map_err(bound_encode_error)?;
@@ -150,10 +142,6 @@ fn encode_int_bound(values: &[i64], dtype: DType) -> Result<Vec<u8>, SpaceError>
     encode_i64_scalars(values, dtype).map_err(bound_encode_error)
 }
 
-/// Encode unsigned-integer bounds, failing fast on out-of-range values. Integer
-/// dtypes preserve the bit pattern through the `i64` codec: for `Uint64`,
-/// `u64::MAX` re-encodes to all-ones bytes; smaller unsigned dtypes fit `i64`
-/// after the range check. Float dtypes encode the numeric `u64` value directly.
 fn encode_uint_bound(values: &[u64], dtype: DType) -> Result<Vec<u8>, SpaceError> {
     if matches!(dtype, DType::Float16 | DType::Float32 | DType::Float64) {
         let mut scalars = Vec::with_capacity(values.len());
@@ -179,9 +167,6 @@ fn bound_encode_error(err: crate::scalar::ScalarError) -> SpaceError {
     }
 }
 
-/// Which side of a Box bound pair is being validated. The saturating wire cast
-/// is asymmetric, so the range check depends on the side (see
-/// [`reject_non_integral_int_bound`]).
 #[derive(Clone, Copy)]
 enum BoundSide {
     Low,
@@ -197,25 +182,6 @@ impl BoundSide {
     }
 }
 
-/// A float-form Box bound on an integer dtype is packed onto the wire by a
-/// saturating `f64 as iN` cast. That cast silently corrupts a bound in three
-/// ways, each of which this guard rejects at construction so the frozen wire
-/// form only ever carries a faithfully representable value:
-///
-/// - a fractional bound (`0.5` -> `0`) or a non-finite one (`inf` clamps to the
-///   dtype min/max) — rejected for either side;
-/// - a `low` *above* the dtype max, which saturates DOWN to the max and turns an
-///   empty admitted set into `{max}` (`scalar(300.0, 400.0).dtype(Uint8)` would
-///   wire as `[255, 255]`, advertising `{255}` while the local space admits
-///   nothing) — rejected;
-/// - a `high` *below* the dtype min, which saturates UP to the min and turns an
-///   empty set into `{min}` — rejected.
-///
-/// A *vacuous* out-of-range bound saturates harmlessly and is allowed: a `low`
-/// below the dtype min (e.g. `low = -1.0` on an unsigned dtype, the established
-/// "no lower bound" idiom) or a `high` above the dtype max both clamp to a value
-/// that leaves the admitted set unchanged. An integral, finite, in-range float
-/// (e.g. `0.0`/`1.0` on `Uint8`) round-trips exactly and is allowed.
 fn reject_non_integral_int_bound(
     dtype: DType,
     value: f64,
@@ -233,15 +199,8 @@ fn reject_non_integral_int_bound(
             format!("integer-dtype bound {name}={value} must be a finite whole number")
         );
     }
-    // Only saturation that CHANGES the admitted set is a silent contract change.
-    // The range is `[min, max_exclusive)` where `max_exclusive == true_max + 1`.
-    // The low side tests `value >= max_exclusive` rather than `value > true_max`
-    // because `i64::MAX`/`u64::MAX` are NOT representable in f64 and round UP to
-    // 2^63/2^64: a `low` sitting at that rounded max would slip a `> max` test
-    // and then saturate to `{max}` on the wire. `max_exclusive` is a power of two
-    // (`2^w`/`2^(w-1)`), exact in f64, so `>=` is precise at the 64-bit edge.
-    // (Exact 64-bit bounds belong on the typed `int_scalar`/`uint_scalar`
-    // builders, which carry exact dtype bytes instead of an f64.)
+    // i64::MAX/u64::MAX are not representable in f64: compare against the exclusive bound
+    // `max_exclusive` instead of `true_max`.
     let (min, max_exclusive) = int_dtype_f64_bounds(dtype);
     let changes_admitted_set = match side {
         BoundSide::Low => value >= max_exclusive,
@@ -260,12 +219,6 @@ fn reject_non_integral_int_bound(
     Ok(())
 }
 
-/// Range of an integer dtype as `(inclusive_min, exclusive_upper)` in `f64`,
-/// where `exclusive_upper == true_max + 1`. Both endpoints are powers of two
-/// (`0`/`-2^(w-1)` and `2^w`/`2^(w-1)`), hence exact in `f64` — unlike
-/// `i64::MAX`/`u64::MAX`, which round up. Only integer dtypes reach here (callers
-/// gate on [`DType::is_integer`]); other dtypes carry no exact-integer
-/// constraint.
 fn int_dtype_f64_bounds(dtype: DType) -> (f64, f64) {
     match dtype {
         DType::Uint8 => (0.0, 2.0_f64.powi(8)),
@@ -313,8 +266,6 @@ pub(crate) fn validate_box_at(space: &SpaceSpec, path: &str) -> Result<(), Space
         Some(BoxBounds::Unbounded(_)) => Ok(()),
 
         Some(BoxBounds::Uniform(s)) => {
-            // NaN slips past `low > high` (every NaN comparison is false), then
-            // reads as "unbounded" at conformance -- reject it as a corrupt spec.
             if s.low.is_nan() || s.high.is_nan() {
                 return err_space!(path, "Box", "scalar bounds invalid: NaN bound");
             }
@@ -326,7 +277,6 @@ pub(crate) fn validate_box_at(space: &SpaceSpec, path: &str) -> Result<(), Space
             Ok(())
         }
 
-        // elementwise / tensor: len == numel
         Some(BoxBounds::Elementwise(t)) => {
             if t.low.len() != t.high.len() {
                 return err_space!(
@@ -363,12 +313,10 @@ pub(crate) fn validate_box_at(space: &SpaceSpec, path: &str) -> Result<(), Space
             Ok(())
         }
 
-        // dtype-typed uniform: one scalar each, dtype-sized.
         Some(BoxBounds::TypedUniform(t)) => {
             validate_typed_bounds(&t.low, &t.high, 1, space.dtype, path)
         }
 
-        // dtype-typed elementwise: numel scalars each, dtype-sized.
         Some(BoxBounds::TypedElementwise(t)) => {
             validate_typed_bounds(&t.low, &t.high, numel, space.dtype, path)
         }
@@ -377,10 +325,6 @@ pub(crate) fn validate_box_at(space: &SpaceSpec, path: &str) -> Result<(), Space
     }
 }
 
-/// Validate dtype-typed Box bounds: byte length must equal
-/// `count * dtype_size(dtype)`, the dtype must be representable, and each
-/// `low <= high` comparison runs in the dtype's native domain (integers
-/// compare as integers, floats as floats) so no precision is lost.
 fn validate_typed_bounds(
     low: &[u8],
     high: &[u8],
@@ -440,12 +384,7 @@ fn decode_typed(bytes: &[u8], dtype: DType, path: &str) -> Result<Vec<Scalar>, S
 }
 
 /// `low > high` in the dtype's native domain, via the centralized
-/// [`Scalar::cmp_typed`]. Integers compare as integers (`Uint64` unsigned),
-/// floats as floats, and a mixed float-bound/int-value pair is compared exactly
-/// (no truncation of either side). A `NaN` operand is unordered; for the
-/// `low > high` validation question we treat that as "not greater" (`false`) so
-/// NaN is handled by the dedicated NaN check at containment time rather than
-/// here.
+/// [`Scalar::cmp_typed`].
 pub(crate) fn scalar_gt(low: Scalar, high: Scalar, dtype: DType) -> bool {
     low.cmp_typed(high, dtype) == Some(std::cmp::Ordering::Greater)
 }
@@ -500,7 +439,6 @@ mod tests {
             .flat_map(|value| value.to_le_bytes())
             .collect();
         assert_eq!(t.high, high);
-        // An element outside a narrower dtype fails rather than wrapping.
         assert!(
             BoxSpaceBuilder::uint_tensor(vec![0, 0], vec![255, 256], vec![2])
                 .dtype(DType::Uint8)
@@ -539,7 +477,6 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_typed_uniform_low_above_high() {
-        // 10 > 5 in the native i64 domain.
         let spec = SpaceSpec {
             shape: vec![1],
             dtype: DType::Int64,
@@ -555,9 +492,6 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_nan_bounds() {
-        // NaN slips past `low > high` (all NaN comparisons are false) and would
-        // read as "unbounded" at conformance, so validation must reject it --
-        // both for f64 Uniform bounds and dtype-typed float bounds.
         let uniform = SpaceSpec {
             shape: vec![1],
             dtype: DType::Float64,
@@ -593,7 +527,6 @@ mod tests {
             "300 is out of Int8 range and must be rejected"
         );
 
-        // uint_scalar(0, 1<<33).dtype(Uint32) must fail, not wrap high -> 0.
         let err = BoxSpaceBuilder::uint_scalar(0, 1 << 33, vec![1])
             .dtype(DType::Uint32)
             .build();
@@ -602,14 +535,12 @@ mod tests {
             "1<<33 is out of Uint32 range and must be rejected"
         );
 
-        // A value that *does* fit still builds.
         assert!(
             BoxSpaceBuilder::int_scalar(0, 100, vec![1])
                 .dtype(DType::Int8)
                 .build()
                 .is_ok()
         );
-        // uint_scalar still round-trips u64::MAX exactly under Uint64.
         assert!(
             BoxSpaceBuilder::uint_scalar(0, u64::MAX, vec![1])
                 .build()
@@ -619,10 +550,6 @@ mod tests {
 
     #[test]
     fn test_float_form_int_bound_rejects_set_changing_saturation() {
-        // DANGEROUS: a `low` above the dtype max saturates DOWN to the max,
-        // turning an empty admitted set into {max}. scalar(300.0, 400.0) on
-        // Uint8 would wire as [255, 255] -- advertising {255} while the local
-        // space admits no uint8 value at all, a silent contract change.
         assert!(
             BoxSpaceBuilder::scalar(300.0, 400.0, vec![1])
                 .dtype(DType::Uint8)
@@ -631,7 +558,6 @@ mod tests {
             "low above the dtype max must be rejected (saturation changes the set)"
         );
 
-        // DANGEROUS elementwise: a per-element low above the dtype max.
         assert!(
             BoxSpaceBuilder::tensor(vec![0.0, 300.0], vec![10.0, 400.0], vec![2])
                 .dtype(DType::Uint8)
@@ -640,7 +566,6 @@ mod tests {
             "elementwise low above the dtype max must be rejected"
         );
 
-        // DANGEROUS: a `high` below the dtype min saturates UP to the min.
         assert!(
             BoxSpaceBuilder::scalar(-400.0, -300.0, vec![1])
                 .dtype(DType::Uint8)
@@ -649,9 +574,6 @@ mod tests {
             "high below the dtype min must be rejected (saturation changes the set)"
         );
 
-        // BENIGN (allowed): a `low` below the dtype min is a vacuous lower bound
-        // -- the established "low = -1 means unbounded below" idiom for unsigned
-        // dtypes, where saturating -1 -> 0 leaves the admitted set unchanged.
         assert!(
             BoxSpaceBuilder::scalar(-1.0, 100.0, vec![1])
                 .dtype(DType::Uint64)
@@ -660,7 +582,6 @@ mod tests {
             "a low below the dtype min must stay allowed (vacuous, saturates harmlessly)"
         );
 
-        // BENIGN (allowed): a `high` above the dtype max is a vacuous upper bound.
         assert!(
             BoxSpaceBuilder::scalar(0.0, 999.0, vec![1])
                 .dtype(DType::Uint8)
@@ -669,7 +590,6 @@ mod tests {
             "a high above the dtype max must stay allowed (vacuous, saturates harmlessly)"
         );
 
-        // A fractional bound on an integer dtype is still rejected (unchanged).
         assert!(
             BoxSpaceBuilder::scalar(0.0, 1.5, vec![1])
                 .dtype(DType::Int32)
@@ -677,7 +597,6 @@ mod tests {
                 .is_err()
         );
 
-        // An exactly-representable in-range bound builds.
         assert!(
             BoxSpaceBuilder::scalar(0.0, 255.0, vec![1])
                 .dtype(DType::Uint8)
@@ -688,11 +607,6 @@ mod tests {
 
     #[test]
     fn test_float_form_int_bound_rejects_rounded_64bit_max() {
-        // i64::MAX / u64::MAX are NOT representable in f64: they round UP to
-        // 2^63 / 2^64, one above the true max. A `low` at that rounded value
-        // admits nothing locally (no int is >= 2^63 for Int64) but the wire cast
-        // saturates DOWN to the dtype max, so the peer admits {max} -- the
-        // Uint8(300..400) drift at the 64-bit precision edge. Both must reject.
         assert!(
             BoxSpaceBuilder::scalar(i64::MAX as f64, i64::MAX as f64, vec![1])
                 .dtype(DType::Int64)
@@ -708,8 +622,6 @@ mod tests {
             "a low bound at the f64-rounded u64::MAX must be rejected"
         );
 
-        // A genuinely in-range large 64-bit bound (2^62) still builds: it is
-        // below the exclusive upper and round-trips through the saturating cast.
         assert!(
             BoxSpaceBuilder::scalar(2.0_f64.powi(62), 2.0_f64.powi(62), vec![1])
                 .dtype(DType::Int64)
@@ -721,9 +633,6 @@ mod tests {
 
     #[test]
     fn test_validate_uint64_high_below_low_in_unsigned_domain() {
-        // low = u64::MAX (bytes), high = 0. As i64 these are -1 and 0, so an
-        // i64 comparison would wrongly accept low <= high; the unsigned
-        // comparison correctly rejects it.
         let spec = SpaceSpec {
             shape: vec![1],
             dtype: DType::Uint64,

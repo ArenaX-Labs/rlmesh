@@ -1,4 +1,3 @@
-// Native C++17 policy driving the Chrono env.
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>

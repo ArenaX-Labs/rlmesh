@@ -1,10 +1,6 @@
 //! Image → terminal-bytes encoders: the native inline-image protocols — Kitty
 //! (Kitty, Ghostty) and iTerm2 (iTerm2, WezTerm) — with a truecolor ANSI
 //! half-block fallback, plus env-based protocol detection.
-//!
-//! Detection is env-only (no terminal query), so it never competes with the
-//! terminal backend's key thread for stdin; Kitty also transmits with `q=2`, so
-//! the terminal sends nothing back either.
 
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,18 +10,12 @@ use image::imageops::FilterType;
 
 use crate::viewer::frame::{self, FrameFormat};
 
-/// Upper half block (▀): one cell renders two vertically-stacked pixels.
 const UPPER_HALF: char = '\u{2580}';
 
-/// Ping-pong counter for the two Kitty image ids. A process-global is fine: only
-/// one terminal viewer (one alt-screen takeover) can exist at a time.
 static KITTY_FRAME: AtomicU64 = AtomicU64::new(0);
 
-/// Cap the longest side fed to the PNG encoder on the graphics path, to bound
-/// per-frame encode + transmission cost; the terminal scales it into the cells.
 const MAX_GRAPHICS_PX: u32 = 1024;
 
-/// Which inline-image protocol the terminal speaks (detected from env).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Graphics {
     /// No graphics protocol — render with half-blocks.
@@ -36,12 +26,6 @@ pub(crate) enum Graphics {
     Iterm,
 }
 
-/// Detect the terminal's inline-image protocol from env only — no terminal query.
-///
-/// Ghostty/Kitty speak the Kitty protocol; iTerm2/WezTerm speak the iTerm2 one.
-/// Multiplexers (tmux/screen) strip graphics escapes but leak the outer terminal's
-/// env into their panes, so they fall back to half-blocks; so does anything not
-/// recognized.
 pub(crate) fn detect() -> Graphics {
     if std::env::var_os("TMUX").is_some() || std::env::var_os("STY").is_some() {
         return Graphics::None;
@@ -64,13 +48,6 @@ pub(crate) fn detect() -> Graphics {
     }
 }
 
-/// Append one frame to `out` for protocol `g`, sized to `cols`×`img_rows` cells
-/// (the caller reserves the rows below for its footer).
-///
-/// The half-block path packs two vertical pixels per cell; the graphics paths
-/// PNG-encode (the source long side capped to `MAX_GRAPHICS_PX`) and size the cell
-/// box to the image's aspect — cells are ~2× taller than wide, so the vertical
-/// bound is doubled — so Kitty's exact `c`×`r` fill does not stretch.
 pub(crate) fn render_image(
     g: Graphics,
     img: &RgbImage,
@@ -121,7 +98,6 @@ pub(crate) fn render_image(
     }
 }
 
-/// Fit `w x h` pixels into `max_w x max_h`, preserving aspect.
 fn fit(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     let w = w.max(1);
     let h = h.max(1);
@@ -136,7 +112,6 @@ fn fit(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     }
 }
 
-/// Encode an (even-height) RGB image as ANSI half-blocks, diffing color runs.
 fn half_block_cells(img: &RgbImage, out: &mut String) {
     let (w, h) = (img.width(), img.height());
     for ry in 0..h / 2 {
@@ -159,13 +134,6 @@ fn half_block_cells(img: &RgbImage, out: &mut String) {
     }
 }
 
-/// Emit a PNG frame via the Kitty graphics protocol, scaled into `cols`×`rows`
-/// cells. Double-buffers across two image ids: the new frame is drawn (with a
-/// strictly increasing `z` so it sits above the previous one — kitty breaks equal-z
-/// ties by image id, which would otherwise put the lower-id frame underneath) and
-/// only *then* is the previous image freed. No delete-then-redraw gap, so live
-/// updates don't flicker, even if a redraw lands mid-stream over SSH. `C=1` keeps the
-/// cursor put; `q=2` means the terminal never replies on stdin.
 fn kitty_emit(b64: &str, cols: u16, rows: u16, out: &mut String) {
     let n = KITTY_FRAME.fetch_add(1, Ordering::Relaxed);
     let id = (n % 2) + 1;
@@ -192,8 +160,6 @@ fn kitty_emit(b64: &str, cols: u16, rows: u16, out: &mut String) {
     let _ = write!(out, "\x1b_Ga=d,d=I,i={prev},q=2\x1b\\");
 }
 
-/// Emit a PNG frame via the iTerm2 inline-images protocol, scaled into `cols`×`rows`
-/// cells. Fire-and-forget — no response to read.
 fn iterm_emit(b64: &str, cols: u16, rows: u16, out: &mut String) {
     let _ = write!(
         out,
@@ -201,7 +167,6 @@ fn iterm_emit(b64: &str, cols: u16, rows: u16, out: &mut String) {
     );
 }
 
-/// Standard base64 (RFC 4648); the Kitty/iTerm2 transmitters base64 their PNG payload.
 fn base64_encode(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);

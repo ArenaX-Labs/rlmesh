@@ -164,7 +164,6 @@ public sealed unsafe class Value : IEquatable<Value>
         Value? result = NativeGate.Call(() =>
         {
             using var call = Handle.Acquire(this);
-            // Dictionaries have a length too, but never support integer indexing.
             var kind = Native.rlmesh_value_kind(call.Value);
             if (kind is not (RLMeshValueKind.RLMESH_VALUE_LIST or RLMeshValueKind.RLMESH_VALUE_TUPLE))
                 throw new TypeError("integer indexing requires a list or tuple");

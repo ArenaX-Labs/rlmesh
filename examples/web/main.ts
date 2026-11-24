@@ -16,7 +16,6 @@ const log = (s: string) => {
   logLines.length = Math.min(logLines.length, 80);
   $('log').textContent = logLines.join('\n');
 };
-/** Timestamped mode and edge transitions, for automated checks. */
 const timeline: { t: number; what: string; value: string }[] = [];
 const mark = (what: string, value: string) => timeline.push({ t: performance.now(), what, value });
 
@@ -38,7 +37,6 @@ session.on('disconnected', (e) => { sockets[e.cls] = false; showConn(); log(`${e
 session.on('reconnected', (e) => { sockets[e.cls] = true; showConn(); showMe(); log(`${e.cls} socket reconnected`); });
 session.on('worker_restart', (e) => { showMe(); log(`${e.cls} worker restarted in ${fmt(e.downtime_ms, 0)} ms (#${e.restarts}): ${e.reason}`); });
 
-// ---------------------------------------------------------------- wasm panel
 {
   const w = session.load.workers;
   const rows: [string, string][] = [
@@ -53,7 +51,6 @@ session.on('worker_restart', (e) => { showMe(); log(`${e.cls} worker restarted i
   $('wasm').innerHTML = rows.map(([k, v]) => `<span class="mut">${k}</span><span>${v}</span>`).join('');
 }
 
-// ---------------------------------------------------------------- camera
 const cam = ($('cam') as HTMLCanvasElement).getContext('2d')!;
 let camFrames = 0;
 // The frame event hands a borrowed frame (pooled bytes + ImageBitmap), released when the listener returns.
@@ -61,14 +58,13 @@ session.on('frame', (b) => {
   if (b.bitmap) cam.drawImage(b.bitmap, 0, 0, 640, 480);
   camFrames++;
 });
-session.latest(CAM); // start the subscription
+session.latest(CAM);
 setInterval(() => {
   using b = session.peek<Frame>(CAM); // borrowed until the end of this block
   const f = b?.value;
   if (f) $('camInfo').textContent = `#${f.seq} · ${(f.data.length / 1024).toFixed(1)} KB ${f.kind.toUpperCase()} · age ${fmt(f.age_ms, 1)} ms · decode ${fmt(f.decode_ms, 1)} ms`;
 }, 250);
 
-// ---------------------------------------------------------------- joint plot via the async iterator
 const N = 5000;
 const hist = Array.from({ length: JOINTS }, () => new Float32Array(N));
 let head = 0;
@@ -79,14 +75,12 @@ const joints = session.subscribe(ARM, { maxQueue: 2048 });
     head = (head + 1) % N;
   }
 })();
-// The edge mode comes from the arm's applied stream.
 session.latest(`${ARM}/_applied`);
 const plot = ($('plot') as HTMLCanvasElement).getContext('2d')!;
 const colors = ['#4c8dff', '#2fbf6a', '#e9b022', '#e5484d', '#b37feb', '#36cfc9', '#f0f0f0'];
 let plotOn = true;
 let busyMs = 0;
 const draw = () => {
-  // Debug: simulate a busy UI thread (e.g. a heavy render) for `busyMs` per animation frame.
   if (busyMs) { const e = performance.now() + busyMs; while (performance.now() < e); }
   if (!plotOn) return void requestAnimationFrame(draw);
   const W = 1200, H = 300;
@@ -108,7 +102,6 @@ const draw = () => {
 };
 requestAnimationFrame(draw);
 
-// ---------------------------------------------------------------- status, clock, stats
 let mode: Mode | '' = '';
 let edge: EdgeMode | '' = '';
 const showMode = (m: Mode) => {
@@ -156,7 +149,6 @@ setInterval(async () => {
   $('stats').querySelector('tbody')!.innerHTML = rows.join('');
 }, 1000);
 
-// ---------------------------------------------------------------- control
 let lease: Lease | null = null;
 const target = new Float64Array(JOINTS);
 const take = $('take') as HTMLButtonElement, rel = $('release') as HTMLButtonElement;
@@ -169,7 +161,6 @@ const showTargets = () => target.forEach((v, j) => {
 take.onclick = async () => {
   take.disabled = true;
   try {
-    // Start from where the arm is, so taking over does not jump.
     const now = session.latest(ARM);
     if (now) target.set(now.data.subarray(0, JOINTS));
     showTargets();
@@ -231,7 +222,6 @@ setInterval(() => {
 addEventListener('keydown', (e) => !e.repeat && key(e, true));
 addEventListener('keyup', (e) => key(e, false));
 
-// ---------------------------------------------------------------- hooks for automated verification
 (window as any).__rlmesh = {
   session,
   rlmesh,

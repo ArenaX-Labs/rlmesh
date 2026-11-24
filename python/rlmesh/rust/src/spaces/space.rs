@@ -11,10 +11,6 @@ pub fn parse_space<'py>(space: &Bound<'py, PyAny>) -> PyResult<SpaceSpec> {
         return Ok(spec);
     }
 
-    // Dispatch with isinstance against the imported Gymnasium classes (rather
-    // than the unqualified class name) so user subclasses such as
-    // `class MyBox(gym.spaces.Box)` are recognised, consistent with the
-    // Python-side from_gymnasium_space converter.
     let spaces = import_gym(space.py())?.getattr("spaces")?;
 
     if is_gym_instance(space, &spaces, "Box")? {
@@ -39,10 +35,6 @@ pub fn parse_space<'py>(space: &Bound<'py, PyAny>) -> PyResult<SpaceSpec> {
     }
 }
 
-/// Whether `space` is an instance of `gymnasium.spaces.<name>`.
-///
-/// A missing class (e.g. older Gym lacking `Text`) is treated as "not an
-/// instance" rather than an error.
 fn is_gym_instance(
     space: &Bound<'_, PyAny>,
     spaces: &Bound<'_, PyAny>,
@@ -61,14 +53,12 @@ pub fn make_space<'py>(py: Python<'py>, space: &SpaceSpec) -> PyResult<Bound<'py
         .as_ref()
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("spec missing"))?
     {
-        // === Fundamental === //
         SpaceKind::Box(_) => make_box(py, &spaces, space),
         SpaceKind::Discrete(_) => make_discrete(py, &spaces, space),
         SpaceKind::MultiBinary(_) => make_multibinary(py, &spaces, space),
         SpaceKind::MultiDiscrete(_) => make_multidiscrete(py, &spaces, space),
         SpaceKind::Text(_) => make_text(py, &spaces, space),
 
-        // === Composite === //
         SpaceKind::Dict(_) => make_dict(py, &spaces, space),
         SpaceKind::Tuple(_) => make_tuple(py, &spaces, space),
     }
@@ -173,8 +163,6 @@ mod tests {
             let spaces = import_gym(py).unwrap().getattr("spaces").unwrap();
             let globals = PyDict::new(py);
             globals.set_item("spaces", &spaces).unwrap();
-            // A user-defined subclass of gym.spaces.Box, as found in many
-            // wrapper/robotics libraries.
             py.run(
                 pyo3::ffi::c_str!("class MyBox(spaces.Box):\n    pass\n"),
                 Some(&globals),

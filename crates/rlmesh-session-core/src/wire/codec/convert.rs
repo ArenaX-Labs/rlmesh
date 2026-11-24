@@ -8,8 +8,6 @@ use crate::wire::authority::{ClockMode, Mode, PriorityClass, Role};
 use crate::wire::error::WireError;
 use crate::wire::ids::{ChannelId, Fingerprint};
 
-/// A plain loop: `collect`'s iterator adapters each keep a copy of an item
-/// in their own stack frame, and the items are large.
 pub(super) fn collect<T, U, E>(
     items: Vec<T>,
     mut f: impl FnMut(T) -> Result<U, E>,

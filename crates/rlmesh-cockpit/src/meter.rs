@@ -1,11 +1,4 @@
 //! Rate meters, sans-IO: every time is passed in.
-//!
-//! - [`RateMeter`]: events per second over a sliding window, on one clock,
-//!   counting silence (a stream that stops reads as slowing to zero, not as
-//!   its last rate).
-//! - [`CounterRate`]: the rate of a cumulative counter someone else reports
-//!   (publisher and controller counters, heartbeat seqs), on the reporter's
-//!   clock, and unknown once its reports stop arriving.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -15,7 +8,6 @@ fn ns(d: Duration) -> i64 {
 }
 
 /// The monitoring window for a stream expected at `hz`:
-/// `max(1 s, 4 / hz)`.
 pub fn window_for(hz: f64) -> Duration {
     let slow = if hz.is_finite() && hz > 0.0 {
         Duration::from_secs_f64((4.0 / hz).min(3600.0))
@@ -92,9 +84,7 @@ impl RateMeter {
 #[derive(Clone, Debug)]
 pub struct CounterRate {
     window_ns: i64,
-    /// `(reporter time, value)`.
     points: VecDeque<(i64, u64)>,
-    /// Local time of the newest report.
     seen_ns: Option<i64>,
 }
 
@@ -174,7 +164,6 @@ mod tests {
         }
         let hz = meter.rate(2000 * MS).expect("rate");
         assert!((hz - 1000.0).abs() < 2.0, "{hz}");
-        // Half a second of silence halves the rate; a full second zeroes it.
         assert!((meter.rate(2500 * MS).expect("rate") - 500.0).abs() < 2.0);
         assert_eq!(meter.rate(3000 * MS), Some(0.0));
         assert_eq!(meter.total(), 2000);
@@ -202,7 +191,6 @@ mod tests {
     #[test]
     fn a_counter_rate_is_on_the_reporters_clock_and_goes_unknown_when_reports_stop() {
         let mut rate = CounterRate::new(Duration::from_secs(2));
-        // The reporter's clock is 7 s ahead of ours; only its deltas count.
         rate.record(7_000 * MS, 0, 0);
         assert_eq!(rate.rate(0), None, "one report");
         for i in 1..=8 {
@@ -212,7 +200,6 @@ mod tests {
         assert!((hz - 100.0).abs() < 1e-9, "{hz}");
         assert_eq!(rate.value(), Some(200));
         assert_eq!(rate.rate(7_000 * MS), None, "stale");
-        // A restart starts over.
         rate.record(9_500 * MS, 3, 2_250 * MS);
         assert_eq!((rate.value(), rate.delta()), (Some(3), 0));
     }

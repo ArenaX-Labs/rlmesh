@@ -1,11 +1,3 @@
-"""Shadow runs: a policy that predicts before it may command.
-
-One program reads a camera, publishes where it aims as a part of its own,
-and commands two eyes. Run in shadow on a disarmed session, it predicts and
-publishes its aim (a viewer reads it) and commands nothing; armed, the same
-run starts commanding both eyes.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -31,7 +23,6 @@ EYE = {
     }
 }
 
-#: Reads the camera, commands both eyes.
 TRACKER = {
     "hz": 25,
     "inputs": {"frame": {"kind": "camera", "at": "cam:image"}},
@@ -41,10 +32,8 @@ TRACKER = {
     },
 }
 
-#: The tracker's own part: where it aims.
 AIM = {"aim": {"kind": "x/aim", "hz": 25, "fields": {"xy": ["float32", [2]]}}}
 
-#: Reads the tracker's aim and commands nothing.
 VIEWER = {
     "hz": 25,
     "inputs": {
@@ -91,8 +80,6 @@ def host() -> Iterator[rlmesh.Host]:
 
 
 class Rig:
-    """A camera and two eyes, each with its own loop; nothing armed."""
-
     def __init__(self, host: rlmesh.Host) -> None:
         self.camera = rlmesh.Robot(
             "cam", {"image": rlmesh.parts.camera(32, 24, hz=30)}, session=host
@@ -100,7 +87,6 @@ class Rig:
         self.eyes = [
             rlmesh.Robot(name, EYE, session=host) for name in ("eye-1", "eye-2")
         ]
-        #: What each eye's edge dispatched, by eye.
         self.driven: list[list[float]] = [[], []]
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
@@ -132,7 +118,6 @@ class Rig:
             rate.sleep()
 
     def chunks_received(self) -> int:
-        """Chunks the eyes' edges took in, accepted or refused."""
         total = 0
         for eye in self.eyes:
             stats = eye.edge_stats("eyes")
@@ -153,7 +138,6 @@ def test_one_program_shadows_on_a_disarmed_session_and_commands_once_armed(
         tracker.bind()
 
         def track(obs: rlmesh.Observation) -> dict[str, Any]:
-            # Where the frame's red channel says to look.
             x = float(obs["frame"][0, 0, 0]) / 255.0
             tracker.publish("aim", xy=np.array([x, 0.5], np.float32))
             gaze = np.array([[0.25, 0.0]], np.float32)
@@ -164,7 +148,6 @@ def test_one_program_shadows_on_a_disarmed_session_and_commands_once_armed(
                 track, duration=60.0, mode=rlmesh.RunMode.SHADOW, on_step=steps.append
             )
         )
-        # The viewer is bound to the tracker's aim: it flows while disarmed.
         viewer.bind()
         view, viewed = in_thread(
             lambda: viewer.run(lambda obs: aims.append(obs["aim"]) or {}, duration=60.0)
@@ -186,7 +169,6 @@ def test_one_program_shadows_on_a_disarmed_session_and_commands_once_armed(
         assert shadow.shadow
         assert shadow.parts == {"one": "eye-1:eyes", "two": "eye-2:eyes"}
         assert shadow.seqs == {"one": None, "two": None}
-        # The actions as each eye's edge would take them.
         pos = shadow.actions["one"]
         assert pos is not None
         np.testing.assert_allclose(pos["pos"], [[0.25, 0.0]])
@@ -195,7 +177,6 @@ def test_one_program_shadows_on_a_disarmed_session_and_commands_once_armed(
         assert len(shadowing) == 1, events
         assert shadowing[0]["message"].startswith("shadowing: the session is DISARMED")
 
-        # Armed: the same run commands both eyes, without a restart.
         rig.eyes[0].arm()
         wait_until(
             "both eyes driven by the same run",

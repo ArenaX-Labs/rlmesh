@@ -1,8 +1,3 @@
-//! The session's live link health, read from a participant
-//! ([`Participant::health`]): any participant, an observer that neither
-//! publishes nor commands too, reads every link the host measures, each
-//! edge's refusals by reason and each participant's latest report.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -20,13 +15,11 @@ use rlmesh_session::{
 
 const WAIT: Duration = Duration::from_secs(10);
 
-/// An eye: two joints at 500 Hz.
 const EYE: &str = r#"{
     "eyes": {"kind": "joints", "names": ["pan", "tilt"], "fields": ["pos"], "hz": 500,
              "command": "position", "safe": "hold", "hold_max_ms": 100}
 }"#;
 
-/// Commands both eyes.
 const TRACKER: &str = r#"{
     "hz": 50,
     "actions": {
@@ -37,13 +30,11 @@ const TRACKER: &str = r#"{
     }
 }"#;
 
-/// Reads eye 1 and commands nothing.
 const VIEWER: &str = r#"{
     "hz": 25,
     "inputs": {"gaze": {"kind": "joints", "at": "eye-1:eyes", "fields": ["pos"]}}
 }"#;
 
-/// Commands eye 2 alone.
 const PROBE: &str = r#"{
     "hz": 25,
     "actions": {"two": {"kind": "joints", "at": "eye-2:eyes", "command": "position",
@@ -125,7 +116,6 @@ fn f32s(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
-/// An eye's 500 Hz loop: publish its gaze, then take what is due.
 fn spin(robot: Arc<Robot>, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let clock = robot.participant().clock().clone();
@@ -137,7 +127,6 @@ fn spin(robot: Arc<Robot>, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()>
     })
 }
 
-/// Both eyes to 0.25.
 struct Gaze;
 
 impl Predictor for Gaze {
@@ -180,8 +169,6 @@ async fn an_observer_reads_every_link_and_each_robots_refusals_by_reason() {
     };
     wait_until("the tracker sending", || tracker.stats().chunks_sent > 10).await;
 
-    // A prober takes eye 2 and sends it a value that is not a number: the
-    // edge refuses it for that.
     let prober = world.policy("prober", PROBE, PriorityClass::Operator).await;
     prober.acquire().await.expect("the prober takes eye 2");
     let nan = Value::Tensor(Tensor::from_f64(DType::F32, vec![5, 2], &[f64::NAN; 10]));
@@ -202,9 +189,6 @@ async fn an_observer_reads_every_link_and_each_robots_refusals_by_reason() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    // The viewer neither publishes nor commands. Its first read subscribes
-    // and waits for a publication; it reads the robots' refusals once their
-    // heartbeats carried them to the host.
     let viewer_id = viewer.participant().id().clone();
     let mut health = viewer.health(WAIT).await.expect("health");
     let two_id = ParticipantId::new("eye-2").expect("id");
@@ -235,7 +219,6 @@ async fn an_observer_reads_every_link_and_each_robots_refusals_by_reason() {
         assert!(l.offset_ms.is_some(), "{l:#?}");
         assert_eq!(l.health, "ok", "{l:#?}");
     }
-    // Per robot: eye 2 refused for the value, eye 1 refused nothing.
     let invalid = link("eye-2")
         .rejected_by
         .iter()
@@ -248,8 +231,6 @@ async fn an_observer_reads_every_link_and_each_robots_refusals_by_reason() {
         "{:#?}",
         link("eye-1")
     );
-    // Reports: what each eye publishes, what the tracker's run did, what
-    // the viewer received.
     let published = &link("eye-1").published;
     assert!(
         published
@@ -269,8 +250,6 @@ async fn an_observer_reads_every_link_and_each_robots_refusals_by_reason() {
     );
     assert!(health.link(&viewer_id).is_some());
 
-    // Later reads return the newest at once; the next one comes about a
-    // second later.
     let now = viewer.health(WAIT).await.expect("health");
     let next = viewer
         .participant()

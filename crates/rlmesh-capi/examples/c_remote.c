@@ -1,5 +1,3 @@
-/* Remote clients (realtime sessions, cache identity, vector buffers) and a served model by address.
- */
 #define _POSIX_C_SOURCE 200809L
 #include <math.h>
 #include <pthread.h>
@@ -79,7 +77,6 @@ int main(void) {
   RLMeshModel* served = NULL;
   CHECK(rlmesh_remote_env_new(NULL, &remote) == RLMESH_ERR_INVALID_ARGUMENT && remote == NULL);
   CHECK(rlmesh_model_from_address(NULL, &served) == RLMESH_ERR_INVALID_ARGUMENT && !served);
-  /* A served model is reached by its participant address, never a v1 one. */
   CHECK(rlmesh_model_from_address("127.0.0.1:1", &served) == RLMESH_ERR_INVALID_ARGUMENT &&
         !served && strstr(rlmesh_last_error_message(), "participant address") != NULL);
   RLMeshRemoteEnvOptions eo = RLMESH_REMOTE_ENV_OPTIONS_INIT;
@@ -171,7 +168,6 @@ int main(void) {
   CHECK(cached == rlmesh_remote_env_observation_space(remote));
   state.remote = NULL;
   rlmesh_remote_env_free(remote);
-  /* A completed close/free must make the next client usable immediately. */
   for (int i = 0; i < 100; ++i) {
     CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_OK);
     CHECK(rlmesh_remote_env_reset(remote, NULL, NULL, &obs, &info) == RLMESH_OK);
@@ -180,8 +176,6 @@ int main(void) {
     if (i % 2 == 0) CHECK(rlmesh_remote_env_close(remote) == RLMESH_OK);
     rlmesh_remote_env_free(remote);
   }
-  /* A model served as a participant of a session this process hosts, reached
-   * by its address: run and bound to a local env stepped on this thread. */
   RLMeshModelVtable mv = RLMESH_MODEL_VTABLE_INIT;
   mv.predict = predict;
   mv.context_corners = RLMESH_CORNER_PREDICT;
@@ -242,7 +236,6 @@ int main(void) {
   free(address);
   CHECK(rlmesh_env_server_shutdown(server) == RLMESH_OK);
   rlmesh_env_server_free(server);
-  /* Two scalar authored lanes form the vector client. */
   State second = {0, NULL};
   RLMeshEnv* env2 = NULL;
   CHECK(rlmesh_env_new(&ev, &second, &attrs, &env2) == RLMESH_OK);

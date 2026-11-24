@@ -15,9 +15,8 @@ pub struct ElementwiseBounds {
 /// A single low/high bound pair carried as raw little-endian bytes in the
 /// enclosing space's dtype (one scalar each).
 ///
-/// `low`/`high` must each be exactly `dtype_size(dtype)` bytes. Used so that
-/// integer dtypes (notably `int64`/`uint64`) carry exact bounds instead of
-/// losing precision through `f64`.
+/// `low`/`high` must each be exactly `dtype_size(dtype)` bytes, so integer dtypes
+/// (notably `int64`/`uint64`) carry exact bounds instead of passing through `f64`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TypedUniformBounds {
     pub low: Vec<u8>,
@@ -26,8 +25,6 @@ pub struct TypedUniformBounds {
 
 /// Per-element low/high bounds carried as raw little-endian bytes in the
 /// enclosing space's dtype, in row-major (C) order.
-///
-/// `low`/`high` must each be exactly `numel * dtype_size(dtype)` bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TypedElementwiseBounds {
     pub low: Vec<u8>,
@@ -57,14 +54,13 @@ pub struct DiscreteSpec {
 
 /// Empty marker for a MultiBinary space: its dimensions come entirely from
 /// [`SpaceSpec::shape`] (rank-1 `[n]` for a flat vector, rank-N for a tensor of
-/// bits). The proto `MultiBinarySpec` carries no fields.
+/// bits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MultiBinarySpec;
 
 /// Per-element category counts for a MultiDiscrete space, flattened row-major
-/// (C order). The logical shape lives in [`SpaceSpec::shape`] (rank-1 `[len]`
-/// for a flat vector, rank-2 `[rows, cols]` for a matrix); `nvec` always holds
-/// `numel(shape)` entries. Element `i` takes values in
+/// (C order). The logical shape is [`SpaceSpec::shape`] (`[len]` or `[rows, cols]`);
+/// `nvec` holds `numel(shape)` entries. Element `i` takes values in
 /// `[start[i], start[i] + nvec[i])`; an empty `start` is all zeros.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MultiDiscreteSpec {
@@ -174,24 +170,18 @@ impl From<SpaceType> for i32 {
 }
 
 /// Per-lane autoreset convention an environment follows (mirrors the proto
-/// `AutoresetMode` and gymnasium's `AutoresetMode`). There is intentionally no
-/// `Unspecified` variant: the proto `UNSPECIFIED` (0) decodes to `Disabled`, the
-/// safe explicit-reset default. Unknown values are not folded to a default;
-/// [`AutoresetMode::try_from`] rejects them so a newer peer's mode this build
-/// does not understand fails loudly instead of silently changing lifecycle
-/// semantics.
+/// `AutoresetMode` and gymnasium's `AutoresetMode`).
 ///
-/// The numeric discriminants here must stay in sync with the proto
-/// `AutoresetMode` (UNSPECIFIED=0, NEXT_STEP=1, SAME_STEP=2, DISABLED=3); the
-/// `autoreset_mode_i32_roundtrip` test below locks this so future drift fails.
+/// The proto `UNSPECIFIED` (0) decodes to `Disabled`, the explicit-reset default. Unknown
+/// values are rejected by [`AutoresetMode::try_from`] rather than folded to a default. The
+/// discriminants must match the proto (`UNSPECIFIED=0, NEXT_STEP=1, SAME_STEP=2, DISABLED=3`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(i32)]
 pub enum AutoresetMode {
     /// Terminal obs at step `t`; the env internally resets the done lane and
     /// delivers the fresh obs at `t+1`.
     NextStep = 1,
-    /// Reset obs delivered in the same step the lane reports done. Reserved;
-    /// not honored by the runtime yet.
+    /// Reset obs delivered in the same step the lane reports done.
     SameStep = 2,
     /// No autoreset; a done lane stays inactive until an explicit reset.
     #[default]
@@ -216,8 +206,6 @@ impl TryFrom<i32> for AutoresetMode {
         match value {
             1 => Ok(Self::NextStep),
             2 => Ok(Self::SameStep),
-            // proto UNSPECIFIED (0) and DISABLED (3) both decode to the safe
-            // explicit-reset default; anything else is rejected loudly.
             0 | 3 => Ok(Self::Disabled),
             other => Err(UnknownAutoresetMode(other)),
         }
@@ -238,8 +226,7 @@ pub struct EnvContract {
     pub metadata: Option<crate::meta::MetaMap>,
     pub render_mode: String,
     pub num_envs: u32,
-    /// Per-lane autoreset convention the runtime honors. Derived at construction
-    /// from the env's `metadata["autoreset_mode"]`; defaults to `Disabled`.
+    /// Per-lane autoreset convention the runtime honors.
     pub autoreset_mode: AutoresetMode,
 }
 
@@ -249,24 +236,18 @@ mod tests {
 
     #[test]
     fn autoreset_mode_i32_roundtrip() {
-        // Native -> i32 discriminants, locked to the proto AutoresetMode values
-        // (UNSPECIFIED=0, NEXT_STEP=1, SAME_STEP=2, DISABLED=3).
         assert_eq!(i32::from(AutoresetMode::NextStep), 1);
         assert_eq!(i32::from(AutoresetMode::SameStep), 2);
         assert_eq!(i32::from(AutoresetMode::Disabled), 3);
 
-        // i32 -> native: proto UNSPECIFIED (0) and DISABLED (3) decode to the
-        // safe Disabled default; 1/2 to their modes.
         assert_eq!(AutoresetMode::try_from(0), Ok(AutoresetMode::Disabled));
         assert_eq!(AutoresetMode::try_from(1), Ok(AutoresetMode::NextStep));
         assert_eq!(AutoresetMode::try_from(2), Ok(AutoresetMode::SameStep));
         assert_eq!(AutoresetMode::try_from(3), Ok(AutoresetMode::Disabled));
 
-        // An unknown value is rejected loudly, never folded to a default.
         assert_eq!(AutoresetMode::try_from(99), Err(UnknownAutoresetMode(99)));
         assert!(AutoresetMode::try_from(-1).is_err());
 
-        // Every native variant round-trips through i32 and back.
         for v in [
             AutoresetMode::NextStep,
             AutoresetMode::SameStep,

@@ -644,7 +644,7 @@ class _HookList(RunHooks):
         for hook in self._hooks:
             try:
                 hook.on_run_end(result)
-            except BaseException as exc:  # re-raised after the last hook
+            except BaseException as exc:
                 error = error or exc
         if error is not None:
             raise error

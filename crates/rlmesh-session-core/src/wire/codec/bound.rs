@@ -1,27 +1,20 @@
 //! What a message a board decodes may hold, checked in place before the
 //! decoder allocates for it.
 //!
-//! A protobuf decoder allocates per element of a repeated field: an empty
-//! element costs two bytes on the wire and its whole size in memory (a
-//! `PartSpec` takes 272 bytes on a 32-bit board), and a vector doubles as
-//! it grows. A [`Shape`] caps each repeated field's count and each repeated
-//! string's length, so the most a message can make its decoder allocate is
-//! known before it runs. A message over a cap is refused unread.
+//! A [`Shape`] caps each repeated field's count and each repeated string's length, so the most a
+//! message can make its decoder allocate is known before it runs. A message over a cap is refused
+//! unread.
 
 use super::reader::{Fields, Value};
 use crate::prelude::*;
 use crate::wire::error::{Unread, WireError};
 
-/// The caps of one message type.
 #[derive(Debug)]
 pub(super) struct Shape {
     pub(super) message: &'static str,
     pub(super) fields: &'static [(u32, Field)],
 }
 
-/// The cap on one field. A field without one is a singular scalar,
-/// string or message holding none of these (bounded by the message's own
-/// length), or one the decoder skips.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Field {
     /// A message field: at most `max` of it (1 for a singular one), each
@@ -35,13 +28,8 @@ pub(super) enum Field {
     Scalars { max: u16, width: u8 },
 }
 
-/// The most rules one shape has.
 const MAX_RULES: usize = 8;
 
-/// Checks `buf` against `shape`.
-///
-/// # Errors
-/// [`WireError::Unread`]: malformed, or over a cap.
 pub(super) fn check(buf: &[u8], shape: &Shape) -> Result<(), WireError> {
     debug_assert!(shape.fields.len() <= MAX_RULES);
     let over = || WireError::unread(shape.message, Unread::TooLarge(shape.message));
@@ -85,9 +73,7 @@ pub(super) fn check(buf: &[u8], shape: &Shape) -> Result<(), WireError> {
     Ok(())
 }
 
-/// Ids, paths and kinds, as a repeated string.
 const NAME: u16 = 128;
-/// A host address, `host:port`.
 const ADDRESS: u16 = 256;
 
 const EMPTY: Shape = Shape {
@@ -95,13 +81,11 @@ const EMPTY: Shape = Shape {
     fields: &[],
 };
 
-/// `Key`: the parts a key covers.
 pub(super) const KEY: Shape = Shape {
     message: "key",
     fields: &[(5, Field::Scalars { max: 256, width: 0 })],
 };
 
-/// `ActionChunk`: the inputs it was computed from.
 pub(super) const CHUNK: Shape = Shape {
     message: "action chunk",
     fields: &[(
@@ -152,7 +136,6 @@ const HOST_ORDER: Shape = Shape {
     ],
 };
 
-/// `Assignment`: a lobby's order.
 pub(super) const ASSIGNMENT: Shape = Shape {
     message: "assignment",
     fields: &[
@@ -173,7 +156,6 @@ pub(super) const ASSIGNMENT: Shape = Shape {
     ],
 };
 
-/// `RunState`: a run's members and addresses.
 pub(super) const RUN_STATE: Shape = Shape {
     message: "run state",
     fields: &[
@@ -227,7 +209,6 @@ const COMMAND: Shape = Shape {
     ],
 };
 
-/// `PartSpec`.
 pub(super) const PART: Shape = Shape {
     message: "part spec",
     fields: &[
@@ -257,14 +238,6 @@ pub(super) const PART: Shape = Shape {
     ],
 };
 
-/// Decodes each `tag` field of `buf` with `f`, at most `max` of them and
-/// each at least `min` bytes (what the smallest valid one encodes to, so
-/// the count is bounded by the message's own length), into a vector
-/// allocated once, fallibly, for exactly that many: what a repeated message
-/// field becomes without the decoder's growing vector of its protobuf type.
-///
-/// # Errors
-/// [`WireError::Unread`] over `max`, under `min` or out of memory; `f`'s.
 pub(super) fn each<T>(
     buf: &[u8],
     message: &'static str,
@@ -296,11 +269,6 @@ pub(super) fn each<T>(
     Ok(out)
 }
 
-/// The `uint32` values of repeated field `tag` of `buf`, packed or not, at
-/// most `max`, allocated as [`each`] does.
-///
-/// # Errors
-/// [`WireError::Unread`].
 pub(super) fn each_u32(
     buf: &[u8],
     message: &'static str,
@@ -343,7 +311,6 @@ pub(super) fn each_u32(
     Ok(out)
 }
 
-/// One varint of a packed field, truncated to `u32`.
 #[allow(clippy::cast_possible_truncation)]
 fn read_u32(items: &mut &[u8], message: &'static str) -> Result<u32, WireError> {
     let mut value = 0u64;
@@ -352,6 +319,7 @@ fn read_u32(items: &mut &[u8], message: &'static str) -> Result<u32, WireError> 
             break;
         };
         *items = rest;
+        // A ten-byte varint (a sign-extending encoder's) truncates to u32; one past 64 bits is malformed.
         if i == 9 && byte > 1 {
             break;
         }
@@ -383,7 +351,6 @@ mod tests {
             .filter(|f| f.package() == "rlmesh.session.v2")
             .flat_map(|f| f.message_type)
             .collect();
-        // Nested types too: a map field's entries.
         while let Some(mut message) = todo.pop() {
             todo.append(&mut message.nested_type);
             all.push(message);
@@ -398,7 +365,6 @@ mod tests {
             .unwrap_or_else(|| panic!("no message {name}"))
     }
 
-    /// Whether `name` holds a repeated field anywhere below it.
     fn grows(all: &[DescriptorProto], name: &str, depth: u8) -> bool {
         assert!(depth < 16, "{name} nests too deep");
         message(all, name).field.iter().any(|f| {
@@ -407,8 +373,6 @@ mod tests {
         })
     }
 
-    /// Every repeated field below `name` is capped by `shape` (`skipped`:
-    /// top-level fields the caller reads with another decoder).
     fn covers(all: &[DescriptorProto], name: &str, shape: &Shape, skipped: &[i32]) {
         for field in &message(all, name).field {
             if skipped.contains(&field.number()) {
@@ -458,7 +422,6 @@ mod tests {
         ],
     };
 
-    /// Field `tag`, length-delimited, holding `bytes`.
     fn delimited(tag: u8, bytes: &[u8]) -> Vec<u8> {
         let mut out = vec![tag << 3 | 2, u8::try_from(bytes.len()).expect("short")];
         out.extend_from_slice(bytes);
@@ -493,7 +456,6 @@ mod tests {
         let lens = |max| each(&two, "t", (1, max, 0), |b| Ok(b.len()));
         assert_eq!(lens(2).expect("at the cap"), [2, 2]);
         assert!(lens(1).is_err());
-        // 1, 300, 70000 and u32::MAX, packed beside an unrelated field.
         let packed = [
             delimited(1, b"x"),
             delimited(
@@ -509,8 +471,6 @@ mod tests {
             [1, 300, 70_000, u32::MAX]
         );
         assert!(each_u32(&packed, "t", (2, 3)).is_err());
-        // A ten-byte varint (a sign-extending encoder's) truncates to u32;
-        // one past 64 bits is malformed.
         let ten = |last: u8| delimited(2, &[[0xff; 9].as_slice(), &[last]].concat());
         assert_eq!(
             each_u32(&ten(0x01), "t", (2, 1)).expect("ten bytes"),
@@ -527,8 +487,6 @@ mod tests {
         covers(&all, "PartSpec", &PART, &[]);
         covers(&all, "Assignment", &ASSIGNMENT, &[]);
         covers(&all, "RunState", &RUN_STATE, &[]);
-        // Decoded element by element, each capped: the view, a reply's
-        // leases and keys, a delivery's keys.
         for unbounded in [
             "HeartbeatEcho",
             "EstopSignal",
@@ -544,22 +502,18 @@ mod tests {
     fn a_count_or_a_length_over_its_cap_is_refused_unread() {
         let refused =
             |buf: &[u8], shape: &Shape| check(buf, shape).err().and_then(|e| e.why_unread());
-        // Two thousand empty inputs: four kilobytes on the wire, 48 KB once
-        // decoded on a 32-bit board.
         let hostile: Vec<u8> = [0x32, 0x00].repeat(2000);
         assert_eq!(
             refused(&hostile, &CHUNK),
             Some(Unread::TooLarge("action chunk"))
         );
         assert!(check(&hostile[..512], &CHUNK).is_ok());
-        // A name longer than any id, repeated.
         let mut part = Vec::new();
         for _ in 0..2 {
             part.extend([0x4a, 0x81, 0x01]);
             part.extend([b'x'; 129]);
         }
         assert_eq!(refused(&part, &PART), Some(Unread::TooLarge("part spec")));
-        // A key covering 257 parts, packed.
         let mut key = vec![0x2a, 0x81, 0x02];
         key.extend([1; 257]);
         assert_eq!(refused(&key, &KEY), Some(Unread::TooLarge("key")));

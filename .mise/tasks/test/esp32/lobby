@@ -1,22 +1,18 @@
 #!/usr/bin/env bash
 #MISE description="Rehearse a board's lobby against a real rlmesh host --lobby on loopback: the device robot (rlmesh-device's examples/lobby_board) waits in the lobby, is assigned a run, joins and declares, comes back when the run stops, and rejoins through the lobby after a reboot mid-run"
 #MISE dir="{{ config_root }}"
-# Local only: it runs the daemon and the CLI.
 set -euo pipefail
 
 target_dir="${CARGO_TARGET_DIR:-target}"
 out="$target_dir/esp32-lobby"
 rm -rf "$out"
 mkdir -p "$out/state"
-# Separately: `--example` would limit every listed package to its examples.
-# The lobby is unreleased: both builds need `fleet`.
 cargo build -q -p rlmesh-cli --bin rlmesh --features fleet
 cargo build -q -p rlmesh-device --example lobby_board --features fleet
 rlmesh="$target_dir/debug/rlmesh"
 board_bin="$target_dir/debug/examples/lobby_board"
 export RLMESH_STATE_DIR="$out/state"
 
-# A free loopback port.
 port="$(python3 -c '
 import socket
 with socket.socket() as s:
@@ -36,14 +32,12 @@ board() {
   pids+=($!)
   board_pid=$!
 }
-# Waits up to $3 s for $2 in log $1.
 await() {
   for _ in $(seq $(($3 * 10))); do grep -q "$2" "$1" && return; sleep 0.1; done
   echo "no \"$2\" in $1:" >&2
   cat "$1" >&2
   exit 1
 }
-# Waits up to $4 s for $3 in log $1 after a line with $2.
 await_after() {
   for _ in $(seq $(($4 * 10))); do
     awk -v a="$2" -v b="$3" '$0 ~ a {seen = 1; next} seen && $0 ~ b {found = 1} END {exit !found}' "$1" && return

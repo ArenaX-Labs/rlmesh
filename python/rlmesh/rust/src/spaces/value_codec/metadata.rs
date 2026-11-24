@@ -24,14 +24,12 @@ pub(crate) fn py_any_to_meta_map(value: &Bound<'_, PyAny>) -> PyResult<MetaMap> 
     if let Ok(dict) = normalized.cast::<PyDict>() {
         return fields(dict, "");
     }
-    // Any other mapping (a client's read-only `mappingproxy`) as a dict.
     let mapping = normalized.cast::<PyMapping>()?;
     let dict = PyDict::new(value.py());
     dict.update(mapping)?;
     fields(&dict, "")
 }
 
-/// A dict's entries, each refusal naming its key path (`['a'][0]`).
 fn fields(dict: &Bound<'_, PyDict>, path: &str) -> PyResult<MetaMap> {
     let mut fields = BTreeMap::new();
     for (key, item) in dict.iter() {
@@ -44,8 +42,6 @@ fn fields(dict: &Bound<'_, PyDict>, path: &str) -> PyResult<MetaMap> {
     Ok(fields)
 }
 
-/// A NumPy array or scalar as an array value: a numeric or bool dtype as a
-/// tensor of its bytes, any other as its elements (`None`: not NumPy).
 fn numpy_value(value: &Bound<'_, PyAny>, path: &str) -> PyResult<Option<MetaValue>> {
     let class = value.get_type();
     if class.getattr("__module__")?.extract::<String>()? != "numpy" || !value.hasattr("dtype")? {
@@ -58,7 +54,6 @@ fn numpy_value(value: &Bound<'_, PyAny>, path: &str) -> PyResult<Option<MetaValu
     let kind: String = dtype.getattr("kind")?.extract()?;
     let name: String = dtype.getattr("name")?.extract()?;
     if let (true, Some(native)) = ("biuf".contains(kind.as_str()), DType::from_name(&name)) {
-        // The wire is little-endian.
         let little = np.call_method1(
             "ascontiguousarray",
             (array, dtype.call_method1("newbyteorder", ("<",))?),
@@ -88,8 +83,6 @@ fn py_any_to_meta_value(value: &Bound<'_, PyAny>, path: &str) -> PyResult<MetaVa
     if normalized.is_none() {
         return Ok(MetaValue::Null);
     }
-    // An `rlmesh.Tensor` travels as an array, as a NumPy array does (COR-26,
-    // COR-P10).
     if let Some(tensor) = extract_tensor(&normalized)? {
         let tensor = rlmesh::binding::tensor_from_core(tensor.inner.clone())
             .map_err(crate::types::to_py_err)?;
@@ -97,8 +90,7 @@ fn py_any_to_meta_value(value: &Bound<'_, PyAny>, path: &str) -> PyResult<MetaVa
             rlmesh::binding::tensor_core(&tensor).clone(),
         ));
     }
-    // `bytes` must be matched before the sequence and integer paths: it is
-    // neither a list nor a scalar, and carries raw binary exactly.
+    // Match `bytes` before the sequence and integer paths: it is neither a list nor a scalar.
     if let Ok(bytes) = normalized.cast::<PyBytes>() {
         return Ok(MetaValue::Bytes(bytes.as_bytes().to_vec()));
     }
@@ -126,8 +118,7 @@ fn py_any_to_meta_value(value: &Bound<'_, PyAny>, path: &str) -> PyResult<MetaVa
     if let Ok(number) = normalized.extract::<i64>() {
         return Ok(MetaValue::Int(number));
     }
-    // An integer that does not fit `i64` must not slide into the float branch:
-    // that would silently round it (metadata `Int` is int64 on the wire).
+    // An integer beyond i64 must not fall into the float branch and round silently.
     if normalized.is_instance_of::<PyInt>() {
         return Err(PyValueError::new_err(format!(
             "metadata integer {normalized} at {path} does not fit int64; RLMesh metadata \
@@ -182,7 +173,6 @@ fn meta_value_to_py<'py>(py: Python<'py>, value: &MetaValue) -> PyResult<Py<PyAn
             PyList::new(py, values)?.into_any().unbind()
         }
         MetaValue::Map(values) => meta_map_to_pydict(py, values)?.into_any().unbind(),
-        // An array as a NumPy array of its dtype; shape `()` as a NumPy scalar.
         MetaValue::Tensor(tensor) => {
             let np = py.import("numpy")?;
             let bytes = PyBytes::new(py, &tensor.to_contiguous_bytes());
@@ -213,7 +203,6 @@ fn scalar_or_array(array: &Bound<'_, PyAny>, shape: &[i64]) -> PyResult<Py<PyAny
     })
 }
 
-/// NumPy's type code for `dtype` (`i2`, `f4`, `?`).
 fn numpy_code(dtype: DType) -> &'static str {
     match dtype {
         DType::Bool => "?",
@@ -239,8 +228,6 @@ mod tests {
     #[test]
     fn meta_preserves_int_float_bytes_types_exactly() {
         Python::attach(|py| {
-            // 2^53 + 1 (inexact as f64), a whole-number float, and raw bytes:
-            // the types and exact values must survive the Python round-trip.
             let value = py
                 .eval(
                     pyo3::ffi::c_str!(
@@ -265,10 +252,8 @@ mod tests {
                     .unwrap(),
                 (1i64 << 53) + 1
             );
-            // The whole-number float stays a Python float, not an int.
             let lr = roundtrip.get_item("lr").unwrap().unwrap();
             assert!(lr.is_instance_of::<pyo3::types::PyFloat>());
-            // Bytes stay bytes, byte-exact.
             let blob = roundtrip.get_item("blob").unwrap().unwrap();
             let blob = blob.cast::<PyBytes>().unwrap();
             assert_eq!(blob.as_bytes(), &[0, 1, 255]);
@@ -278,9 +263,6 @@ mod tests {
     #[test]
     fn meta_rejects_integers_wider_than_int64() {
         Python::attach(|py| {
-            // 2^63 and -(2^63 + 1) are Python ints the wire's int64 cannot
-            // carry; they must raise, not fall through to the float branch and
-            // silently round.
             for source in [
                 pyo3::ffi::c_str!("{'n': 2**63}"),
                 pyo3::ffi::c_str!("{'n': -(2**63) - 1}"),
@@ -290,7 +272,6 @@ mod tests {
                 assert!(error.is_instance_of::<PyValueError>(py));
                 assert!(error.to_string().contains("at ['n'] does not fit int64"));
             }
-            // The int64 edges still convert.
             let value = py
                 .eval(
                     pyo3::ffi::c_str!("{'lo': -(2**63), 'hi': 2**63 - 1}"),

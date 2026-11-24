@@ -69,11 +69,7 @@ pub(crate) fn validate_discrete_at(space: &SpaceSpec, path: &str) -> Result<(), 
         return err_space!(path, "Discrete", "n must be > 0");
     }
 
-    // The wire encodes the absolute Discrete index at the declared dtype, so the
-    // whole valid range [start, start + (n-1)] must fit it — otherwise a legal
-    // value silently wraps (or is rejected) on encode. Reject at construction,
-    // symmetric with MultiDiscrete's nvec[i]-1 guard. Gymnasium allows any start
-    // (including negative); checked_add also guards i64 overflow.
+    // The whole range [start, start + n - 1] must fit the wire dtype.
     let max = d
         .start
         .checked_add(d.n - 1)
@@ -109,19 +105,9 @@ pub(crate) fn contains_discrete(
         _ => return err_space!(path, "space is not Discrete"),
     };
 
-    // Check value is in range [start, start + n).
-    // Compute `val - d.start` instead of `d.start + d.n` so a range ending at
-    // i64::MAX (start + n - 1 == i64::MAX) does not overflow in containment.
-    //
-    // Compare the offset in the *unsigned* domain. For any `val >= d.start`,
-    // `val.wrapping_sub(d.start)` is the true non-negative offset reinterpreted
-    // as bits, which `as u64` reads as the correct magnitude (e.g. start =
-    // i64::MIN, val = 0 gives an offset of 2^63, which is positive — a signed
-    // `< d.n` comparison would read it as i64::MIN and wrongly accept it).
-    // `d.n` is validated `> 0`, so `d.n as u64` is its exact value.
+    // Offset in the unsigned domain so a range ending at i64::MAX does not overflow.
     let in_range = val >= d.start && (val.wrapping_sub(d.start) as u64) < d.n as u64;
     if !in_range {
-        // d.start + d.n may overflow; render the exclusive end safely.
         let end = match d.start.checked_add(d.n) {
             Some(end) => end.to_string(),
             None => "i64::MAX+1".to_string(),
@@ -143,8 +129,6 @@ mod tests {
 
     #[test]
     fn range_must_fit_declared_dtype() {
-        // start + (n-1) = 259 does not fit u8 -> reject at construction, not a
-        // silent wrap / unencodable-valid-value, symmetric with MultiDiscrete.
         assert!(
             DiscreteBuilder::new(10)
                 .start(250)
@@ -152,14 +136,12 @@ mod tests {
                 .build()
                 .is_err()
         );
-        // max index 255 fits u8 exactly -> ok.
         assert!(
             DiscreteBuilder::new(256)
                 .dtype(DType::Uint8)
                 .build()
                 .is_ok()
         );
-        // A negative start does not fit unsigned u8 -> reject.
         assert!(
             DiscreteBuilder::new(2)
                 .start(-1)
@@ -191,14 +173,10 @@ mod tests {
 
     #[test]
     fn test_discrete_range_ending_at_i64_max() {
-        // start + (n-1) == i64::MAX is a valid spec; containment must not overflow
-        // when evaluating the exclusive upper bound (start + n).
         let space = DiscreteBuilder::new(4).start(i64::MAX - 3).build().unwrap();
 
-        // All four values in [MAX-3, MAX] are valid.
         assert!(contains(&space, &SpaceValue::Discrete(i64::MAX - 3)).is_ok());
         assert!(contains(&space, &SpaceValue::Discrete(i64::MAX)).is_ok());
-        // Just below the range.
         assert!(contains(&space, &SpaceValue::Discrete(i64::MAX - 4)).is_err());
     }
 
@@ -206,10 +184,8 @@ mod tests {
     fn test_discrete_range_starting_at_i64_min_rejects_far_values() {
         let space = DiscreteBuilder::new(4).start(i64::MIN).build().unwrap();
 
-        // The four in-range values are accepted.
         assert!(contains(&space, &SpaceValue::Discrete(i64::MIN)).is_ok());
         assert!(contains(&space, &SpaceValue::Discrete(i64::MIN + 3)).is_ok());
-        // Out-of-range values far above start must be rejected.
         assert!(contains(&space, &SpaceValue::Discrete(i64::MIN + 4)).is_err());
         assert!(contains(&space, &SpaceValue::Discrete(0)).is_err());
         assert!(contains(&space, &SpaceValue::Discrete(i64::MAX)).is_err());

@@ -1,11 +1,5 @@
 //! Terminal backend: takes over the terminal (alt-screen, raw mode), runs the key
 //! thread for live source switching + quitting, and orchestrates per-frame drawing.
-//!
-//! Frame rendering itself — the native inline-image protocols and the truecolor
-//! half-block fallback — lives in [`crate::viewer::graphics`]. This module owns the terminal
-//! lifecycle, key input, the HUD footer, and resize reflow. `crossterm` handles the
-//! alt-screen takeover (reversible: scrollback returns on drop), raw-mode key input,
-//! and terminal size.
 
 use std::fmt::Write as _;
 use std::io::{self, Write};
@@ -25,8 +19,6 @@ pub struct Terminal {
     running: Arc<AtomicBool>,
     keys: Option<JoinHandle<()>>,
     graphics: Graphics,
-    /// Last frame drawn, cached so the key thread can reflow it on a terminal resize
-    /// — the draw loop is fed by the eval, so a paused eval wouldn't reflow otherwise.
     last: Arc<Mutex<Option<RgbImage>>>,
 }
 
@@ -70,10 +62,6 @@ impl Drop for Terminal {
     }
 }
 
-/// Render one frame at the current terminal size: the image (via [`crate::viewer::graphics`])
-/// plus the source-selector / HUD footer, in a single flush. Shared by the draw path
-/// and the key thread's resize reflow; each call writes a whole frame, so concurrent
-/// calls never interleave mid-escape.
 fn render(g: Graphics, img: &RgbImage, shared: &super::http::HttpShared) {
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
     let img_rows = rows.saturating_sub(2).max(1);
@@ -88,9 +76,6 @@ fn render(g: Graphics, img: &RgbImage, shared: &super::http::HttpShared) {
     let _ = stdout.flush();
 }
 
-/// Poll keys on a dedicated thread (only `crossterm::event`, never a second stdin
-/// reader): cycle the selected source, set the quit flag, and reflow the cached frame
-/// on resize. Polls so it notices `running` flipping without needing a keypress.
 fn spawn_keys(
     running: Arc<AtomicBool>,
     shared: Arc<super::http::HttpShared>,
@@ -120,7 +105,6 @@ fn spawn_keys(
                     continue;
                 }
                 if matches!(key.code, KeyCode::Char('n' | 'N')) {
-                    // End the current episode early (soft, non-failure) and advance.
                     shared.skip.store(true, Ordering::Relaxed);
                     continue;
                 }
@@ -144,8 +128,6 @@ fn spawn_keys(
         .expect("spawn rlmesh-viewer key thread")
 }
 
-/// Quit keys: `q` / Esc, or Ctrl-C / Ctrl-D — the raw-mode-safe replacements for the
-/// SIGINT the kernel no longer delivers.
 fn is_quit(key: &event::KeyEvent) -> bool {
     use event::{KeyCode, KeyModifiers};
     match key.code {
@@ -155,7 +137,6 @@ fn is_quit(key: &event::KeyEvent) -> bool {
     }
 }
 
-/// The bottom two rows: the source selector and the compact HUD line.
 fn footer(shared: &super::http::HttpShared, cols: u16, rows: u16, out: &mut String) {
     let sources = super::http::lock(&shared.sources);
     let sel = shared.selected.load(Ordering::Relaxed);
@@ -169,18 +150,12 @@ fn footer(shared: &super::http::HttpShared, cols: u16, rows: u16, out: &mut Stri
             let _ = write!(out, " {source}  ");
         }
     }
-    // Key hints (dim): source cycling is via ←/→; `n` ends the episode, `q` quits.
     let _ = write!(out, "\x1b[2m   ·  n skip ep  ·  q quit\x1b[0m");
     let line = hud_line(&hud, usize::from(cols));
     let _ = write!(out, "\x1b[{};1H\x1b[2K\x1b[2m{line}\x1b[0m", rows.max(1));
 }
 
-/// Build the single, width-adaptive HUD line as labeled groups joined by ` | `.
-/// When the terminal is too narrow, the lowest-priority groups are dropped first
-/// (frame info, then chunk, then timing) while `step` and the reward/outcome always
-/// stay — so a narrow window still shows the essentials instead of wrapping.
 fn hud_line(hud: &super::Hud, cols: usize) -> String {
-    // Group A — progress (mandatory; carries `step`): "ep i/N  step S  M:SS  seed N".
     let mut a = String::new();
     if hud.episodes > 0 {
         let _ = write!(a, "ep {}/{}  ", hud.episode, hud.episodes);
@@ -193,7 +168,6 @@ fn hud_line(hud: &super::Hud, cols: usize) -> String {
         let _ = write!(a, "  seed {}", hud.seed);
     }
 
-    // Group B — timing (the point of the HUD; dropped only just before the core).
     let b = format!(
         "model {}  env {}  {:.1}sps",
         fmt_ms(hud.model_ms),
@@ -201,13 +175,11 @@ fn hud_line(hud: &super::Hud, cols: usize) -> String {
         hud.sps
     );
 
-    // Group D — reward + env-reported outcome (mandatory).
     let mut d = format!("R {:+.2}", hud.reward);
     if !hud.outcome.is_empty() {
         let _ = write!(d, "  {}", hud.outcome);
     }
 
-    // (text, priority): lower = kept longer; 0 = never dropped. Built in display order.
     let groups: Vec<(String, u8)> = [
         Some((a, 0u8)),
         Some((b, 1)),
@@ -224,8 +196,6 @@ fn hud_line(hud: &super::Hud, cols: usize) -> String {
     .flatten()
     .collect();
 
-    // Richest detail level whose width fits `cols`; thresholds are the distinct
-    // priority breakpoints (4 = all, then drop frame, then chunk, then timing).
     for threshold in [4u8, 3, 1, 0] {
         let line = join_groups(&groups, threshold);
         if line.chars().count() <= cols {
@@ -235,7 +205,6 @@ fn hud_line(hud: &super::Hud, cols: usize) -> String {
     join_groups(&groups, 0)
 }
 
-/// Join the groups at or below `threshold` priority with ` | `, in display order.
 fn join_groups(groups: &[(String, u8)], threshold: u8) -> String {
     groups
         .iter()
@@ -245,7 +214,6 @@ fn join_groups(groups: &[(String, u8)], threshold: u8) -> String {
         .join("  |  ")
 }
 
-/// Wall-clock seconds as `M:SS` (or `H:MM:SS` past an hour).
 fn fmt_elapsed(s: f64) -> String {
     let total = s.max(0.0) as u64;
     let (h, m, sec) = (total / 3600, (total % 3600) / 60, total % 60);
@@ -256,7 +224,6 @@ fn fmt_elapsed(s: f64) -> String {
     }
 }
 
-/// A millisecond timing: one decimal under 10ms, whole numbers above (78ms, 3.4ms).
 fn fmt_ms(v: f64) -> String {
     if v < 10.0 {
         format!("{v:.1}ms")
@@ -313,7 +280,6 @@ mod tests {
 
     #[test]
     fn medium_line_drops_only_the_frame_group() {
-        // Wide enough for everything but the lowest-priority frame group.
         let line = hud_line(&sample(), 100);
         assert!(line.chars().count() <= 100, "too wide: {line:?}");
         assert!(line.contains("chunk 3/8"), "chunk should survive: {line:?}");
@@ -342,7 +308,6 @@ mod tests {
 
     #[test]
     fn omits_unknown_sentinels() {
-        // A hand-driven step with no episode/seed/chunk/frame info: those groups vanish.
         let hud = Hud {
             step: 5,
             reward: 0.0,
@@ -350,8 +315,6 @@ mod tests {
         };
         let line = hud_line(&hud, 200);
         assert!(line.contains("step 5"), "{line:?}");
-        // `ep i/N` and `chunk k/H` are the only groups with a slash; their absence
-        // confirms both are omitted (a substring like "ep " collides with "step ").
         assert!(!line.contains('/'), "no episode/chunk labels: {line:?}");
         assert!(!line.contains("seed"), "no seed label: {line:?}");
         assert!(!line.contains('x'), "no frame resolution: {line:?}");

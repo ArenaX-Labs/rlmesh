@@ -1,5 +1,3 @@
-"""A model whose predict fails with nothing to say, as a failed ``assert`` does."""
-
 from __future__ import annotations
 
 import os

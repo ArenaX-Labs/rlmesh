@@ -1,10 +1,8 @@
 //! Rotation encodings and the one codec between them.
 //!
-//! `quat_xyzw` is canonical (decided Q2). `quat_xyzw ↔ quat_wxyz` is a
-//! component permutation that keeps the sign and is automatic; every other
-//! re-encoding needs `allow: rotation`.
-//! `gravity_xyz` is a target only: it discards yaw, so nothing converts
-//! from it. [`convert`] states the sign conventions.
+//! `quat_xyzw` is canonical. `quat_xyzw ↔ quat_wxyz` is a sign-preserving component permutation
+//! and is automatic; every other re-encoding needs `allow: rotation`. `gravity_xyz` is a target
+//! only: it discards yaw, so nothing converts from it. [`convert`] states the sign conventions.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -123,10 +121,7 @@ pub fn change(from: Rotation, to: Rotation) -> RotationChange {
 /// A 3×3 rotation matrix, row-major.
 pub type Matrix = [[f64; 3]; 3];
 
-/// Below this a quaternion, rotation vector or half-angle sine is zero.
 const EPS: f64 = 1e-8;
-/// `cos(pitch)` below which roll and yaw are one coupled angle. Sized for
-/// `f32` sources, whose rounding noise reaches ~1e-7.
 const GIMBAL_EPS: f64 = 1e-4;
 
 /// The identity rotation.
@@ -134,8 +129,6 @@ pub fn identity() -> Matrix {
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 }
 
-/// A quaternion `(x, y, z, w)` from `value` in `from` (a quaternion
-/// encoding).
 fn as_xyzw(value: &[f64], from: Rotation) -> [f64; 4] {
     if from == Rotation::QuatWxyz {
         [value[1], value[2], value[3], value[0]]
@@ -144,8 +137,6 @@ fn as_xyzw(value: &[f64], from: Rotation) -> [f64; 4] {
     }
 }
 
-/// `q`'s own rotation vector, `2·atan2(|v|, w)·v/|v|`: the hemisphere `q`
-/// is in is kept, so the norm is in `[0, 2π)`.
 fn quat_to_axis_angle(q: [f64; 4]) -> [f64; 3] {
     let n = q.iter().map(|c| c * c).sum::<f64>().sqrt();
     if n <= EPS {
@@ -208,8 +199,7 @@ pub fn to_matrix(value: &[f64], from: Rotation) -> Matrix {
             ]
         }
         Rotation::Rot6d | Rotation::Rot6dRowMajor => {
-            // Column-major: [a1, a2] are the first two columns. Row-major
-            // stores the same 3×2 block row by row.
+            // Column-major: [a1, a2] are the first two columns; row-major stores the 3×2 block by rows.
             let (a1, a2) = if from == Rotation::Rot6d {
                 (
                     [value[0], value[1], value[2]],
@@ -243,9 +233,6 @@ pub fn to_matrix(value: &[f64], from: Rotation) -> Matrix {
     }
 }
 
-/// Gram-Schmidt on two columns: `a1` normalised, `a2` orthonormalised
-/// against it, the third their cross product. A degenerate pair is the
-/// identity.
 fn gram_schmidt(a1: [f64; 3], a2: [f64; 3]) -> Matrix {
     let norm = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     let scale = |v: [f64; 3], s: f64| [v[0] * s, v[1] * s, v[2] * s];
@@ -267,7 +254,6 @@ fn gram_schmidt(a1: [f64; 3], a2: [f64; 3]) -> Matrix {
         b1[2] * b2[0] - b1[0] * b2[2],
         b1[0] * b2[1] - b1[1] * b2[0],
     ];
-    // Columns b1, b2, b3.
     [
         [b1[0], b2[0], b3[0]],
         [b1[1], b2[1], b3[1]],
@@ -275,8 +261,6 @@ fn gram_schmidt(a1: [f64; 3], a2: [f64; 3]) -> Matrix {
     ]
 }
 
-/// `m` as a quaternion `(x, y, z, w)` by the largest-diagonal method, with
-/// the sign that method gives (0.1's).
 fn matrix_to_quat(m: &Matrix) -> [f64; 4] {
     let trace = m[0][0] + m[1][1] + m[2][2];
     if trace > 0.0 {
@@ -314,7 +298,6 @@ fn matrix_to_quat(m: &Matrix) -> [f64; 4] {
     }
 }
 
-/// `q` in the quaternion encoding `to`.
 fn put_quat(q: [f64; 4], to: Rotation, out: &mut Vec<f64>) {
     let [x, y, z, w] = q;
     if to == Rotation::QuatWxyz {
@@ -324,12 +307,10 @@ fn put_quat(q: [f64; 4], to: Rotation, out: &mut Vec<f64>) {
     }
 }
 
-/// `m` in `to`.
 fn from_matrix(m: &Matrix, to: Rotation, out: &mut Vec<f64>) {
     match to {
         Rotation::QuatXyzw | Rotation::QuatWxyz => put_quat(matrix_to_quat(m), to, out),
-        // Through the quaternion: the angle read off the trace loses
-        // precision near 0 and π. Taken with w ≥ 0, the norm is at most π.
+        // Through the quaternion: the angle read off the trace loses precision near 0 and π.
         Rotation::AxisAngle => {
             let q = matrix_to_quat(m);
             let q = if q[3] < 0.0 { q.map(|c| -c) } else { q };
@@ -341,28 +322,22 @@ fn from_matrix(m: &Matrix, to: Rotation, out: &mut Vec<f64>) {
         }
         Rotation::Matrix => out.extend(m.iter().flatten()),
         Rotation::EulerXyz => {
-            // Pitch in [-π/2, π/2]. cos(pitch) comes from the entries roll
-            // and yaw are read from, not sqrt(1 - sin²): at an f32 gimbal
-            // lock those entries are already zero while the latter is ~3e-4.
+            // cos(pitch) comes from the entries roll and yaw are read from, not sqrt(1 - sin²), which is ~3e-4 at an f32 gimbal lock.
             let sin_pitch = (-m[2][0]).clamp(-1.0, 1.0);
             let cos_pitch = math::hypot(m[2][1], m[2][2]);
             let pitch = math::atan2(sin_pitch, cos_pitch);
             let (roll, yaw) = if cos_pitch > GIMBAL_EPS {
                 (math::atan2(m[2][1], m[2][2]), math::atan2(m[1][0], m[0][0]))
             } else {
-                // Gimbal lock: yaw is 0 (scipy's and transforms3d's choice)
-                // and roll carries the coupled angle, read off the top-left
-                // 2×2 with the sign of sin(pitch).
+                // Gimbal lock: yaw is 0 (scipy's and transforms3d's choice) and roll carries the coupled angle.
                 (math::atan2(sin_pitch * m[0][1], m[1][1]), 0.0)
             };
             out.extend([roll, pitch, yaw]);
         }
-        // Rᵀ · (0, 0, -1) is minus the third row of R.
         Rotation::GravityXyz => out.extend([-m[2][0], -m[2][1], -m[2][2]]),
     }
 }
 
-/// `left · right`.
 fn mat_mul(left: &Matrix, right: &Matrix) -> Matrix {
     let mut out = [[0.0; 3]; 3];
     for (row, entry) in out.iter_mut().enumerate() {
@@ -464,9 +439,6 @@ mod tests {
         assert_eq!(out, [0.0, 0.0, 0.0, -1.0], "sign kept");
     }
 
-    /// Pinned bits: `sin_cos` comes from libm in every build, so the host
-    /// and a device agree to the last bit (the platform `sin` rounds this
-    /// entry up by one ulp).
     #[test]
     fn euler_to_matrix_is_pinned_to_the_bit() {
         let m = to_matrix(&[2.5, 0.0, 0.0], Rotation::EulerXyz);
@@ -476,7 +448,6 @@ mod tests {
     #[test]
     fn a_quaternion_from_another_encoding_has_the_largest_diagonal_sign() {
         use Rotation::{EulerXyz, QuatXyzw};
-        // Rx(-170°): the x-diagonal branch, whose w carries sin(-170°) < 0.
         let angle = -170_f64.to_radians();
         let q = one(&[angle, 0.0, 0.0], EulerXyz, QuatXyzw);
         let h = angle / 2.0;
@@ -490,7 +461,6 @@ mod tests {
     #[test]
     fn every_encoding_round_trips_through_quat_xyzw() {
         let quarter_z = [0.0, 0.0, math::sin(FRAC_PI_4), math::cos(FRAC_PI_4)];
-        // 0.7 rad about an axis off every coordinate plane.
         let axis = [1.0, 2.0, 3.0].map(|c: f64| c / 14_f64.sqrt());
         let (s, c) = math::sin_cos(0.35);
         let general = [axis[0] * s, axis[1] * s, axis[2] * s, c];
@@ -508,7 +478,6 @@ mod tests {
 
     #[test]
     fn rot6d_is_orthonormalised_column_by_column() {
-        // A model's raw 6D output: neither unit nor orthogonal.
         let m = one(
             &[1.0, 2.0, 2.0, 1.0, 0.0, 0.0],
             Rotation::Rot6d,
@@ -516,7 +485,6 @@ mod tests {
         );
         let col = |j: usize| [m[j], m[3 + j], m[6 + j]];
         assert!(close(&col(0), &[1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0]), "{m:?}");
-        // a2 less its component along b1, normalised: (8, -2, -2) / 6√2.
         let k = 1.0 / (6.0 * 2_f64.sqrt());
         assert!(close(&col(1), &[8.0 * k, -2.0 * k, -2.0 * k]), "{m:?}");
         let h = core::f64::consts::FRAC_1_SQRT_2;
@@ -526,8 +494,6 @@ mod tests {
     #[test]
     fn a_matrix_reads_back_through_its_largest_diagonal_with_that_component_positive() {
         use Rotation::{Matrix, QuatXyzw};
-        // 170° about axes led by x, y and z (trace < 0): the quaternion
-        // comes back with its largest component positive.
         let (s, c) = math::sin_cos(85_f64.to_radians());
         for axis in [
             [-1.0, 0.3, 0.5],
@@ -544,17 +510,13 @@ mod tests {
             let sign = q[lead].signum();
             assert!(close(&back, &q.map(|c| c * sign)), "{axis:?}: {back:?}");
         }
-        // A zero trace and tied diagonals keep the method's order: the
-        // trace above zero, then x, y, z on a strict maximum.
         let h = core::f64::consts::FRAC_1_SQRT_2;
         let r3 = 3_f64.sqrt() / 2.0;
         for (m, q) in [
-            // Rx(-120°).
             (
                 [1.0, 0.0, 0.0, 0.0, -0.5, r3, 0.0, -r3, -0.5],
                 [r3, 0.0, 0.0, -0.5],
             ),
-            // Half turns about (1, -1, 0), (1, 0, -1) and (0, 1, -1).
             (
                 [0.0, -1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0],
                 [-h, h, 0.0, 0.0],
@@ -614,11 +576,9 @@ mod tests {
     #[test]
     fn axis_angle_keeps_a_quaternions_hemisphere_and_is_minimal_otherwise() {
         use Rotation::{AxisAngle, Matrix, QuatXyzw};
-        // w < 0: 2·atan2(0.1, -0.995) about +z, not 0.2 about -z.
         let q = [0.0, 0.0, 0.1, -0.995];
         let kept = one(&q, QuatXyzw, AxisAngle);
         assert!(kept[2] > PI && kept[2] < 2.0 * PI, "{kept:?}");
-        // The same rotation from its matrix is the minimal vector.
         let m: Vec<f64> = to_matrix(&q, QuatXyzw).iter().flatten().copied().collect();
         let minimal = one(&m, Matrix, AxisAngle);
         assert!(minimal[2] < 0.0 && minimal[2].abs() <= PI, "{minimal:?}");
@@ -634,8 +594,6 @@ mod tests {
     fn matrix_to_axis_angle_is_stable_near_zero_and_pi() {
         use Rotation::{AxisAngle, EulerXyz, Rot6d};
         for offset in [1e-4, 3e-4, 4e-4, 1e-3, 1e-2, 0.5] {
-            // A negative angle's quaternion comes back with w < 0 and is
-            // flipped to the minimal vector.
             for angle in [offset, PI - offset, offset - PI] {
                 let got = one(&[angle, 0.0, 0.0], EulerXyz, AxisAngle);
                 assert!(
@@ -644,7 +602,6 @@ mod tests {
                 );
             }
         }
-        // 180° about x: a symmetric matrix, whose antisymmetric part is zero.
         let half_turn = one(&[1.0, 0.0, 0.0, 0.0, -1.0, 0.0], Rot6d, AxisAngle);
         assert!((half_turn[0].abs() - PI).abs() < 1e-9, "{half_turn:?}");
     }
@@ -660,9 +617,6 @@ mod tests {
             let d = distance(&to_matrix(&euler, EulerXyz), &to_matrix(&back, EulerXyz));
             assert!(d < 1e-9, "pitch {pitch}: {back:?} is {d} away");
         }
-        // An f32 quaternion of [0.3, -π/2, 1.1]: -m20 rounds to 0.99999994,
-        // so sqrt(1 - s²) claims cos(pitch) ~3e-4 while roll's and yaw's
-        // entries are zero.
         let q = [0.455_530_7_f32, -0.540_825_07, 0.455_530_7, 0.540_825_07].map(f64::from);
         let euler = one(&q, QuatXyzw, EulerXyz);
         let d = distance(&to_matrix(&q, QuatXyzw), &to_matrix(&euler, EulerXyz));
@@ -672,7 +626,6 @@ mod tests {
     #[test]
     fn a_post_rotation_right_multiplies_even_onto_the_same_encoding() {
         use Rotation::{QuatXyzw, Rot6d};
-        // Rz(-90°).
         let post = to_matrix(&[0.0, -1.0, 0.0, 1.0, 0.0, 0.0], Rot6d);
         let mut out = Vec::new();
         convert_with(
@@ -701,7 +654,7 @@ mod tests {
     #[test]
     fn rot6d_layouts_are_the_column_block_and_its_row_major_flatten() {
         use Rotation::{QuatXyzw, Rot6d, Rot6dRowMajor};
-        let q = [0.0, 0.0, math::sin(FRAC_PI_4), math::cos(FRAC_PI_4)]; // 90° about z
+        let q = [0.0, 0.0, math::sin(FRAC_PI_4), math::cos(FRAC_PI_4)];
         assert!(close(
             &one(&q, QuatXyzw, Rot6d),
             &[0.0, 1.0, 0.0, -1.0, 0.0, 0.0]

@@ -1,9 +1,8 @@
-"""Reviewed language mapping and static parity checks (E-1 and E-2).
+"""Reviewed language mapping and static parity checks.
 
 The manifest is source, never refreshed by the check. Extraction uses the same
 rustdoc/libclang readers as the native reference. Rust defaults and runtime
-error inheritance belong to the behavioural fixtures, not rustdoc signatures.
-"""
+error inheritance belong to the behavioural fixtures, not rustdoc signatures."""
 
 from __future__ import annotations
 
@@ -120,7 +119,6 @@ TOLERANT = {
     "RLMeshRotationEncoding",
     "RLMeshDType",
 }
-# Output-only mirrors retain wire zero values (R-9).
 OUTPUT_ENUMS = {
     "RLMeshErrorCode",
     "RLMeshModelErrorCode",
@@ -148,7 +146,6 @@ class Item:
 
 
 def split(text: str) -> list[str]:
-    """Split comma-separated declarations without splitting nested types/literals."""
     parts, start, stack, quote, escaped = [], 0, [], "", False
     for i, ch in enumerate(text):
         if quote:
@@ -175,7 +172,6 @@ def split(text: str) -> list[str]:
 
 
 def python_entries(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Stable objects and members, with every signature parameter and default."""
     result = {}
     for module, body in snapshot.items():
         for name, obj in body["objects"].items():
@@ -219,7 +215,7 @@ def collect(root: Path, json_dir: Path | None = None) -> dict[str, dict[str, Ite
     policy["rust"] = {
         **policy["rust"],
         "document_hidden": True,
-        # R-25: binding plumbing, `#[doc(hidden)]` and semver-exempt.
+        # Binding plumbing, `#[doc(hidden)]` and semver-exempt.
         "skipped_modules": ["binding", "lockstep", "viewer", "video"],
     }
     surfaces: dict[str, dict[str, Item]] = {}
@@ -238,7 +234,6 @@ def collect(root: Path, json_dir: Path | None = None) -> dict[str, dict[str, Ite
                         items[alias] = Item("alias", alias_of=path)
                     for member in export.members:
                         member_path = f"{path}::{member.name}"
-                        # Preserve all overloads' parameters, not the last overload.
                         entry = items.setdefault(
                             member_path, Item(member.kind, member.signature)
                         )
@@ -286,12 +281,6 @@ def collect(root: Path, json_dir: Path | None = None) -> dict[str, dict[str, Ite
 def protocol_metadata(
     text: str, item: Item, c_items: dict[str, Item], vtable: str, receiver: str
 ) -> None:
-    """Detect actual authored calls and cross-check their arity with the ABI slot.
-
-    C++ duck types do not declare parameter names. The named C callback slot is
-    the shared R-12 contract; only input parameters supported by a real detected
-    expression are exposed on the C++ protocol mapping.
-    """
     calls: dict[str, int] = {}
     pattern = rf"(?:declval<(?:{receiver}|T)&>\(\)\.|static_cast<{receiver}\*>\(\w+\)->)(\w+)\("
     for match in re.finditer(pattern, text):
@@ -323,7 +312,6 @@ def protocol_metadata(
 
 @contextmanager
 def header_compilers(language: str):
-    """Optional local header driver overrides, never passed into Cargo builds."""
     before = {key: os.environ.get(key) for key in ("CC", "CXX")}
     try:
         if language != "rust":
@@ -454,7 +442,6 @@ def header_metadata(
 
 
 def literal(text: str) -> Any:
-    """Normalize native literals; refuse unknown expressions instead of guessing."""
     text = text.strip().rstrip(";")
     if text in ("NULL", "nullptr", "std::nullopt", "None", "{}", "{ }"):
         return None
@@ -465,7 +452,6 @@ def literal(text: str) -> Any:
 
 
 def spec_ids() -> tuple[set[str], set[str], set[str]]:
-    """Only IDs actually declared by the spec are citations, never R-n as decisions."""
     directory = REPO_ROOT / "docs/specs/language-parity"
     decisions, gaps, rules = set(), set(), set()
     for file in directory.glob("*.md"):
@@ -510,7 +496,6 @@ def bridge_scope(path: str, parameter: str | None = None) -> bool:
         "to_gym_space",
     }:
         return True
-    # R-24 covers Python structural typing/union conveniences, not native data.
     return module == "rlmesh.types" and symbol.split(".")[0] in {
         "HasAddress",
         "HasEnvContract",
@@ -586,9 +571,8 @@ def also_structural(
         return True
     if member.startswith("with_") and member[5:] in fields:
         return True
-    if member in fields:  # Rust options setters share their field's name.
+    if member in fields:
         return True
-    # Enum spellings, standard trait impls and C sizing macros are translations.
     if items.get(owner, Item("missing")).kind == "enum":
         return True
     if language == "c" and target.endswith(("_INIT", "_MIN_SIZE")):
@@ -788,8 +772,6 @@ def check(
                 if target is None:
                     if name in mapping.get("bridges", []) and "R-24" in rules:
                         continue
-                    # A 0.1 keyword Python keeps only to refuse with its 0.2
-                    # form has no native counterpart (D-4).
                     if decisions.intersection(mapping.get("refused", {}).get(name, [])):
                         continue
                     fail(1, f"{path}.{language}: parameter {name} has no mapping")
@@ -867,8 +849,6 @@ def check(
                     )
             if native in items and python["kind"] == "function":
                 check_order(path, python, mapping, items[native], language, fail)
-            # Every positional native input needs a Python counterpart or a
-            # structural exemption, including additions made after review.
             if native in items and python["kind"] == "function" and not protocol:
                 mapped = {
                     v.partition("#")[2]
@@ -937,9 +917,7 @@ def check(
                         and (
                             target.startswith("rlmesh::binding::")
                             or target.startswith("rlmesh::serve_options::BatchOptions")
-                            # The Experimental managed-platform client.
                             or target.startswith("rlmesh::managed::")
-                            # The Experimental real-time run on either clock.
                             or target.startswith("rlmesh::realtime::")
                             or target
                             in {
@@ -1078,7 +1056,6 @@ def fenced(path: str, language: str) -> bool:
 
 
 def default_value(text: str, item: Item, c_items: dict[str, Item]) -> Any:
-    """Decode enum and aggregate literals, without evaluating native code."""
     text = text.strip()
     enum = None
     member = None
@@ -1097,9 +1074,7 @@ def default_value(text: str, item: Item, c_items: dict[str, Item]) -> Any:
         return snake(cpp[2])
     if member and enum:
         prefix = os.path.commonprefix(list(enum.values))
-        # The longest common prefix can include part of the first word.
         prefix = prefix[: prefix.rfind("_") + 1]
-        # INVALID is present on every input vocabulary and fixes its prefix.
         invalid = next((n for n in enum.values if n.endswith("_INVALID")), None)
         if invalid:
             prefix = invalid.removesuffix("INVALID")

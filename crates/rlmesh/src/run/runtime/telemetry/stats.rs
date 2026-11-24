@@ -1,6 +1,5 @@
 //! Summary statistics — average and nearest-rank percentiles — over a sample set.
 
-/// Aggregated statistics over a sample set, all in the sample's unit.
 pub(super) struct Summary {
     pub avg: f64,
     pub p50: f64,
@@ -8,9 +7,6 @@ pub(super) struct Summary {
     pub p99: f64,
 }
 
-/// Average + the p50/p95/p99 nearest-rank percentiles over `samples`, computed
-/// with a SINGLE sort (the percentiles share one sorted buffer). `None` for an
-/// empty slice — distinct from a real `0.0`.
 pub(super) fn summary(samples: &[f64]) -> Option<Summary> {
     if samples.is_empty() {
         return None;
@@ -26,7 +22,6 @@ pub(super) fn summary(samples: &[f64]) -> Option<Summary> {
     })
 }
 
-/// Nearest-rank percentile over an already-sorted, non-empty slice.
 fn nearest_rank(sorted: &[f64], percentile: f64) -> f64 {
     let index = ((sorted.len() - 1) as f64 * percentile).ceil() as usize;
     sorted[index]

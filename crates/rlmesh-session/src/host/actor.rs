@@ -38,10 +38,8 @@ use crate::host::{AccessChange, Change, HostActor};
 use crate::lobby::LobbyResult;
 use crate::metrics::LinkStats;
 
-/// How often the host publishes `host/health`.
 const HEALTH_PERIOD: Duration = Duration::from_secs(1);
 
-/// A participant's timing link, as the host measures it.
 pub(super) struct Link {
     /// The generation it measures: a new process starts a new link.
     generation: u32,
@@ -63,16 +61,12 @@ pub(super) struct Link {
 type Fifo<T> = zenoh::handlers::FifoChannelHandler<T>;
 type Queries = zenoh::query::Queryable<Fifo<Query>>;
 
-/// A lobby verb: its sender, the sender's generation and the request id.
 #[cfg(feature = "fleet")]
 pub(super) type LobbyKey = (ParticipantId, u32, u64);
 
-/// A waiting lobby verb's answer, back at the host task.
 #[cfg(feature = "fleet")]
 pub(super) type LobbyDone = (LobbyKey, LobbyResult);
 
-/// A lobby verb waiting for its answer, and the latest query asking for it
-/// (a retry replaces it: the earlier one's caller has timed out).
 #[cfg(feature = "fleet")]
 pub(super) struct LobbyWaiting {
     peer: Arc<Peer>,
@@ -80,8 +74,6 @@ pub(super) struct LobbyWaiting {
     task: tokio::task::AbortHandle,
 }
 
-/// A grant (or rebind) whose keys are on their way to its robots: the verb,
-/// what it was prepared against, and every query waiting for its answer.
 pub(super) struct Waiting {
     peer: Arc<Peer>,
     request: crate::wire::Request,
@@ -91,7 +83,6 @@ pub(super) struct Waiting {
     queries: Vec<Query>,
 }
 
-/// What the host does with a verb.
 enum Outcome {
     /// Answer it now.
     Reply(Result<(), CtlError>, Vec<Lease>, Vec<IssuedKey>),
@@ -113,13 +104,6 @@ impl Outcome {
     }
 }
 
-/// Whether the expiry tick may judge silence. A host that did not run for a
-/// while (its process was descheduled or frozen) was not listening in that
-/// time: heartbeats sent meanwhile are still on their way to it, and
-/// participants in its own process stalled with it. Judging on the first
-/// tick back would lapse the leases of healthy holders, so that tick starts
-/// one lease grace of listening instead. The judgement after it always
-/// runs, so a host that keeps stalling still expires what is silent.
 struct Heard {
     last: tokio::time::Instant,
     listening_until: Option<tokio::time::Instant>,
@@ -132,18 +116,17 @@ impl Heard {
         Self {
             last: now,
             listening_until: None,
-            // Well past a late tick, well short of a lapse.
             stall: (grace / 2).max(tick * 4),
             grace,
         }
     }
 
-    /// Whether the host is listening after a stall.
     fn listening(&self) -> bool {
         self.listening_until.is_some()
     }
 
-    /// Whether the tick at `now` judges leases and presence.
+    // The first tick after a stall, and any within the grace, only listen: heartbeats sent meanwhile
+    // are still in flight, and judging then would lapse the leases of healthy holders.
     fn judge(&mut self, now: tokio::time::Instant) -> bool {
         let gap = now.saturating_duration_since(self.last);
         self.last = now;
@@ -236,9 +219,7 @@ impl HostActor {
                     Err(_) => break,
                 },
                 _ = tick.tick() => {
-                    // A heartbeat counts from when it arrived (t2), so any
-                    // still queued behind a busy host task goes in before
-                    // leases and presence are judged.
+                    // Drain queued heartbeats before expiry so a busy host never lapses a healthy lease.
                     while let Ok((id, heartbeat, t2)) = heartbeats.try_recv() {
                         self.on_heartbeat(id, heartbeat, t2);
                     }
@@ -247,10 +228,6 @@ impl HostActor {
                         self.record(events).await;
                     }
                     self.publish_ticks().await;
-                    // Back from a stall, every edge's copy of its lease has
-                    // run out by its own clock: each renewal the returning
-                    // heartbeats bring goes out on the tick it arrives,
-                    // not a quarter grace later.
                     self.publish_renewals(heard.listening()).await;
                     self.check_datagram().await;
                 }
@@ -264,8 +241,6 @@ impl HostActor {
                         }
                     }
                     self.health_tx.send_replace(rows);
-                    // A missed acknowledgement never detaches anyone: the
-                    // step waits, and says for whom.
                     for step in self.auth.issuer().pending() {
                         info!(
                             robot = %step.robot,
@@ -282,13 +257,11 @@ impl HostActor {
         debug!(session = %self.config.session, "session host stopped");
     }
 
-    /// The next answer of a lobby verb that waited.
     #[cfg(feature = "fleet")]
     async fn lobby_answer(&mut self) -> Option<LobbyDone> {
         self.lobby_answers.recv().await
     }
 
-    /// Without `fleet` there is no lobby, so no answer ever comes.
     #[cfg(not(feature = "fleet"))]
     async fn lobby_answer(&mut self) -> Option<std::convert::Infallible> {
         std::future::pending().await
@@ -303,8 +276,6 @@ impl HostActor {
         self.config.clock.now_ns()
     }
 
-    /// Logs and broadcasts events, keeps the link table in step with the
-    /// roster, and publishes the new state.
     async fn record(&mut self, events: Vec<AuthorityEvent>) {
         if events.is_empty() {
             return;
@@ -317,7 +288,6 @@ impl HostActor {
                     self.log_data_path(participant);
                     let generation = self.declare_echo(participant).await;
                     let offset = self.config.offset;
-                    // A new generation is a new process, on its own clock.
                     if self
                         .links
                         .get(participant)
@@ -340,8 +310,6 @@ impl HostActor {
                 }
                 AuthorityEvent::Detached { participant, .. } => {
                     self.links.remove(participant);
-                    // Its waiting lobby verbs end with it: the lobby sees
-                    // their answers' receivers closed.
                     #[cfg(feature = "fleet")]
                     self.lobby.retain(|(id, _, _), waiting| {
                         let keep = id != participant;
@@ -352,7 +320,6 @@ impl HostActor {
                     });
                     let failed = self.auth.issuer().detach(participant);
                     self.failed.extend(failed);
-                    // Detaching ends the generation: its keys go with it.
                     if let Ok(mut peers) = self.peers.write()
                         && let Some(peer) = peers.current.remove(participant)
                     {
@@ -361,7 +328,6 @@ impl HostActor {
                 }
                 _ => {}
             }
-            // Having no subscriber is fine.
             let _ = self.events.send(event);
         }
         let authority = &self.authority;
@@ -377,9 +343,6 @@ impl HostActor {
 }
 
 impl HostActor {
-    /// Warns of a leased participant the session dropped, or a robot held:
-    /// each subject at most once per [`crate::quiet::QUIET`]. A participant no
-    /// lease bound (a lockstep env, model or driver) leaving is its normal end.
     fn warn_of(&mut self, event: &AuthorityEvent) {
         let session = &self.config.session;
         let now = std::time::Instant::now();
@@ -430,16 +393,12 @@ mod tests {
         let ms = Duration::from_millis;
         let start = tokio::time::Instant::now();
         let mut heard = Heard::new(start, ms(10), ms(250));
-        // On-time and merely late ticks judge.
         assert!(heard.judge(start + ms(10)));
         assert!(heard.judge(start + ms(100)));
-        // The first tick after a stall does not, nor any within the grace.
         let back = start + ms(700);
         assert!(!heard.judge(back));
         assert!(!heard.judge(back + ms(10)));
         assert!(!heard.judge(back + ms(240)));
-        // The judgement after the grace runs however late its tick is, so
-        // a host that keeps stalling still expires what is silent.
         assert!(heard.judge(back + ms(900)));
         assert!(!heard.judge(back + ms(1500)));
         assert!(heard.judge(back + ms(1760)));

@@ -1,13 +1,11 @@
 //! Delivery contracts, action grids and publication plans.
 //!
-//! A controller's binding states one [`StreamContract`] per bound input
-//! stream and one [`ActionGrid`] per commanded part. The host admits the
-//! contracts, derives one publication [`Plan`] per stream from every
-//! admitted contract on it, and publishes it as a [`Demand`]; the publisher
-//! installs the plan and acknowledges its revision (`DemandAck`). A lease is
-//! granted only once every stream of the requester's binding has
-//! acknowledged a revision that includes its contract (`NOT_READY`
-//! otherwise). Nothing renegotiates a contract later.
+//! A controller's binding states one [`StreamContract`] per bound input stream and one
+//! [`ActionGrid`] per commanded part. The host admits the contracts, derives one publication
+//! [`Plan`] per stream from every admitted contract on it, and publishes it as a [`Demand`]; the
+//! publisher installs the plan and acknowledges its revision (`DemandAck`). A lease is granted
+//! only once every stream of the requester's binding has acknowledged a revision that includes its
+//! contract (`NOT_READY` otherwise). A contract is never renegotiated.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -62,8 +60,7 @@ pub struct ActionGrid {
 }
 
 /// How a publisher sends one stream, derived from every admitted contract on
-/// it. A stream with no admitted contract has no demand and publishes every
-/// sample within its `send` ceiling.
+/// it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Plan {
     /// Some contract is `every` or `history`: publish each sample

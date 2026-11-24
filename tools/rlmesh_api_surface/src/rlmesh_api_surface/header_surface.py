@@ -26,7 +26,6 @@ from rlmesh_api_surface.api_surface import (
 )
 
 _DIVIDER = re.compile(r"^\s*(?:/\*|//)\s*-{3,}\s*(.+?)\s*-*\s*(?:\*/)?\s*$")
-# Header-plumbing macros: export decoration, include guards, and internals.
 _PLUMBING_MACRO = re.compile(
     r"^RLMESH_(API|H|HPP|STATIC|BUILD_DLL)$|_DETAIL_|^RLMESH_DETAIL"
 )
@@ -34,11 +33,11 @@ _PLUMBING_MACRO = re.compile(
 
 @dataclass(frozen=True)
 class HeaderSurfaceConfig:
-    header: str  # repo-relative
-    language: str  # "c" or "c++"
-    standard: str  # "c11", "c++17", "c++20"
+    header: str
+    language: str
+    standard: str
     stability: str
-    namespace: str | None  # the C++ namespace to document; None for C
+    namespace: str | None
     source_repo: str
     source_commit: str | None
 
@@ -53,9 +52,8 @@ def collect_header_api_surface(
     return collector.collect(tu)
 
 
-#: The fallback header driver: zig 0.13 ships libc++ from LLVM 18, the same
-#: release as the pinned `libclang` wheel, so its headers always parse. A host
-#: toolchain newer than libclang (GCC 16's libstdc++, a newer libc++) does not.
+#: zig 0.13 ships libc++ from LLVM 18, the same release as the pinned `libclang` wheel, so its
+#: headers always parse; a newer host toolchain (GCC 16 libstdc++, newer libc++) does not.
 FALLBACK_DRIVERS = {
     "c": ["mise", "exec", "zig@0.13.0", "--", "zig", "cc"],
     "c++": ["mise", "exec", "zig@0.13.0", "--", "zig", "c++"],
@@ -89,16 +87,12 @@ def _parse(path: Path, config: HeaderSurfaceConfig) -> ci.TranslationUnit:
 
 
 class _ParseError(ValueError):
-    """libclang's errors on a header; `in_system_headers` when none is in the
-    header's own directory."""
-
     def __init__(self, message: str, in_system_headers: bool) -> None:
         super().__init__(message)
         self.in_system_headers = in_system_headers
 
 
 def _driver(language: str) -> list[str]:
-    """The selected CC/CXX, or the platform default."""
     return shlex.split(
         os.environ.get("CXX" if language == "c++" else "CC")
         or ("c++" if language == "c++" else "cc")
@@ -141,7 +135,6 @@ def _parse_with(
 
 
 def _system_includes(language: str, compiler: list[str]) -> list[str]:
-    """The driver's include search path, which the libclang wheel lacks."""
     stderr = subprocess.run(
         [*compiler, "-E", "-v", "-x", language, "/dev/null"],
         capture_output=True,
@@ -231,8 +224,6 @@ class _HeaderCollector:
             and Path(location.file.name).resolve() == self.path.resolve()
         )
 
-    # ---- declarations ------------------------------------------------------
-
     def _top_level(self, cursor: ci.Cursor, typedefs: dict[str, ci.Cursor]) -> None:
         kind = cursor.kind.name
         name = cursor.spelling
@@ -261,7 +252,7 @@ class _HeaderCollector:
                 and target.spelling == name
             ):
                 if target.is_definition() or name in self.seen:
-                    return  # `typedef struct X {...} X;` documents as the struct itself
+                    return
                 self._add(
                     cursor,
                     name,
@@ -286,11 +277,9 @@ class _HeaderCollector:
 
     def _record(self, cursor: ci.Cursor, name: str) -> None:
         if not cursor.is_definition():
-            return  # a forward declaration; the typedef (C) or definition documents it
+            return
         if cursor.kind.name != "CLASS_TEMPLATE" and "<" in cursor.displayname:
-            # An explicit or partial specialization (`Result<void>`) has its own
-            # members, so it documents as its own entry under its full name. Its
-            # kind says so whichever of it and the primary is declared first.
+            # An explicit or partial specialization (`Result<void>`) documents as its own entry under its full name.
             name = cursor.displayname
         keyword = {
             "CLASS_DECL": "class",
@@ -330,7 +319,7 @@ class _HeaderCollector:
         if not name.startswith("RLMESH_") or _PLUMBING_MACRO.search(name):
             return
         if name in self.seen:
-            return  # one branch of a compiler-detection #if chain is enough
+            return
         text = " ".join(t.spelling for t in cursor.get_tokens())
         head = re.match(r"^(\w+(?:\s*\([^)]*\))?)", text)
         definition = (
@@ -444,8 +433,6 @@ class _HeaderCollector:
             )
         )
 
-    # ---- sections ----------------------------------------------------------
-
     def _modules(self) -> list[ApiModule]:
         header = self.path.name
         sections = [(0, header, self._file_comment())]
@@ -495,14 +482,10 @@ class _HeaderCollector:
             block.append(line)
         return _clean_comment(block)
 
-    # ---- source text -------------------------------------------------------
-
     def _docs(self, cursor: ci.Cursor, *, trailing: bool = False) -> str:
         docs = self._leading_comment(cursor.extent.start.line - 2)
         if not docs and not trailing:
-            # One comment above a run of declarations (no blank line between them)
-            # documents the whole run: `rlmesh_last_error_message` and its
-            # `_is_recoverable` sibling, or the RLMESH_F32..RLMESH_BOOL constants.
+            # One comment above a run of declarations (no blank line between them) documents the whole run.
             index = cursor.extent.start.line - 2
             while (
                 index >= 0
@@ -524,7 +507,6 @@ class _HeaderCollector:
         return docs
 
     def _leading_comment(self, index: int) -> str:
-        """The comment block ending on 0-based line `index`, or "" if there is none."""
         block: list[str] = []
         in_block_comment = False
         while index >= 0:
@@ -536,7 +518,7 @@ class _HeaderCollector:
                 index -= 1
                 continue
             if _is_trailing_comment(stripped):
-                break  # code with a comment after it documents itself, not this
+                break
             if stripped.endswith("*/") and not _DIVIDER.match(stripped):
                 block.insert(0, self.lines[index])
                 in_block_comment = not stripped.startswith("/*")
@@ -574,7 +556,6 @@ class _HeaderCollector:
             text = _strip_line_comments(source)
             masked = _mask_strings(text)
             cut = _top_level_cut(masked, "{;")
-            # A terminator inside a block comment still open at its line isn't one.
             if (cut < len(text) and "/*" not in masked[:cut]) or index >= len(
                 self.lines
             ):
@@ -623,13 +604,10 @@ def _is_comment_line(stripped: str) -> bool:
 
 
 def _is_trailing_comment(stripped: str) -> bool:
-    """Code followed by a comment on its line (`int x; /* why */`, `int x;  // why`)."""
     if stripped.startswith(("/*", "*", "//")):
         return False
     code = _mask_strings(stripped)
     if code.endswith("*/"):
-        # A block comment's last line (`See https://rlmesh.dev */`) unless this
-        # same line opened it after some code.
         return "/*" in code
     return "//" in code
 
@@ -661,7 +639,6 @@ def _strip_line_comments(text: str) -> str:
 
 
 def _mask_strings(text: str) -> str:
-    """`text` with each literal's contents blanked, same length, for punctuation scans."""
     return _LITERAL_OR_COMMENT.sub(
         lambda m: m.group(0)[0] + "_" * (len(m.group(0)) - 2) + m.group(0)[-1]
         if m.group(0)[0] in "\"'"
@@ -683,8 +660,6 @@ def _top_level_cut(text: str, stops: str) -> int:
 
 
 def _init_list_start(text: str) -> int | None:
-    """Where a constructor's member-initializer list starts: the first single `:`
-    at the top level after the parameter list, or None."""
     depth = 0
     after_params = False
     for index, char in enumerate(text):

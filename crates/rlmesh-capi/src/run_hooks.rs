@@ -1,4 +1,3 @@
-//! Run observers and retained facade contexts.
 #![allow(unsafe_code)]
 use crate::abi::{
     sizing,
@@ -318,8 +317,6 @@ pub unsafe extern "C" fn rlmesh_step_event_equals(
     guard(|| {
         let left = unsafe { event(a) }?;
         let mut right = unsafe { event(b) }?;
-        // A caller-built C event's read callable is represented by its context
-        // and observation. Preserve that identity while comparing two views.
         if unsafe { (*a).context == (*b).context && (*a).observation == (*b).observation } {
             right.read = Arc::clone(&left.read);
         }
@@ -448,13 +445,10 @@ impl RunHooks for Hooks {
         Ok(())
     }
 }
-/// A binding's hooks: the caller's handle, which must outlive the binding,
-/// locked for each call so a run cannot use it at the same moment.
 pub(crate) struct BoundHooks(*mut RLMeshRunHooks);
 // SAFETY: every use goes through the handle's mutex.
 unsafe impl Send for BoundHooks {}
 impl BoundHooks {
-    /// Borrow `p` (non-null) for a binding's life.
     pub(crate) unsafe fn new(p: *mut RLMeshRunHooks) -> Self {
         Self(p)
     }

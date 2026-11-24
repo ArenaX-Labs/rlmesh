@@ -1,6 +1,3 @@
-/* What the FreeRTOS stand-in (esp32_port.c) counted: tasks created, those
- * freed, those deleted but left for the idle task to free, and the stack
- * bytes held by every task not yet freed. */
 #ifndef ESP32_PORT_H_
 #define ESP32_PORT_H_
 

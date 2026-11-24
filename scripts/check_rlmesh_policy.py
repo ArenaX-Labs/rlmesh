@@ -33,16 +33,8 @@ STR_CONST_RE = re.compile(
 )
 PY_STR_CONST_RE = re.compile(r'(?P<name>[A-Z0-9_]+)\s*=\s*"(?P<value>[^"]+)"')
 INT_CONST_RE = re.compile(r"(?P<name>[A-Z0-9_]+)\s*=\s*(?P<value>\d+)")
-# Workflow edition name shapes. A SEALED edition is the bare `YYYY.MM` base; an
-# official PROVISIONAL prerelease edition appends the full Rust SemVer
-# prerelease cohort (`YYYY.MM-X.Y.Z-{alpha,beta,rc}.N`). Local dev cohorts are
-# generated at build time and are not committed to `rlmesh.toml`.
 EDITION_BASE_RE = re.compile(r"^[0-9]{4}\.[0-9]{2}$")
 EDITION_PRERELEASE_SUFFIX_RE = re.compile(r"^\d+\.\d+\.\d+-(?:alpha|beta|rc)\.\d+$")
-# A prerelease version literal in prose: `X.Y.Z-rc.N` (SemVer) or `X.Y.ZrcN`
-# (PEP 440). Bare stable `X.Y.Z` is intentionally NOT matched — forward/historical
-# references to stable versions are fine; only the moving prerelease cohort must
-# track the current release.
 PRERELEASE_LITERAL_RE = re.compile(
     r"\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+|(?:a|b|rc)\d+)"
 )
@@ -163,24 +155,16 @@ def selfcheck() -> None:
     build = "supported_editions -> cargo:rustc-env=RLMESH_SUPPORTED_WORKFLOW_EDITIONS"
     rc1 = "2026.09-0.2.0-rc.1"
 
-    # The generated list is the current cohort first, then every retained edition.
     assert _generated_supported_editions(rc1, [rc1, "2026.06"]) == [rc1, "2026.06"]
     assert _generated_supported_editions("2026.06", ["2026.06"]) == ["2026.06"]
     assert not _check_generated_supported_editions(rc1, [rc1, "2026.06"], lib, build)
-    # A hand-written Rust literal is no longer the source of the list.
     assert _check_generated_supported_editions(rc1, [rc1], "&[CURRENT]", build)
-    # build.rs must be the generator.
     assert _check_generated_supported_editions(rc1, [rc1], lib, "fn main() {}")
-    # current_edition missing from the manifest's retained set: the generated
-    # list then carries an edition rlmesh.toml does not retain.
     assert _check_generated_supported_editions(rc1, ["2026.06"], lib, build)
-    # A repeat would be offered twice on the wire.
     assert _check_generated_supported_editions(
         rc1, [rc1, "2026.06", "2026.06"], lib, build
     )
 
-    # The crate's edition file is current_edition first, then the other retained
-    # editions; a crates.io build takes its base edition from that first line.
     retained = [rc1, "2026.06"]
     assert not _check_packaged_supported_editions(f"{rc1}\n2026.06\n", rc1, retained)
     assert not _check_packaged_supported_editions(
@@ -206,10 +190,7 @@ status = "provisional"
     assert _sealed_editions(previous) == {"2026.06"}
     assert not _dropped_sealed_editions(previous, ["2026.09", "2026.06"])
     assert _dropped_sealed_editions(previous, ["2026.09"]) == ["2026.06"]
-    # A provisional cohort may be retired; only sealed editions are sticky.
     assert not _dropped_sealed_editions(previous, ["2026.06"])
-    # A major break drops a sealed edition only by naming it with a reason, and
-    # keeps its sealed record.
     assert not _dropped_sealed_editions(previous, ["2026.09"], {"2026.06"})
     sealed = tomllib.loads(previous)["workflow"]["editions"]
     reason = {"2026.06": "0.2 is a major break"}
@@ -218,7 +199,6 @@ status = "provisional"
     assert _check_dropped_editions({"2026.07": "typo"}, sealed, ["2026.09"])
     assert _check_dropped_editions(reason, sealed, ["2026.09", "2026.06"])
 
-    # Changing the spec and its current checksum together cannot rewrite a seal.
     assert not _changed_sealed_records(previous, sealed)
     for field, value in {
         "status": "provisional",
@@ -232,9 +212,6 @@ status = "provisional"
     assert _changed_sealed_records(previous, {}) == ["2026.06"]
     assert not _changed_sealed_records("", {})
 
-    # build.rs scans the manifest without a TOML parser: its reading of the
-    # retained list must equal tomllib's for both array spellings, or the build
-    # would silently offer fewer editions than the manifest retains.
     single = 'supported_editions = ["2026.09-0.2.0-rc.1", "2026.06"]\n'
     multi = (
         "supported_editions = [\n"
@@ -248,17 +225,13 @@ status = "provisional"
         assert _scan_manifest_string_list(text, "supported_editions") == parsed
     assert _scan_manifest_string_list("[workflow]\n" + single, "current_edition") == []
 
-    # current_edition is this build's WANT, so nothing it retains may sort above
-    # it — same ordering rlmesh-proto's `edition_sort_key` applies.
     assert _current_edition_not_highest(rc1, [rc1, "2026.06"]) is None
     assert _current_edition_not_highest("2026.06", ["2026.06"]) is None
     assert _current_edition_not_highest("2026.06", [rc1, "2026.06"]) is not None
-    # A suffixed cohort sorts above its own bare base, either way round.
     cohort = "2026.06-0.2.0-rc.1"
     assert _current_edition_not_highest("2026.06", ["2026.06", cohort]) is not None
     assert _current_edition_not_highest(cohort, [cohort, "2026.06"]) is None
 
-    # rust-version tracks the mise toolchain at major.minor precision.
     assert not _check_rust_version("1.99", "1.99")
     assert not _check_rust_version({"version": "1.99.0"}, "1.99")
     assert _check_rust_version("1.100", "1.99")
@@ -416,9 +389,6 @@ def _validate_adapters(repo_root: Path) -> list[str]:
     if not keys.exists():
         return [f"adapter metadata keys file missing: {keys}"]
     text = keys.read_text(encoding="utf-8")
-    # The version-stamped metadata key string, not any source-module path, is the
-    # adapter spec-format discriminator, so guard the v1 token here. A v2 bump
-    # must be deliberate and keep reading v1.
     for const in ("ENV_METADATA_KEY", "MODEL_METADATA_KEY"):
         match = re.search(rf'{const}: &str = "(?P<value>[^"]+)"', text)
         if match is None:
@@ -778,7 +748,6 @@ def _scan_manifest_string_list(text: str, key: str) -> list[str]:
         items += head
         if closer:
             break
-        # A line break separates two entries exactly as a comma does.
         items += ","
 
     values: list[str] = []
@@ -1018,7 +987,6 @@ def _validate_sealed_edition_retention(
     try:
         tracked = manifest_path.relative_to(repo_root).as_posix()
     except ValueError:
-        # A manifest from outside the repo has no history to compare against.
         return []
     previous = _git_output(repo_root, ["show", f"{tag}:{tracked}"])
     if previous is None:
@@ -1166,7 +1134,6 @@ def _validate_api_surface(
     return errors
 
 
-# The early-access references: none may claim Stable, and each names what it reads.
 NATIVE_API_SURFACES = {
     "rust": ("crate",),
     "c": ("header", "standard"),

@@ -2,8 +2,7 @@ syntax = "proto3";
 
 package rlmesh.spaces.v1;
 
-// Element dtypes for space leaves. Closed set under wire-v1: readers
-// hard-reject unknown values; new dtypes require an edition gate.
+// Element dtypes for space leaves. Readers reject unknown values.
 enum DataType {
   DATA_TYPE_UNSPECIFIED = 0;
   DATA_TYPE_BOOL = 1;

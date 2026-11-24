@@ -1,11 +1,3 @@
-//! A bound policy whose input's publisher goes away and comes back: a
-//! policy that publishes restarts, a robot whose state is an input
-//! restarts, a camera robot restarts. The controller binds again on its own
-//! and keeps driving the robot it commands; a part that comes back as
-//! something the policy cannot read stops the run. An optional input that
-//! may be blanked binds blank at once while its robot is gone, and reads it
-//! once it is back.
-
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -30,10 +22,8 @@ const ARM: &str = r#"{
             "command": "position", "safe": "stop", "hold_max_ms": 100, "max_action_age_ms": 1000}
 }"#;
 
-/// A tracker's target: two joints at 50 Hz, nothing commandable.
 const TRACKER: &str = r#"{"target": {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 50}}"#;
 
-/// Reads the arm and `at`, drives the arm to the first value of `at`.
 fn follow(at: &str, kind: &str) -> String {
     format!(
         r#"{{
@@ -54,8 +44,6 @@ struct World {
 }
 
 impl World {
-    /// A host that re-arms robots on its own, as `rlmesh host
-    /// --rearm-robots` does.
     async fn start() -> Self {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
@@ -117,8 +105,6 @@ impl World {
         )
     }
 
-    /// A policy that publishes `map` (its parts, none commandable), as
-    /// `Policy(publishes=...)` does.
     async fn publisher(&self, id: &str, map: &str) -> Publisher {
         let p = self
             .join(id, vec![Role::Controller, Role::Embodiment])
@@ -164,10 +150,8 @@ fn f32s(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
-/// What the arm dispatched: (time, mode, first joint).
 type Log = Arc<Mutex<Vec<(Instant, EdgeMode, Option<f32>)>>>;
 
-/// A loop that stops when its flag is set.
 struct Loop {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -199,7 +183,6 @@ impl Loop {
     }
 }
 
-/// The arm's 500 Hz loop: publish, then apply what is due.
 fn spin_arm(robot: Arc<Robot>, log: Log) -> Loop {
     let clock = robot.participant().clock().clone();
     let mut q = [0.0_f32; 6];
@@ -221,8 +204,6 @@ fn spin_arm(robot: Arc<Robot>, log: Log) -> Loop {
     )
 }
 
-/// Publishes `fields` at about 50 Hz through `publish`; the newest seq
-/// goes to `last`.
 fn spin_publish(
     publish: impl Fn(&[&[u8]]) -> Option<u64> + Send + 'static,
     fields: Vec<Vec<u8>>,
@@ -261,14 +242,11 @@ fn publish_policy(
     }
 }
 
-/// Kills a process: no detach, its heartbeats and its transport just stop.
 async fn kill(participant: &Participant) {
     participant.set_heartbeats_enabled(false);
     participant.transport().close().await.expect("close");
 }
 
-/// Drives the arm to the first value of input `target` (an image's first
-/// byte counts as a quarter below 50, three quarters above).
 struct Follow;
 
 impl Predictor for Follow {
@@ -297,7 +275,6 @@ impl Predictor for Follow {
     }
 }
 
-/// The last five ticks since `since` dispatched `target`.
 fn driven_since(log: &Log, target: f32, since: Instant) -> bool {
     let log = log.lock().expect("log");
     let recent: Vec<_> = log.iter().filter(|(at, ..)| *at >= since).collect();
@@ -317,7 +294,6 @@ async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
-/// The run's events so far, kept across drains.
 struct Events {
     controller: Arc<Controller>,
     seen: Vec<RunEvent>,
@@ -383,7 +359,6 @@ async fn a_policy_reading_a_publishing_policy_reads_it_again_after_it_restarts()
         driven_since(&log, 0.25, started)
     })
     .await;
-    // Enough samples that the restarted tracker's seqs start well below.
     wait_until("the tracker past seq 40", || {
         first_seq.load(Ordering::Relaxed) >= 40
     })
@@ -432,8 +407,6 @@ async fn a_policy_reading_a_publishing_policy_reads_it_again_after_it_restarts()
     arm_loop.end();
 }
 
-/// The base: wheels it drives itself, and its odometry, which the driver
-/// reads.
 const BASE: &str = r#"{
     "wheels": {"kind": "joints", "count": 2, "fields": ["pos"], "hz": 100,
                "command": "position", "safe": "stop", "hold_max_ms": 100},
@@ -474,7 +447,6 @@ async fn a_robot_whose_state_is_read_leaves_and_comes_back_and_the_arm_keeps_its
         .channel;
     let before = driver.binding().fingerprint;
 
-    // The base shuts down cleanly: its parts go with it.
     base_loop.end();
     rlmesh_session::sdk::close_robot(base)
         .await
@@ -504,7 +476,6 @@ async fn a_robot_whose_state_is_read_leaves_and_comes_back_and_the_arm_keeps_its
         before,
         "bound to the new part"
     );
-    // The arm's lease was re-issued with the binding, never given up.
     let snapshot = world.host.snapshot();
     let ends: Vec<ReasonCode> = snapshot
         .ended
@@ -545,7 +516,6 @@ async fn a_policy_reading_a_camera_sees_it_again_after_the_camera_restarts() {
             .bind("driver", &follow("eye:rgb", "camera"), WAIT)
             .await,
     );
-    // An image's seq comes from its encoder: read it where it lands.
     let seq = |driver: &Controller| {
         driver
             .observe()
@@ -647,7 +617,6 @@ async fn a_part_that_comes_back_as_something_else_stops_the_run_and_says_what_ch
     arm_loop.end();
 }
 
-/// Reads the arm and, when it is there, a camera.
 const OPTIONAL_CAMERA: &str = r#"{
     "hz": 50,
     "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]},
@@ -661,7 +630,6 @@ const OPTIONAL_CAMERA: &str = r#"{
 async fn an_optional_input_whose_robot_is_gone_binds_blank_at_once() {
     let world = World::start().await;
     let _arm = world.robot("ur10e", ARM).await;
-    // Lost: its parts stay in the session for its return.
     let eye = world.robot("eye", EYE).await;
     kill(eye.participant()).await;
     drop(eye);
@@ -680,7 +648,6 @@ async fn an_optional_input_whose_robot_is_gone_binds_blank_at_once() {
         binding.table()
     );
 
-    // Left cleanly: its parts went with it.
     let eye = world.robot("eye", EYE).await;
     rlmesh_session::sdk::close_robot(eye).await.expect("detach");
     let bound = tokio::time::timeout(
@@ -712,7 +679,6 @@ async fn a_blank_input_reads_its_robot_once_it_joins() {
     );
     let mut events = Events::new(&driver);
     let running = run(&driver);
-    // Blank: zeros, so the arm goes to a quarter.
     let started = Instant::now();
     wait_until("the arm driven with the camera blank", || {
         driven_since(&log, 0.25, started)
@@ -749,7 +715,6 @@ async fn a_blank_input_reads_its_robot_once_it_joins() {
     arm_loop.end();
 }
 
-/// Reads the arm and holds it at 0.5.
 const HOLD: &str = r#"{
     "hz": 50,
     "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]}},
@@ -757,7 +722,6 @@ const HOLD: &str = r#"{
                         "hz": 100, "chunk": 5}}
 }"#;
 
-/// Holds the arm at 0.5.
 struct Hold;
 
 impl Predictor for Hold {
@@ -771,11 +735,6 @@ impl Predictor for Hold {
     }
 }
 
-/// A policy whose only robot closes cleanly: the run keeps going, its starts
-/// skipped as `publisher_gone` with the robot named, for as long as the
-/// robot stays away; when a robot of that name comes back, the policy binds
-/// again and drives it. Bound to the robot by name (`named`), or to the
-/// session's view.
 async fn only_robot_closes_and_returns(named: bool) {
     let world = World::start().await;
     let arm = world.robot("ur10e", ARM).await;
@@ -811,7 +770,6 @@ async fn only_robot_closes_and_returns(named: bool) {
     let started = Instant::now();
     wait_until("the arm held at 0.5", || driven_since(&log, 0.5, started)).await;
 
-    // Its only robot shuts down cleanly: its parts go with it.
     arm_loop.end();
     rlmesh_session::sdk::close_robot(arm).await.expect("detach");
     wait_until("the run reports the input lost", || {
@@ -831,7 +789,6 @@ async fn only_robot_closes_and_returns(named: bool) {
         "input \"q\" lost its publisher: ur10e left the session; starts that need it are \
          skipped (publisher_gone) until it is back"
     );
-    // It waits as long as the robot stays away, and never exits.
     let gone = holder.stats().skipped(SkipReason::PublisherGone);
     wait_until("starts skipped while the robot is away", || {
         holder.stats().skipped(SkipReason::PublisherGone) >= gone + 25
@@ -839,7 +796,6 @@ async fn only_robot_closes_and_returns(named: bool) {
     .await;
     assert!(!running.is_finished(), "the run stopped");
 
-    // A robot of that name comes back.
     let arm = world.robot("ur10e", ARM).await;
     let arm_loop = spin_arm(arm.clone(), log.clone());
     let back = Instant::now();

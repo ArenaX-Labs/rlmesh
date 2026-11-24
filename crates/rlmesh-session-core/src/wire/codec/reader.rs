@@ -3,7 +3,6 @@
 
 use crate::wire::error::{Unread, WireError};
 
-/// One field's value, borrowed from the message.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Value<'a> {
     Varint(u64),
@@ -13,7 +12,6 @@ pub(super) enum Value<'a> {
     Len(&'a [u8]),
 }
 
-/// The fields of one message, in order.
 #[derive(Debug, Clone)]
 pub(super) struct Fields<'a> {
     buf: &'a [u8],
@@ -29,7 +27,6 @@ impl<'a> Fields<'a> {
         WireError::unread(self.message, Unread::Malformed(what))
     }
 
-    /// The next field and its value; `None` at the end.
     pub(super) fn next_field(&mut self) -> Result<Option<(u32, Value<'a>)>, WireError> {
         if self.buf.is_empty() {
             return Ok(None);
@@ -56,7 +53,6 @@ impl<'a> Fields<'a> {
                 self.buf = rest;
                 Value::Len(field)
             }
-            // Groups (3, 4) are protobuf 2's, never this schema's.
             _ => return Err(self.bad("wire type")),
         };
         Ok(Some((tag, value)))
@@ -71,7 +67,6 @@ impl<'a> Fields<'a> {
     }
 }
 
-/// A base-128 varint: at most ten bytes, the tenth holding only bit 63.
 fn varint(buf: &mut &[u8]) -> Option<u64> {
     let mut value = 0u64;
     for i in 0..10 {
@@ -93,7 +88,6 @@ impl<'a> Value<'a> {
         WireError::unread(message, Unread::Malformed("wire type"))
     }
 
-    /// A `uint64`.
     pub(super) fn u64(self, message: &'static str) -> Result<u64, WireError> {
         match self {
             Self::Varint(v) => Ok(v),
@@ -101,18 +95,15 @@ impl<'a> Value<'a> {
         }
     }
 
-    /// An `int64`.
     pub(super) fn i64(self, message: &'static str) -> Result<i64, WireError> {
         self.u64(message).map(u64::cast_signed)
     }
 
-    /// A `uint32`: truncated, as protobuf decoders do.
     #[allow(clippy::cast_possible_truncation)]
     pub(super) fn u32(self, message: &'static str) -> Result<u32, WireError> {
         self.u64(message).map(|v| v as u32)
     }
 
-    /// An `int32` or an enum's raw value.
     #[allow(clippy::cast_possible_truncation)]
     pub(super) fn i32(self, message: &'static str) -> Result<i32, WireError> {
         self.u64(message).map(|v| v as i32)
@@ -122,7 +113,6 @@ impl<'a> Value<'a> {
         self.u64(message).map(|v| v != 0)
     }
 
-    /// A `double`.
     pub(super) fn f64(self, message: &'static str) -> Result<f64, WireError> {
         match self {
             Self::Fixed64(v) => Ok(f64::from_bits(v)),
@@ -130,7 +120,6 @@ impl<'a> Value<'a> {
         }
     }
 
-    /// A `bytes` field, or an embedded message.
     pub(super) fn bytes(self, message: &'static str) -> Result<&'a [u8], WireError> {
         match self {
             Self::Len(b) => Ok(b),
@@ -138,7 +127,6 @@ impl<'a> Value<'a> {
         }
     }
 
-    /// A `string`.
     pub(super) fn str(self, message: &'static str) -> Result<&'a str, WireError> {
         core::str::from_utf8(self.bytes(message)?)
             .map_err(|_| WireError::unread(message, Unread::Malformed("UTF-8")))
@@ -167,7 +155,6 @@ mod tests {
 
     #[test]
     fn it_reads_each_wire_type_and_refuses_what_runs_past_the_end() {
-        // 1: varint 300; 2: 3 bytes; 3: fixed64; 4: fixed32.
         let buf = [
             0x08, 0xac, 0x02, 0x12, 3, b'a', b'b', b'c', 0x19, 1, 0, 0, 0, 0, 0, 0, 0, 0x25, 2, 0,
             0, 0,
@@ -178,7 +165,6 @@ mod tests {
             let at_boundary = [3, 8, 17].contains(&cut);
             assert_eq!(truncated.is_ok(), at_boundary, "cut at {cut}");
         }
-        // A length past the end, an eleven-byte varint, a group, field 0.
         assert!(fields(&[0x12, 0xff, 0xff, 0xff, 0xff, 0x0f]).is_err());
         assert!(
             fields(&[

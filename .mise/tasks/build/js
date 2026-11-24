@@ -4,8 +4,6 @@
 #MISE depends=["setup:js"]
 #USAGE flag "--demo" help="Also bundle the browser example (examples/web) into examples/web/dist"
 
-# Output: javascript/rlmesh/pkg (wasm-bindgen glue and the optimized .wasm,
-# ignored) and javascript/rlmesh/dist (the package). Sizes go to pkg/size.json.
 set -euo pipefail
 PATH="$(mise -C javascript bin-paths | paste -sd: -):$PATH"
 
@@ -14,7 +12,6 @@ target_dir="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import j
 cargo build -p rlmesh-wasm --target wasm32-unknown-unknown --profile wasm
 rm -rf "$pkg" && mkdir -p "$pkg"
 wasm-bindgen "$target_dir/wasm32-unknown-unknown/wasm/rlmesh_wasm.wasm" --out-dir "$pkg" --out-name rlmesh --target web
-# Rust 1.99 emits these post-MVP features; wasm-opt rejects the module without the flags.
 wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals \
   "$pkg/rlmesh_bg.wasm" -o "$pkg/rlmesh_bg.opt.wasm"
 mv "$pkg/rlmesh_bg.opt.wasm" "$pkg/rlmesh_bg.wasm"

@@ -1,32 +1,21 @@
-//! Metadata keys under which v1 specs travel in contract metadata.
-//!
-//! The version segment of these key strings, not any source-module path, is the
-//! adapter spec-format discriminator. A breaking spec-format change ships a v2
-//! key (`rlmesh.adapters.v2.*`); a v2 reader must also keep reading v1 so a
-//! newer build still resolves an older peer's specs.
-
 /// Key carrying serialized [`EnvTags`](crate::spec::EnvTags) in env contract metadata.
 pub const ENV_METADATA_KEY: &str = "rlmesh.adapters.v1.env_tags";
 
 /// Key carrying the contract-discriminant binding a branched `EnvFactory` chose
-/// at `make()` time, in env contract metadata. The producer resolves the binding
-/// from `make`'s signature (defaults applied), so the published value always
-/// names every declared discriminant -- the same code that picks the branch
-/// publishes it, and a reader never has to re-derive it from construction params.
+/// at `make()` time, in env contract metadata. The value names every declared discriminant,
+/// defaults applied, so a reader never re-derives it from construction params.
 pub const ENV_BRANCH_METADATA_KEY: &str = "rlmesh.adapters.v1.env_branch";
 
 /// Key carrying a serialized [`ModelSpec`](crate::spec::ModelSpec) in model metadata.
 pub const MODEL_METADATA_KEY: &str = "rlmesh.adapters.v1.model_spec";
 
 /// Key carrying a serialized describe envelope (see [`build_describe_envelope`])
-/// in env/model metadata or an OCI artifact. Same version-segment doctrine: a
-/// breaking envelope-format change ships `rlmesh.describe.v2`.
+/// in env/model metadata or an OCI artifact.
 ///
 /// [`build_describe_envelope`]: crate::envelope::build_describe_envelope
 pub const DESCRIBE_METADATA_KEY: &str = "rlmesh.describe.v1";
 
-/// The describe-envelope schema version stamped into every envelope. Additive
-/// fields stay at `1`; a breaking restructure bumps this and the `v1` segment of
-/// [`DESCRIBE_METADATA_KEY`] together. The Rust builder is the only writer, so
-/// no producer (Python or a future native SDK) can disagree on it.
+/// The describe-envelope schema version stamped into every envelope. Additive fields keep it;
+/// a breaking restructure bumps it together with the `v1` segment of
+/// [`DESCRIBE_METADATA_KEY`].
 pub const DESCRIBE_SCHEMA_VERSION: u32 = 1;

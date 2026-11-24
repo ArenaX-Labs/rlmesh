@@ -1,5 +1,3 @@
-//! A scene's run (feature `fleet`).
-
 use super::*;
 
 #[cfg(feature = "fleet")]
@@ -41,7 +39,6 @@ fn closing_a_scene_disarms_ends_every_lease_and_reaches_the_device_view() {
     );
     let view = crate::wire::DeviceView::of(&state, &pid("robot"));
     assert_eq!(closing(crate::wire::AuthorityView::closing(&view)), want);
-    // Nothing arms it or leases in it again.
     assert_eq!(
         Fixture::status(f.run("operator", Command::Arm, 6)),
         CtlStatus::InvalidTransition
@@ -59,7 +56,6 @@ fn closing_a_scene_disarms_ends_every_lease_and_reaches_the_device_view() {
         CtlStatus::InvalidTransition
     );
     assert_eq!(f.auth.mode(), Mode::Disarmed);
-    // Closing is once.
     assert!(
         f.auth
             .close_scene(ReasonCode::SceneFailed, "", "", 6)
@@ -106,7 +102,6 @@ fn a_lost_scene_member_is_waited_for_and_back_only_with_its_map_and_an_explicit_
             .and_then(|s| s.rejoin_until_ns)
     };
     assert_eq!((f.auth.mode(), window(&f)), (Mode::Safe, Some(70)));
-    // Back, but not declared: still waited for, and no arm.
     f.run(
         "robot",
         attach("robot", vec![Role::Embodiment], PriorityClass::Scripted),
@@ -130,8 +125,6 @@ fn a_lost_scene_member_is_waited_for_and_back_only_with_its_map_and_an_explicit_
     assert_eq!(window(&f), None);
     assert_eq!(f.auth.mode(), Mode::Safe, "never armed on its own");
     f.run("operator", Command::Arm, 24).expect("explicit arm");
-    // Lost again while only ARMED: SAFE all the same, and an attach
-    // under its name that isn't an embodiment doesn't bring it back.
     f.auth.participant_lost(&pid("robot"), 30);
     assert_eq!(f.auth.mode(), Mode::Safe);
     f.run(
@@ -141,8 +134,6 @@ fn a_lost_scene_member_is_waited_for_and_back_only_with_its_map_and_an_explicit_
     )
     .expect("an observer");
     assert!(window(&f).is_some());
-    // A restart that heartbeat expiry never saw, from ACTIVE and from
-    // ARMED: the same loss, and the same explicit arm.
     f.run(
         "robot",
         attach("robot", vec![Role::Embodiment], PriorityClass::Scripted),

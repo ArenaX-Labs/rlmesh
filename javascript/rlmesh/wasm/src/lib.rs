@@ -1,32 +1,22 @@
-//! The browser binding's wasm core: [`rlmesh_session_core::wire`] and
-//! [`rlmesh_session_core`] behind wasm-bindgen, instantiated once per class
-//! Worker of the `rlmesh` npm package (`javascript/rlmesh`).
+//! The browser binding's wasm core: `rlmesh_session_core::wire` and `rlmesh_session_core` behind wasm-bindgen,
+//! instantiated once per class Worker of the `rlmesh` npm package.
 //!
-//! - [`ControlSession`] (the control Worker): this participant's view of the
-//!   authority (decoded snapshots), heartbeats and the clock offset estimate
-//!   they yield, `ctl` requests, one [`LeaseClient`] per leased part, and
-//!   fenced action chunks.
-//! - [`Streams`] (the state and bulk Workers): decodes samples, applies the session's receive rules (epochs, seq gaps as
-//!   losses, layout checks, freshness) and measures delivery.
-//!
-//! Every message is a real v2 one, encoded and decoded by `rlmesh_session_core::wire`;
-//! the gateway forwards the bytes ([`frame`]).
+//! - [`ControlSession`] (the control Worker): this participant's view of the authority, heartbeats and the clock
+//!   offset estimate they yield, `ctl` requests, one [`LeaseClient`] per leased part, and fenced action chunks.
+//! - [`Streams`] (the state and bulk Workers): decodes samples, applies the session's receive rules (epochs, seq
+//!   gaps as losses, layout checks, freshness) and measures delivery.
 //!
 //! # Boundary conventions
 //!
-//! - Times cross as `f64` **milliseconds since the UNIX epoch**
-//!   (`performance.timeOrigin + performance.now()`) and are `i64` ns
-//!   inside. A `u64`/`i64` would cross as a `BigInt`; `f64` ms keep ~0.1 µs.
-//!   Lease tokens and seqs cross as `f64` (exact below 2^53).
-//! - Inbound frames are taken as `Vec<u8>` (one JS → wasm copy) and decoded
-//!   as [`Bytes`], so payloads slice that buffer rather than being copied
-//!   again.
-//! - Outbound values are copied into caller-owned TypedArrays (`*_into`):
-//!   views into wasm memory detach when it grows, so none is handed out.
-//! - Malformed input is a `JsError`, never a panic: a panic aborts the
-//!   instance (`panic = "abort"`), and the class Worker is respawned.
-//! - Names carry no wire prefixes: modes, priorities and kinds are
-//!   lowercase strings.
+//! - Times cross as `f64` **milliseconds since the UNIX epoch** (`performance.timeOrigin + performance.now()`)
+//!   and are `i64` ns inside. A `u64`/`i64` would cross as a `BigInt`; `f64` ms keep ~0.1 µs. Lease tokens and
+//!   seqs cross as `f64` (exact below 2^53).
+//! - Inbound frames are taken as `Vec<u8>` (one JS → wasm copy) and decoded as [`Bytes`], so payloads slice that
+//!   buffer rather than being copied again.
+//! - Outbound values are copied into caller-owned TypedArrays (`*_into`): views into wasm memory detach when it
+//!   grows, so none is handed out.
+//! - Malformed input is a `JsError`, never a panic: a panic aborts the instance (`panic = "abort"`), and the
+//!   class Worker is respawned.
 
 pub mod decl;
 pub mod frame;
@@ -93,7 +83,6 @@ pub fn web_time_now_ms() -> f64 {
         * 1e3
 }
 
-/// What was built.
 #[wasm_bindgen]
 pub fn build_info() -> JsValue {
     let o = Object::new();
@@ -160,12 +149,9 @@ fn control_js(d: &decl::ControlDecl) -> Object {
     o
 }
 
-/// `session = participant + θ` of `id` in `snapshot`, with its error.
 fn mapping(snapshot: Option<&AuthoritySnapshot>, id: &ParticipantId) -> Option<(i64, u64)> {
     snapshot?.clock(id).map(|c| (c.offset_ns, c.error_ns))
 }
-
-// ------------------------------------------------------------------ streams
 
 struct Stream {
     path: String,
@@ -177,7 +163,6 @@ struct Stream {
     latest_capture_local_ns: Option<i64>,
 }
 
-/// One decoded, accepted sample and its times in the subscriber's clock.
 struct Current {
     stream: usize,
     sample: Sample,
@@ -193,7 +178,6 @@ struct Current {
 pub struct Streams {
     state: Option<AuthoritySnapshot>,
     me: Option<ParticipantId>,
-    /// This participant's mapping, from the control Worker.
     self_offset_ns: Option<(i64, u64)>,
     streams: Vec<Stream>,
     current: VecDeque<Current>,
@@ -257,7 +241,6 @@ impl Streams {
 
 #[wasm_bindgen]
 impl Streams {
-    /// An empty decoder.
     #[wasm_bindgen(constructor)]
     pub fn new() -> Streams {
         Streams {
@@ -294,8 +277,6 @@ impl Streams {
         Ok(())
     }
 
-    /// This participant's id and mapping (`session = local + offset`, within
-    /// `error`), from the control Worker.
     pub fn set_clock(&mut self, participant: &str, offset_ms: f64, error_ms: f64) {
         self.me = ParticipantId::new(participant).ok();
         self.self_offset_ns = offset_ms.is_finite().then(|| {
@@ -350,23 +331,19 @@ impl Streams {
         Ok(u32::from(self.accept(id, sample, receive_ns)))
     }
 
-    /// Moves to the next sample of the last frame; false when none is left.
     pub fn advance(&mut self) -> bool {
         self.current.pop_front();
         !self.current.is_empty()
     }
 
-    /// The current sample's stream index (-1: none).
     pub fn index(&self) -> i32 {
         self.current.front().map_or(-1, |c| c.stream as i32)
     }
 
-    /// Its seq (-1: none).
     pub fn seq(&self) -> f64 {
         self.current.front().map_or(-1.0, |c| c.sample.seq as f64)
     }
 
-    /// Its epoch.
     pub fn epoch(&self) -> f64 {
         self.current
             .front()
@@ -381,42 +358,36 @@ impl Streams {
             .to_string()
     }
 
-    /// Capture time in this participant's clock (ms since the epoch).
     pub fn capture_ms(&self) -> f64 {
         self.current
             .front()
             .map_or(f64::NAN, |c| ns_to_ms(c.capture_local_ns))
     }
 
-    /// Publish time in this participant's clock.
     pub fn publish_ms(&self) -> f64 {
         self.current
             .front()
             .map_or(f64::NAN, |c| ns_to_ms(c.publish_local_ns))
     }
 
-    /// Capture → receipt.
     pub fn age_ms(&self) -> f64 {
         self.current
             .front()
             .map_or(f64::NAN, |c| ns_to_ms(c.receive_ns - c.capture_local_ns))
     }
 
-    /// Publish → receipt.
     pub fn latency_ms(&self) -> f64 {
         self.current
             .front()
             .map_or(f64::NAN, |c| ns_to_ms(c.receive_ns - c.publish_local_ns))
     }
 
-    /// The payload's byte length.
     pub fn data_len(&self) -> u32 {
         self.current
             .front()
             .map_or(0, |c| c.sample.payload.len() as u32)
     }
 
-    /// Image width and height (frames; 0 otherwise).
     pub fn width(&self) -> u32 {
         self.current
             .front()
@@ -426,7 +397,6 @@ impl Streams {
             })
     }
 
-    /// See [`Self::width`].
     pub fn height(&self) -> u32 {
         self.current
             .front()
@@ -436,7 +406,6 @@ impl Streams {
             })
     }
 
-    /// On an applied stream: the edge mode (`""` otherwise).
     pub fn applied_mode(&self) -> String {
         self.current
             .front()
@@ -445,7 +414,6 @@ impl Streams {
             .to_string()
     }
 
-    /// On an applied stream: whether a value was dispatched.
     pub fn applied_present(&self) -> bool {
         self.current
             .front()
@@ -453,7 +421,6 @@ impl Streams {
             .is_some_and(|a| a.present)
     }
 
-    /// On an applied stream: the dispatched action's lease token (0: none).
     pub fn applied_token(&self) -> f64 {
         self.current
             .front()
@@ -483,8 +450,6 @@ impl Streams {
         Ok(())
     }
 
-    /// The numeric value as a fresh `Float64Array`, field by field (an
-    /// absent applied value is empty).
     pub fn data_f64(&mut self) -> Result<Float64Array, JsError> {
         self.values()?;
         Ok(Float64Array::from(&self.scratch[..]))
@@ -514,7 +479,6 @@ impl Streams {
         Ok(payload.len() as u32)
     }
 
-    /// A text sample's value.
     pub fn text(&self) -> Result<String, JsError> {
         let payload = &self.current()?.sample.payload;
         std::str::from_utf8(payload)
@@ -563,7 +527,6 @@ impl Streams {
         o.into()
     }
 
-    /// Starts every stream's counters over.
     pub fn reset_stats(&mut self) {
         for s in &mut self.streams {
             s.stats = SampleStats {
@@ -575,20 +538,14 @@ impl Streams {
     }
 }
 
-// ------------------------------------------------------------------ control
-
-/// What a request id waits for.
 enum Pending {
     Grant(String),
     Release(String),
     Verb(&'static str),
 }
 
-/// Heartbeats in flight, for matching echoes.
 const SENT: usize = 64;
 
-/// This participant's control state in the control Worker: see the crate
-/// docs.
 #[wasm_bindgen]
 pub struct ControlSession {
     me: Option<ParticipantId>,
@@ -601,7 +558,6 @@ pub struct ControlSession {
     leases: BTreeMap<String, LeaseClient>,
     pending: BTreeMap<u32, Pending>,
     next_request: u32,
-    /// Fall-through counter for debug chunks with a crafted token.
     debug_seq: u64,
 }
 
@@ -618,7 +574,6 @@ impl ControlSession {
             .ok_or_else(|| err("not attached yet (no hello from the gateway)"))
     }
 
-    /// The best estimate at local time `now_ns`.
     fn estimate(&self, now_ns: i64) -> Option<OffsetEstimate> {
         self.estimator
             .estimate(now_ns.saturating_add(self.offset_ns))
@@ -641,7 +596,6 @@ impl ControlSession {
         Ok(frame::with_id(frame::REQUEST, id, &body))
     }
 
-    /// Takes a newer snapshot; returns each held lease's change.
     fn take_state(&mut self, snapshot: AuthoritySnapshot, now_ns: i64) -> (bool, Array) {
         let changes = Array::new();
         if self
@@ -718,7 +672,6 @@ impl ControlSession {
 
 #[wasm_bindgen]
 impl ControlSession {
-    /// A session before the gateway's hello.
     #[wasm_bindgen(constructor)]
     pub fn new() -> ControlSession {
         ControlSession {
@@ -736,13 +689,11 @@ impl ControlSession {
         }
     }
 
-    /// The participant id the gateway attached this connection as.
     pub fn set_participant(&mut self, id: &str) -> Result<(), JsError> {
         self.me = Some(ParticipantId::new(id).map_err(err)?);
         Ok(())
     }
 
-    /// This participant's id (`""` before the hello).
     pub fn participant(&self) -> String {
         self.me
             .as_ref()
@@ -835,8 +786,6 @@ impl ControlSession {
         }
     }
 
-    /// The next heartbeat frame (with the last completed exchange), or
-    /// `undefined` before the hello.
     pub fn heartbeat(&mut self, now_ms: f64) -> Option<Vec<u8>> {
         let me = self.me.clone()?;
         self.hb_seq += 1;
@@ -898,7 +847,6 @@ impl ControlSession {
         o.into()
     }
 
-    /// Session time at local `now_ms` (`NaN` before the first estimate).
     pub fn session_now_ms(&self, now_ms: f64) -> f64 {
         match self.estimate(ms_to_ns(now_ms)) {
             Some(e) => now_ms + ns_to_ms(e.offset_ns),
@@ -1035,7 +983,6 @@ impl ControlSession {
             .map_or(0.0, |mut c| c.forget().0 as f64)
     }
 
-    /// A session verb: `arm`, `disarm` or `estop` (with `reason`).
     pub fn verb(&mut self, name: &str, reason: &str) -> Result<Vec<u8>, JsError> {
         let (command, op) = match name {
             "arm" => (Command::Arm, "arm"),
@@ -1166,12 +1113,10 @@ impl ControlSession {
         Ok(out)
     }
 
-    /// Paths with a local lease client (any state).
     pub fn lease_paths(&self) -> Vec<String> {
         self.leases.keys().cloned().collect()
     }
 
-    /// The local lease state of `path` at `now_ms` (`idle` without one).
     pub fn lease_state(&mut self, path: &str, now_ms: f64) -> String {
         self.leases
             .get_mut(path)
@@ -1179,12 +1124,10 @@ impl ControlSession {
             .to_string()
     }
 
-    /// The token held (or last held) on `path` (0: none).
     pub fn lease_token(&self, path: &str) -> f64 {
         self.leases.get(path).map_or(0.0, |c| c.token().0 as f64)
     }
 
-    /// Time left before the local deadline (negative: not held).
     pub fn lease_remaining_ms(&mut self, path: &str, now_ms: f64) -> f64 {
         let now_ns = ms_to_ns(now_ms);
         match self.leases.get_mut(path) {

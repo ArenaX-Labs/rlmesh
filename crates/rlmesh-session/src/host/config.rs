@@ -57,8 +57,8 @@ pub struct HostConfig {
     pub presence_grace: Duration,
     /// How often lease expiry is checked: the lapse latency on top of grace.
     pub tick: Duration,
-    /// Republish the snapshot this often, so clock mappings stay fresh.
-    /// While any lease is held the host also republishes every quarter of
+    /// Republish the snapshot this often, so clock mappings stay fresh. While
+    /// any lease is held the host also republishes every quarter of
     /// `lease_grace`, so edges see renewed expiries in time.
     pub republish: Duration,
     /// Log every participant's link health this often (`None`: never).
@@ -80,11 +80,9 @@ pub struct HostConfig {
     /// address's key) attach as device `local`.
     pub identity: Arc<HostIdentity>,
     /// The devices besides `local` it accepts, each with its entry; none by default.
-    /// One listed as `local` is another key of that
-    /// device, its entry unused: the home machine's on a satellite's run. Change them
-    /// at runtime with
-    /// [`SessionHost::set_access`], [`SessionHost::admit`] and
-    /// [`SessionHost::revoke`].
+    /// One listed as `local` is another key of that device, its entry unused.
+    /// Change them at runtime with [`SessionHost::set_access`],
+    /// [`SessionHost::admit`] and [`SessionHost::revoke`].
     pub devices: Vec<Device>,
     /// Robot name → its pin (rlmeshd's `[robots.*]`): the
     /// device, checked at the handshake, and a tethered board, checked at
@@ -94,8 +92,6 @@ pub struct HostConfig {
     pub pins: BTreeMap<ParticipantId, Pin>,
     /// Whether a robot that went safe, restarted or came back from a loss
     /// may be leased again at once ([`AuthorityConfig::rearm_robots`]).
-    /// Off by default: it waits to be re-armed by name. Other robots never
-    /// stop for it either way.
     pub rearm_robots: bool,
     /// Where each placed robot's parts appear in the session's view: one binding drives
     /// every placed robot. Empty by default:
@@ -103,7 +99,6 @@ pub struct HostConfig {
     pub places: Vec<crate::wire::Place>,
     /// The scene this session runs: its member table and
     /// its identity. `None` by default: an ordinary session.
-    /// `crate::scene::Scene::host` builds one from a scene file.
     #[cfg(feature = "fleet")]
     pub scene: Option<SceneConfig>,
     /// The home daemon's lobby, on its `_lobby` session

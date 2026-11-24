@@ -51,9 +51,6 @@ fn space_spec_details_impl<'py>(
         .as_ref()
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("space spec is missing"))?
     {
-        // `_details()` (the wrapper's view) reads a typed uniform bound as one
-        // number, as `uniform` does; `_to_dict()` keeps the describe-envelope
-        // form (a one-element list), which `space_spec_to_json` also renders.
         SpaceKind::Box(spec) => add_box_details(
             &details,
             spec,
@@ -64,9 +61,6 @@ fn space_spec_details_impl<'py>(
             details.set_item("n", spec.n)?;
             details.set_item("start", spec.start)?;
         }
-        // The MultiBinary marker carries no fields; dimensions come from
-        // `shape`. A rank-1 shape surfaces as a scalar `size`, higher ranks as
-        // `dims`, mirroring Gymnasium's scalar-vs-vector MultiBinary.
         SpaceKind::MultiBinary(_) => {
             if space.shape.len() == 1 {
                 details.set_item("size", space.shape[0])?;
@@ -74,9 +68,6 @@ fn space_spec_details_impl<'py>(
                 details.set_item("dims", space.shape.clone())?;
             }
         }
-        // `nvec` is stored flat (row-major). A rank-2 shape is reshaped back to
-        // the nested `[[...], [...]]` matrix form; lower ranks stay flat.
-        // `start`, in the same form, only when nonzero.
         SpaceKind::MultiDiscrete(spec) => {
             let set = |key: &str, flat: &[i64]| -> PyResult<()> {
                 if space.shape.len() == 2 {
@@ -157,8 +148,6 @@ fn add_box_details(
             details.set_item("low", bounds.low.clone())?;
             details.set_item("high", bounds.high.clone())?;
         }
-        // Dtype-typed byte bounds are decoded into native Python numbers in the
-        // space's dtype, so the integer values stay exact (no f64 round-trip).
         Some(BoxBounds::TypedUniform(bounds)) => {
             details.set_item("bounds_kind", "typed_uniform")?;
             let py = details.py();
@@ -185,9 +174,6 @@ fn add_box_details(
     Ok(())
 }
 
-/// Decode dtype-typed bound bytes into a Python list of native numbers,
-/// preserving exact integer values (int64/uint64 do not round-trip through
-/// f64). `Uint64` values above `i64::MAX` are returned as Python ints.
 fn typed_bounds_to_py<'py>(
     py: Python<'py>,
     bytes: &[u8],
@@ -205,8 +191,6 @@ fn typed_bounds_to_py<'py>(
 fn scalar_to_py<'py>(py: Python<'py>, scalar: Scalar, dtype: DType) -> PyResult<Bound<'py, PyAny>> {
     Ok(match scalar {
         Scalar::Bool(value) => value.into_pyobject(py)?.to_owned().into_any(),
-        // `Uint64` decodes into a wrapped i64; use the centralized reinterpret
-        // so values above i64::MAX surface as the correct positive Python int.
         Scalar::Int(_) if dtype == DType::Uint64 => scalar.as_u64().into_pyobject(py)?.into_any(),
         Scalar::Int(value) => value.into_pyobject(py)?.into_any(),
         Scalar::Float(value) => value.into_pyobject(py)?.into_any(),

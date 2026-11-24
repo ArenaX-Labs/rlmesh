@@ -1,5 +1,3 @@
-"""A declared edition, end to end: served env, served model, dialed client, native run."""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -17,17 +15,12 @@ if TYPE_CHECKING:
 np = pytest.importorskip("numpy")
 pytest.importorskip("gymnasium")
 
-#: A well-formed `YYYY.MM` no build implements.
 UNKNOWN_EDITION = "2099.01"
 
-#: The exact spelling this build offers -- what a bare-base declaration selects
-#: on it: the sealed base on a release, the cohort on a prerelease or dev build.
 COHORT = rlmesh.build_info().workflow_edition
 
 
 class CountEnv:
-    """Two-step env with a Box obs/action seam."""
-
     def __init__(self) -> None:
         import gymnasium as gym
 
@@ -51,17 +44,11 @@ class CountEnv:
 
 @pytest.fixture
 def declared_edition() -> str:
-    """The edition both peers declare: the bare base, the stateVersion value.
-
-    A base-level ceiling: on a prerelease or dev build, whose only offer is its
-    cohort spelling, it selects that cohort (``COHORT``) rather than refusing.
-    """
     return current_workflow_edition()
 
 
 @pytest.fixture
 def undeclared(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Nothing declared anywhere: no env var, no manifest."""
     monkeypatch.delenv(WORKFLOW_EDITION_ENV_VAR, raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(_editions, "_pyproject_cache", {})
@@ -69,7 +56,6 @@ def undeclared(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 @pytest.fixture
 def served_env(declared_edition: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
-    """An env server that declares ``declared_edition`` on every handshake."""
     monkeypatch.delenv(WORKFLOW_EDITION_ENV_VAR, raising=False)
     server = rlmesh.EnvServer(
         CountEnv(),
@@ -98,8 +84,6 @@ def test_public_wrappers_forward_the_call_pin(
 ) -> None:
     monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, UNKNOWN_EDITION)
     policy = rlmesh.Model(rlmesh.RANDOM_SAMPLE) if random_baseline else model()
-    # The process declares an edition no env accepts: the call's pin is what
-    # lets these connect.
     with policy.bind(served_env, workflow_edition=declared_edition) as binding:
         binding.reset()
     result = rlmesh.run(
@@ -111,8 +95,6 @@ def test_public_wrappers_forward_the_call_pin(
 def test_both_pins_negotiate_the_declared_edition(
     served_env: str, declared_edition: str
 ) -> None:
-    # The env's ServeOptions declaration and the client's own pin are the two
-    # WANTs of this leg; the session runs at what they agree on.
     from rlmesh.numpy import RemoteEnv
 
     client = RemoteEnv(served_env, workflow_edition=declared_edition)
@@ -123,8 +105,6 @@ def test_both_pins_negotiate_the_declared_edition(
 
 
 def test_a_cohort_declaration_pins_the_exact_build(served_env: str) -> None:
-    # The other accepted spelling: this build's cohort, which pins to exactly
-    # this moving build rather than to the contract.
     from rlmesh.numpy import RemoteEnv
 
     client = RemoteEnv(served_env, workflow_edition=COHORT)
@@ -137,9 +117,6 @@ def test_a_cohort_declaration_pins_the_exact_build(served_env: str) -> None:
 def test_an_undeclared_client_still_negotiates_the_env_declaration(
     served_env: str, undeclared: None, recwarn: pytest.WarningsRecorder
 ) -> None:
-    # The no-op case: with nothing pinned on this side the session lands on the
-    # same edition, so declaring changes nothing that was already working. A
-    # client handle has no home for a declaration, so it floats quietly.
     from rlmesh.numpy import RemoteEnv
 
     client = RemoteEnv(served_env)
@@ -153,10 +130,6 @@ def test_an_undeclared_client_still_negotiates_the_env_declaration(
 def test_a_pyproject_bare_base_declaration_runs_a_local_model(
     undeclared: None, tmp_path: Path, recwarn: pytest.WarningsRecorder
 ) -> None:
-    # The docs' own snippet, on whatever build this is: a bare base in the
-    # project manifest selects this build's spelling of it on the loopback env
-    # server `run()` stands up, instead of refusing every session on a
-    # prerelease or dev build.
     _ = (tmp_path / "pyproject.toml").write_text(
         f'[tool.rlmesh]\nworkflow_edition = "{current_workflow_edition()}"\n',
         encoding="utf-8",
@@ -189,8 +162,6 @@ def test_serving_refuses_an_edition_this_build_cannot_drive() -> None:
 def test_the_env_var_pins_a_run_that_declares_nothing(
     served_env: str, declared_edition: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The operator's process-wide override reaches the wire without the program
-    # naming an edition anywhere.
     monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, declared_edition)
     from rlmesh.numpy import RemoteEnv
 
@@ -202,18 +173,14 @@ def test_the_env_var_pins_a_run_that_declares_nothing(
     assert len(model().run(served_env, seeds=[0]).episodes) == 1
 
 
-#: The 0.1 edition, which this build no longer drives.
 RETIRED_EDITION = "2026.06"
 
-#: Serving's refusal of it, word for word.
 REFUSAL = (
     f'runtime cannot drive workflow edition "{RETIRED_EDITION}"; this build implements'
 )
 
 
 class RetiredFactory(rlmesh.EnvFactory):
-    """A factory that still declares the retired edition."""
-
     workflow_edition = RETIRED_EDITION
 
     def __init__(self) -> None:
@@ -225,8 +192,6 @@ class RetiredFactory(rlmesh.EnvFactory):
 
 
 class RetiredEnv(CountEnv):
-    """An env class that still declares the retired edition on itself."""
-
     workflow_edition = RETIRED_EDITION
 
 
@@ -244,7 +209,6 @@ def retired_vector_env() -> Any:
 
 
 def drive(path: str, target: object, **kwargs: Any) -> None:
-    """Drive ``target`` locally down ``path``, raising what the run raises."""
     if path == "run":
         _ = model().run(target, seeds=[0], **kwargs)
     elif path == "rlmesh.run":
@@ -270,7 +234,6 @@ def test_a_local_run_refuses_a_factory_declaring_a_retired_edition(
     factory = RetiredFactory()
     with pytest.raises(ValueError, match=REFUSAL):
         drive(path, factory)
-    # Refused before the factory built anything, as serving refuses it.
     assert factory.made == 0
 
 
@@ -310,8 +273,6 @@ def test_a_local_run_drives_a_factory_declaring_this_builds_edition(
 def test_the_call_keyword_outranks_a_local_factory_declaration(
     undeclared: None, declared_edition: str
 ) -> None:
-    # As --workflow-edition / ServeOptions outrank a served factory's class
-    # declaration, the run's own keyword outranks a local one's.
     factory = RetiredFactory()
     drive("run", factory, workflow_edition=declared_edition)
     assert factory.made == 1

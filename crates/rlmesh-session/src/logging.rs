@@ -1,11 +1,10 @@
 //! What a tracing subscriber must not record.
 //!
-//! Zenoh logs its whole config at `DEBUG` when a session opens (target
-//! `zenoh::api::session`), and a gated host's config, and every config that
-//! links to one, holds the link password a session's key derives in plain
-//! text: whoever reads that log can link to the host. Cap that target at
-//! `INFO` in every subscriber, whatever level the user asked for. With
-//! `tracing-subscriber`, add [`may_record`] as a global filter layer:
+//! Zenoh logs its whole config at `DEBUG` when a session opens (target `zenoh::api::session`),
+//! and a gated host's config holds in plain text the link password a session's key derives:
+//! whoever reads that log can link to the host. Cap that target at `INFO` in every subscriber,
+//! whatever level the user asked for. With `tracing-subscriber`, add [`may_record`] as a global
+//! filter layer:
 //!
 //! ```no_run
 //! use tracing_subscriber::prelude::*;
@@ -22,7 +21,6 @@
 use tracing::{Level, Metadata};
 
 /// The targets (with their submodules) that may log a secret below `INFO`:
-/// Zenoh's session open (its config) and scouting (the same config).
 pub const CAPPED_TARGETS: &[&str] = &["zenoh::api::session", "zenoh::api::scouting"];
 
 /// Whether a subscriber may record `metadata`'s event or span: anything at

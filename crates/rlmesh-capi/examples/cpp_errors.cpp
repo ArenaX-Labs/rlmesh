@@ -1,4 +1,3 @@
-// Exception hierarchy and propagation through C ABI worker boundaries.
 #include <cassert>
 #include <cstdlib>
 #include <rlmesh.hpp>
@@ -18,8 +17,6 @@ static_assert(!std::is_base_of_v<rlmesh::RLMeshException, rlmesh::ValueError>);
 static_assert(!std::is_base_of_v<rlmesh::RuntimeError, rlmesh::OSError>);
 static_assert(std::is_base_of_v<std::logic_error, rlmesh::TypeError>);
 
-// C++ callbacks attach their exception payload at the C boundary. Exercise
-// the actual server wire formatter, not only an in-process exception rethrow.
 struct RecoverableEnv {
   rlmesh::spaces::Space observation_space() const { return rlmesh::spaces::Discrete(2); }
   rlmesh::spaces::Space action_space() const { return rlmesh::spaces::Discrete(2); }

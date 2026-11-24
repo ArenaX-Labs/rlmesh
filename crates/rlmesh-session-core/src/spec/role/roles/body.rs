@@ -1,12 +1,8 @@
 //! Body roles: the floating base of a legged or wheeled robot.
 //!
-//! Earned by the Unitree Go2 env and the rl_sar `robot_lab` locomotion
-//! checkpoint. Each is a raw sensed or commanded quantity: the gyro reading,
-//! the IMU orientation, and the velocity setpoint the runner hands the policy.
-//! Projected gravity is *not* a role -- it is the `gravity_xyz` encoding of
-//! [`BASE_ROT`] (see `spec::rotations`), and the base linear velocity is
-//! deliberately unregistered: a real robot has only an estimate of it, so a
-//! role would silently mean two different things in sim and on hardware.
+//! Each is a raw sensed or commanded quantity. Projected gravity is not a role: it is the
+//! `gravity_xyz` encoding of [`BASE_ROT`]. Base linear velocity is deliberately unregistered, since
+//! a real robot has only an estimate of it.
 
 #[allow(unused_imports)]
 use crate::prelude::*;

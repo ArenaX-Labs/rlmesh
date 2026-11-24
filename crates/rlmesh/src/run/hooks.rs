@@ -32,12 +32,11 @@ pub struct RunFrame<'a> {
 /// Observer callbacks for a run. Every default is a no-op; implement any
 /// subset.
 ///
-/// A sync run calls hooks on the thread that called it, outside any async
-/// execution context, so a hook may make sync rlmesh calls; under an
-/// `_async` twin they run inside its future, where a blocking rlmesh call
-/// fails with the `RuntimeError` class. A hook error aborts the run;
-/// [`on_run_end`](RunHooks::on_run_end) still fires exactly once with the
-/// completed episodes, and the run's own error wins over its error.
+/// A sync run calls hooks on its calling thread, outside any async context, so a hook may make
+/// sync rlmesh calls; under an `_async` twin they run inside its future, where a blocking
+/// rlmesh call fails with the `RuntimeError` class. A hook error aborts the run;
+/// [`on_run_end`](RunHooks::on_run_end) still fires exactly once with the completed episodes,
+/// and the run's own error wins over the hook's.
 pub trait RunHooks: Send {
     /// Once per run, before the first episode, with the run's context.
     fn on_run_start(&mut self, context: Arc<dyn RunContext>) -> Result<()> {
@@ -70,11 +69,6 @@ pub trait RunHooks: Send {
         Ok(())
     }
 
-    /// Binding plumbing for Python's Experimental `RunHooks` pair (R-25):
-    /// one lane's observation before the model sees it, with its 0-based
-    /// episode and the steps that episode has taken; return a replacement of
-    /// the same space, or `None` to keep it. Runs only; a manual binding does
-    /// not call it.
     #[doc(hidden)]
     fn transform_observation(
         &mut self,
@@ -86,9 +80,6 @@ pub trait RunHooks: Send {
         Ok(None)
     }
 
-    /// Binding plumbing, as `transform_observation`: one lane's action
-    /// before the env receives it, once per env step, so a hook keeping
-    /// recent actions can delay, drop (hold the previous one) or freeze them.
     #[doc(hidden)]
     fn transform_action(
         &mut self,
@@ -100,10 +91,6 @@ pub trait RunHooks: Send {
         Ok(None)
     }
 
-    /// Binding plumbing for the recorder's artifact tree (R-25): a writer
-    /// the run feeds its runtime events (raw and transformed observations
-    /// and actions, step infos, telemetry), on this thread, each before the
-    /// hook it precedes. Asked once per session; runs only.
     #[doc(hidden)]
     fn artifacts(&mut self) -> Option<crate::recorder::artifacts::ArtifactTap> {
         None
@@ -123,8 +110,6 @@ pub trait RunContext: Send + Sync {
     fn frame_sources(&self) -> Result<FrameSources<'_>>;
 }
 
-/// The library's context: a native run's (valid for its whole life) or a
-/// binding's (failing once the binding has closed).
 pub(crate) struct LibraryContext {
     contract: Mutex<Option<EnvContract>>,
     closed: std::sync::atomic::AtomicBool,

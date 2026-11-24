@@ -5,10 +5,6 @@ using RLMesh.Interop;
 
 namespace RLMesh.Tests;
 
-// Test-only raw C client. The public foundation intentionally has no run or
-// RemoteEnv API; this exercises the C ABI's cancellation inputs directly. A run
-// dials the address; the remote env connects on first use, holding the env's
-// lease from then on.
 internal sealed unsafe class NativeClient : IDisposable
 {
     private readonly byte[] address;

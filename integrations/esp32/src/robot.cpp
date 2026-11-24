@@ -1,6 +1,3 @@
-// rlmesh::Robot: the device robot over zenoh-pico, on the board's clock and
-// randomness.
-
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <ctype.h>
@@ -15,18 +12,10 @@
 namespace rlmesh {
 
 namespace {
-// poll() sleeps until the robot is next due or something arrives, at most
-// this long, so a sketch's loop() never spins on its core: with zenoh-pico
-// running, a core that never blocks leaves the radio dropping most of what it
-// receives (a classic ESP32 on Wi-Fi, measured: 30 to 70% of pings lost,
-// joins failing for ever). The cap leaves a sketch's own work (buttons, the
-// provisioning port) waiting no longer than this.
 const uint32_t kMaxWaitUs = 5000;
 
-// The transport's input wakes the task that polls: it is the one that began.
 void wakeLoop(void* task) { xTaskNotifyGive(static_cast<TaskHandle_t>(task)); }
 
-// The NVS namespace and key of the e-stop latch.
 const char* const kLatchSpace = "rlmesh-estop";
 const char* const kLatchKey = "latched";
 
@@ -64,12 +53,10 @@ bool Robot::begin(const Provisioning& provisioning, const char* robotJson, uint3
 
 bool Robot::start(const rlmesh_device_robot_config_t& config) {
   end();
-  // A hostname: letters, digits and '-'.
   snprintf(mdnsName_, sizeof mdnsName_, "rlmesh-%s", config.name != nullptr ? config.name : "");
   if (config.device_key != nullptr) {
     uint8_t publicKey[32];
     rlmesh_device_key_public(config.device_key, publicKey);
-    // The device key gives each copy of the firmware its own hostname.
     snprintf(mdnsName_, sizeof mdnsName_, "rlmesh-%02x%02x%02x%02x%02x%02x%02x%02x", publicKey[0],
              publicKey[1], publicKey[2], publicKey[3], publicKey[4], publicKey[5], publicKey[6],
              publicKey[7]);
@@ -81,7 +68,6 @@ bool Robot::start(const rlmesh_device_robot_config_t& config) {
     robot_ = nullptr;
     return false;
   }
-  // A latch from before a reboot still holds, until a local clear.
   if (storedLatch()) {
     rlmesh_device_robot_estop(robot_, "latched before a reboot", esp32::nowUs());
     persisted_ = 1;
@@ -102,7 +88,6 @@ void Robot::poll() {
   rlmesh_zenoh_poll(zenoh_);
   discover();
   persistLatch();
-  // Whole ticks only: a shorter wait would round to none, or up past it.
   uint64_t due = rlmesh_device_robot_next_due(robot_, esp32::nowUs());
   TickType_t ticks =
       TickType_t((due < kMaxWaitUs ? due : kMaxWaitUs) / (1000 * portTICK_PERIOD_MS));
@@ -116,15 +101,11 @@ void Robot::persistLatch() {
   persisted_ = latched;
 }
 
-// Every stored home address failed: ask mDNS for `_rlmesh._tcp`, and keep only
-// the instance whose TXT id is the stored host id. At most
-// every 30 s: a query blocks for about a second.
 void Robot::discover() {
   const char* id = rlmesh_device_robot_home_id(robot_);
   if (id == nullptr || id[0] == '\0' || !status().home_unreachable) return;
   if (lastDiscovery_ != 0 && millis() - lastDiscovery_ < 30000) return;
   lastDiscovery_ = millis();
-  // Its own hostname: the home's id is the home's (`{id}.local`).
   if (!mdns_) mdns_ = MDNS.begin(mdnsName_);
   int found = MDNS.queryService("rlmesh", "tcp");
   for (int i = 0; i < found; ++i) {
@@ -243,15 +224,11 @@ void Robot::printDropped(Print& out) const {
     }
   }
   if (!any) out.print(" none");
-  // Samples the board did not send: no heap room, or (on a link slower than
-  // it publishes) replaced by a newer one while waiting for the link.
   uint32_t replaced = 0, crowded = 0;
   if (zenoh_ != nullptr) rlmesh_zenoh_send_counts(zenoh_, &replaced, &crowded);
   out.printf("; unsent %llu, send queue replaced %lu dropped %lu\n",
              (unsigned long long)(robot_ != nullptr ? rlmesh_device_robot_unsent(robot_) : 0),
              (unsigned long)replaced, (unsigned long)crowded);
-  // Each part's streams: what the sketch and the edges offered, what went
-  // out, and the rate the delivery plan allows (every sample, or a rate).
   rlmesh_device_publishing_t p;
   for (int part = 0; robot_ != nullptr && part < RLMESH_DEVICE_NO_PART &&
                      rlmesh_device_robot_publishing(robot_, uint8_t(part), &p) == RLMESH_DEVICE_OK;
@@ -304,11 +281,6 @@ bool Robot::datagramStats(rlmesh_device_datagram_stats_t& out) const {
 }
 
 void Robot::printDatagram(Print& out) const {
-  // The radio, and whether the board's traffic waits on the access point's
-  // beacons (102.4 ms): in power save the board's frames do, whichever path
-  // they take; an access point that buffers for a station it takes to be
-  // asleep lines up what the board receives; a send path held up by the
-  // radio lines up the sends themselves (0: not at all, 1: every one).
   wifi_ps_type_t ps = WIFI_PS_NONE;
   if (esp_wifi_get_ps(&ps) == ESP_OK) {
     out.printf("  wifi power save %s", ps == WIFI_PS_NONE        ? "off"
@@ -329,10 +301,6 @@ void Robot::printDatagram(Print& out) const {
     out.printf("; on the beacon: sends %.2f of %lu, receives %.2f of %lu\n", sends,
                (unsigned long)sent, receives, (unsigned long)received);
   }
-  // The loop, since the last print: what arrives while it is away from
-  // poll() waits, and a chunk that waits past its validity is refused (on
-  // UDP) or replaced by a newer one (lost). Printing at 115200 baud with no
-  // serial transmit buffer holds it about 87 us a character.
   if (zenoh_ != nullptr) {
     uint32_t longest = 0, held = 0;
     rlmesh_zenoh_poll_gaps(zenoh_, &longest, &held);

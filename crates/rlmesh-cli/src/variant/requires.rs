@@ -28,7 +28,6 @@ pub const RENDER_FACETS: [&str; 3] = ["osmesa", "egl", "none"];
 /// The longest variant, profile, or row key.
 pub const MAX_KEY_LEN: usize = 32;
 
-/// `requires` keys only an NVIDIA GPU has.
 const NVIDIA_KEYS: [&str; 3] = ["accel.compute", "accel.cuda", "accel.driver"];
 
 /// One parsed `requires` entry.
@@ -139,8 +138,6 @@ pub fn parse_requirement(key: &str, value: &Value) -> Result<Requirement, String
     }
 }
 
-/// `accel.vram`: a quantity string like `"16Gi"`, a positive whole number of
-/// bytes within the signed 64-bit range.
 fn parse_vram(value: &Value) -> Result<Requirement, String> {
     let Some(raw) = value.as_str() else {
         let hint = if value.is_number() {
@@ -266,7 +263,6 @@ pub(super) fn parse_facets(raw: &Value) -> (BTreeMap<String, String>, Vec<String
     (facets, problems)
 }
 
-/// A lowercase token: `^[a-z0-9][a-z0-9_.-]{0,31}$`.
 fn is_token(value: &str) -> bool {
     let mut bytes = value.bytes();
     value.len() <= MAX_KEY_LEN
@@ -324,7 +320,6 @@ mod tests {
         ] {
             assert_eq!(ok("accel.vram", json!(raw)), Requirement::MinBytes(bytes));
         }
-        // The minimum renders as a quantity.
         assert_eq!(ok("accel.vram", json!("16Gi")).to_string(), ">=16Gi");
         assert_eq!(ok("accel.vram", json!("24000M")).to_string(), ">=24G");
         assert_eq!(

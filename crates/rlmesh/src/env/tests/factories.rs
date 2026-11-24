@@ -1,9 +1,5 @@
-//! Env factories: discriminant binding, the branch table, a fired cancel
-//! before prepare, and variant reprs.
-
 use super::*;
 
-/// A factory with one discriminant.
 #[derive(Default)]
 struct Factory {
     made: Vec<Kwargs>,
@@ -119,7 +115,6 @@ fn an_already_fired_cancel_runs_no_prepare() {
     assert_eq!(err.class(), ErrorClass::KeyboardInterrupt);
     assert_eq!(factory.0, 0);
 
-    // A cancel fired while serving drains, closes and fails with the class.
     let canceller = cancel.clone();
     let thread = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(200));

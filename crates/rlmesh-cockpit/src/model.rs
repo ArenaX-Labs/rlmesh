@@ -3,10 +3,8 @@
 //! (in [`crate::view`]) derives everything the UI shows. No clocks are read,
 //! nothing sleeps or spawns, and a decode failure is a value, never a panic.
 //!
-//! Times are this cockpit's clock (`now_ns`, receipt times) unless a name
-//! says otherwise: `capture_ns` and `t1_ns` are the publisher's clock,
-//! `sent_ns` the reporter's, and `*_session_ns` session time through the
-//! host's clock mappings.
+//! Times are the cockpit's clock unless a name says otherwise: `capture_ns` is
+//! the publisher's clock, `sent_ns` the reporter's.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
@@ -57,34 +55,19 @@ pub enum Input {
     Authority(Box<AuthoritySnapshot>),
     /// A sample of a part's stream or of an `_applied` stream.
     Sample {
-        /// The sample.
         sample: Sample,
-        /// Cockpit clock at receipt.
         receive_ns: i64,
-        /// Its capture time converted to the cockpit's clock.
         capture_local_ns: i64,
     },
     /// An action chunk on its way to an edge.
-    Chunk {
-        /// The chunk.
-        chunk: ActionChunk,
-        /// Cockpit clock at receipt.
-        receive_ns: i64,
-    },
+    Chunk { chunk: ActionChunk, receive_ns: i64 },
     /// The host's health message (`host/health`, signed): every link as
     /// the host measures it, each edge's counters and each participant's
     /// latest observer report.
-    Health {
-        /// The message.
-        health: HostHealth,
-        /// Cockpit clock at receipt.
-        receive_ns: i64,
-    },
+    Health { health: HostHealth, receive_ns: i64 },
     /// The host answered a verb this cockpit sent.
     Outcome {
-        /// The verb.
         verb: Verb,
-        /// `Ok`, or the refusal.
         result: Result<(), String>,
     },
     /// The host's liveliness token appeared or went away.
@@ -119,7 +102,6 @@ impl Default for ModelConfig {
             plot_window: Duration::from_secs(10),
             plot_every: Duration::from_millis(20),
             thumbnail_every: Duration::from_millis(200),
-            // Reports arrive with the host's health, about once a second.
             counter_window: Duration::from_secs(4),
             recent: Duration::from_secs(10),
             lane_window: Duration::from_secs(60),
@@ -132,30 +114,21 @@ pub(crate) fn ns(d: Duration) -> i64 {
     i64::try_from(d.as_nanos()).unwrap_or(i64::MAX)
 }
 
-/// One stream as received.
 #[derive(Clone, Debug)]
 pub(crate) struct StreamState {
     pub(crate) spec: StreamSpec,
     pub(crate) names: Vec<String>,
     pub(crate) image: bool,
-    /// Unique samples per second of the cockpit's clock.
     pub(crate) received: RateMeter,
-    /// Samples per second of capture time (the publisher's clock: session
-    /// time in virtual and lockstep modes).
     pub(crate) captured: RateMeter,
-    /// `(seq, capture_local_ns, receive_ns)` of the newest.
     pub(crate) last: Option<(u64, i64, i64)>,
-    /// The newest raw capture stamp (the publisher's clock).
     pub(crate) captured_newest: i64,
-    /// Seqs skipped (losses between publisher and cockpit).
     pub(crate) lost: u64,
     pub(crate) value: Option<Value>,
     pub(crate) decoded_ns: i64,
-    /// `(receive_ns, first values)`, oldest first.
     pub(crate) plot: VecDeque<(i64, Vec<f64>)>,
 }
 
-/// A publisher's counters for one stream, from its reports.
 #[derive(Clone, Debug)]
 pub(crate) struct PublisherState {
     pub(crate) produced: CounterRate,
@@ -163,30 +136,21 @@ pub(crate) struct PublisherState {
     pub(crate) last: PublisherCounters,
 }
 
-/// One edge (one commandable part), from its `_applied` stream.
 #[derive(Clone, Debug)]
 pub(crate) struct EdgeState {
     pub(crate) period_ns: i64,
-    /// Ticks per second of the edge's own tick stamps.
     pub(crate) ticks: RateMeter,
-    /// `(seq, capture_ns)` of the newest tick, on the edge's clock.
     pub(crate) last: Option<(u64, i64)>,
-    /// Cockpit clock when the newest tick arrived.
     pub(crate) last_receive_ns: i64,
-    /// Ticks later than two control periods.
     pub(crate) misses: u64,
-    /// Cockpit clock of each recent miss.
     pub(crate) recent_misses: VecDeque<i64>,
-    /// The longest gap between consecutive ticks.
     pub(crate) longest_gap_ns: i64,
     pub(crate) mode: Option<(EdgeMode, i64)>,
-    /// Why the edge is in its mode, as its newest tick says.
     pub(crate) reason: ReasonCode,
     pub(crate) present: u64,
     pub(crate) total: u64,
 }
 
-/// The newest chunk sent to one commandable part.
 #[derive(Clone, Debug)]
 pub(crate) struct LastChunk {
     pub(crate) source: ParticipantId,
@@ -199,26 +163,20 @@ pub(crate) struct LastChunk {
     pub(crate) receipt_session_ns: i64,
 }
 
-/// Chunks sent to one commandable part.
 #[derive(Clone, Debug)]
 pub(crate) struct ChunkState {
     pub(crate) received: RateMeter,
     pub(crate) last: Option<LastChunk>,
-    /// Chunks under a token or epoch that is no longer current.
     pub(crate) fenced: u64,
 }
 
-/// One controller runtime.
 #[derive(Clone, Debug)]
 pub(crate) struct ControllerState {
     pub(crate) starts: CounterRate,
     pub(crate) completions: CounterRate,
     pub(crate) busy: CounterRate,
     pub(crate) last: Option<RunCounters>,
-    /// Chunks per second it sent, on the cockpit's clock.
     pub(crate) chunks: RateMeter,
-    /// `(receive_ns, age at receipt)` of its recent chunks: receipt minus
-    /// publish, in session time.
     pub(crate) ages: VecDeque<(i64, i64)>,
 }
 
@@ -231,22 +189,12 @@ pub struct Model {
     pub(crate) host_present: bool,
     pub(crate) streams: BTreeMap<ChannelId, StreamState>,
     pub(crate) publishers: BTreeMap<ChannelId, PublisherState>,
-    /// By the commandable part's channel.
     pub(crate) edges: BTreeMap<ChannelId, EdgeState>,
-    /// By the commandable part's channel.
     pub(crate) chunks: BTreeMap<ChannelId, ChunkState>,
     pub(crate) controllers: BTreeMap<ParticipantId, ControllerState>,
-    /// Each attached participant's link as the host's newest health message
-    /// has it, with that message's receipt time.
     pub(crate) links: BTreeMap<ParticipantId, (LinkHealth, i64)>,
-    /// The `sent_ns` of each participant's newest report taken: the host
-    /// relays the same report until a newer one arrives.
     pub(crate) reported: BTreeMap<ParticipantId, i64>,
-    /// How fast each participant's newest seen seq of each stream advances,
-    /// on the host's clock (its links' `last_seq_seen`).
     pub(crate) heard: BTreeMap<(ParticipantId, ChannelId), CounterRate>,
-    /// `(receive_ns, newest capture_ns)`: session time against the
-    /// cockpit's clock, for the real-time factor.
     pub(crate) progress: VecDeque<(i64, i64)>,
     pub(crate) timeline: Timeline,
     pub(crate) last_outcome: Option<(Verb, Result<(), String>, i64)>,
@@ -367,8 +315,6 @@ impl Model {
         self.snapshot = Some(snapshot);
     }
 
-    /// The part a stream belongs to: its own, or the commandable part whose
-    /// `_applied` stream it is.
     pub(crate) fn part_of(&self, channel: ChannelId) -> Option<&PartSpec> {
         self.snapshot
             .as_ref()?
@@ -415,7 +361,6 @@ impl Model {
         };
         if let Some((seq, _, _)) = stream.last {
             if sample.seq <= seq {
-                // A replay or a reordered sample: never a new value.
                 return;
             }
             stream.lost += sample.seq - seq - 1;
@@ -499,8 +444,6 @@ impl Model {
         if let Some((seq, at)) = edge.last
             && sample.seq == seq + 1
         {
-            // Consecutive ticks only: a seq gap is a loss on the way here,
-            // not a late tick.
             let gap = sample.capture_ns - at;
             edge.longest_gap_ns = edge.longest_gap_ns.max(gap);
             if gap > 2 * edge.period_ns {
@@ -622,15 +565,10 @@ impl Model {
             self.on_rejected(&id, &link, receive_ns);
             links.insert(id, (link, receive_ns));
         }
-        // Who the host no longer measures is gone (or restarted: its
-        // counters start again).
         self.reported.retain(|id, _| links.contains_key(id));
         self.links = links;
     }
 
-    /// An edge that refused chunks since the last message says so on the
-    /// timeline, by reason: the chunks reached it, and why they did not
-    /// move it.
     fn on_rejected(&mut self, id: &ParticipantId, link: &LinkHealth, receive_ns: i64) {
         let before = self.links.get(id).map(|(l, _)| l.rejected.as_slice());
         let mut refused = Vec::new();

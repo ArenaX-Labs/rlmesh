@@ -1,13 +1,5 @@
 name: Release
 
-# 0.2 publishes Python wheels and Rust crates via OIDC, plus release notes, and
-# the npm packages when the RLMESH_PUBLISH_NPM repository variable is 1.
-# Native bindings and engine integrations remain built/tested in CI; their
-# release steps are fenced until those distributions are ready to ship.
-# A release runs on a tag push or a dispatch on a tag; re-run failed jobs to preserve built bytes.
-# `rehearse: npm` (any ref) runs only the npm-* build, pack and smoke jobs,
-# which publish nothing (docs/release.md).
-
 on:
   workflow_dispatch:
     inputs:
@@ -22,7 +14,6 @@ on:
     tags:
       - "v*"
 
-# A rehearsal has a group of its own, so it never cancels a release on the same ref.
 concurrency:
   group: ${{ github.workflow }}-${{ inputs.rehearse == 'npm' && 'rehearse-npm-' || '' }}${{ github.ref }}
   cancel-in-progress: true
@@ -30,9 +21,9 @@ concurrency:
 permissions:
   contents: read
 
-# Build published artifacts from source, never from the shared compile cache
-# that developer machines also write to (RUSTC_WRAPPER in mise.toml).
 env:
+  # Build published artifacts from source, never from the shared compile cache
+  # that developer machines also write to.
   RLMESH_SCCACHE: "0"
   RLMESH_RELEASE_BUILD: "1"
 
@@ -73,18 +64,14 @@ jobs:
           if-no-files-found: error
 
       - name: Package the C/C++ library
-        # 0.2 publishes only Python wheels and Rust crates.
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         run: mise run --skip-tools release:cxx:package
 
-      # Cross-built from Linux, like the Windows wheels: no Windows runner.
       - name: Package the C/C++ library for Windows (MSVC)
-        # 0.2 publishes only Python wheels and Rust crates.
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         run: mise run --skip-tools release:cxx:package --target windows
 
       - name: Build preliminary NuGet and Unity packages
-        # 0.2 publishes only Python wheels and Rust crates.
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         timeout-minutes: 10
         run: |
@@ -92,7 +79,6 @@ jobs:
           mise run --skip-tools csharp:upm
 
       - name: Upload the C/C++ package
-        # 0.2 publishes only Python wheels and Rust crates.
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -143,7 +129,6 @@ jobs:
           if-no-files-found: error
 
       - name: Build universal macOS C library
-        # 0.2 publishes only Python wheels and Rust crates.
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         timeout-minutes: 40
         env:
@@ -161,7 +146,6 @@ jobs:
           fi
 
       - name: Sign the universal macOS library
-        # 0.2 publishes only Python wheels and Rust crates.
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         id: macos-sign
         timeout-minutes: 5
@@ -176,7 +160,6 @@ jobs:
         run: bash scripts/release-macos-sign.sh sign
 
       - name: Notarize the universal macOS library
-        # 0.2 fence; resume with: if: steps.macos-sign.outputs.notarize == 'true'
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         timeout-minutes: 17
         env:
@@ -185,7 +168,6 @@ jobs:
         run: bash scripts/release-macos-sign.sh notarize
 
       - name: Upload macOS notarization evidence
-        # 0.2 fence; resume with: if: always() && steps.macos-sign.outputs.notarize == 'true'
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         timeout-minutes: 5
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -195,25 +177,21 @@ jobs:
           if-no-files-found: warn
 
       - name: Delete the temporary signing keychain
-        # 0.2 fence; resume with: if: always()
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         timeout-minutes: 2
         run: bash scripts/release-macos-sign.sh cleanup
 
       - name: Package the macOS C/C++ library
-        # 0.2 publishes only Python wheels and Rust crates.
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         timeout-minutes: 5
         run: mise run --skip-tools release:cxx:package --target macos
 
       - name: Smoke test the macOS C/C++ package
-        # 0.2 publishes only Python wheels and Rust crates.
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         timeout-minutes: 5
         run: bash scripts/release-macos-smoke.sh
 
       - name: Upload the macOS C/C++ package
-        # 0.2 publishes only Python wheels and Rust crates.
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         timeout-minutes: 5
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -231,7 +209,6 @@ jobs:
 
   esp32:
     name: ESP32 Arduino libraries
-    # 0.2 publishes only Python wheels and Rust crates; board builds stay in CI.
     if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
     needs: publish
     runs-on: depot-ubuntu-24.04
@@ -273,8 +250,8 @@ jobs:
     needs: [wheels-linux, wheels-macos]
     environment: release
     permissions:
-      contents: write # GitHub Release
-      id-token: write # OIDC trusted publishing (crates.io, PyPI)
+      contents: write
+      id-token: write
 
     steps:
       - name: Checkout repository
@@ -294,7 +271,6 @@ jobs:
           path: python/rlmesh/dist
 
       - name: Download the C/C++ package
-        # 0.2 publishes only Python wheels and Rust crates.
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -302,10 +278,7 @@ jobs:
           merge-multiple: true
           path: target/capi-pkg
 
-      # Both builders have completed: require all four RIDs and preserve the
-      # signed/notarized macOS bytes from the C tarball.
       - name: Assemble final NuGet and Unity release packages
-        # 0.2 publishes only Python wheels and Rust crates.
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         timeout-minutes: 10
         run: |
@@ -324,9 +297,6 @@ jobs:
           packages-dir: python/rlmesh/dist
           skip-existing: true
 
-      # Crates publish only when the RLMESH_PUBLISH_CRATES repository variable is
-      # 1: crates.io trusted publishing needs every published crate to exist
-      # there first, and the wheels must not wait on that.
       - name: Authenticate to crates.io
         id: crates-auth
         if: vars.RLMESH_PUBLISH_CRATES == '1'
@@ -345,7 +315,6 @@ jobs:
 
       - name: Authenticate to nuget.org with trusted publishing
         id: nuget-login
-        # 0.2 fence; resume with: if: vars.NUGET_USER != ''
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         timeout-minutes: 2
         uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
@@ -353,24 +322,19 @@ jobs:
           user: ${{ vars.NUGET_USER }}
 
       - name: Publish NuGet package and symbols
-        # 0.2 fence; resume with: if: vars.NUGET_USER != ''
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         timeout-minutes: 5
         env:
           NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: |
-          # Keep the temporary key in the environment; do not enable tracing.
           mise -C csharp exec -- dotnet nuget push "$GITHUB_WORKSPACE/target/csharp-pkg/*.nupkg" --no-symbols --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
           mise -C csharp exec -- dotnet nuget push "$GITHUB_WORKSPACE/target/csharp-pkg/*.snupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
 
       - name: Note nuget.org publishing is not configured
-        # 0.2 fence; resume with: if: vars.NUGET_USER == ''
         if: ${{ false && startsWith(github.ref, 'refs/tags/v') }}
         timeout-minutes: 1
         run: echo '::notice::nuget.org publishing skipped; configure the trusted publishing policy and NUGET_USER repository variable to enable it.'
 
-      # npm publishes from publish-npm, after this job, only when the
-      # RLMESH_PUBLISH_NPM repository variable is 1.
       - name: Note npm publishing is off
         if: vars.RLMESH_PUBLISH_NPM != '1'
         timeout-minutes: 1
@@ -380,15 +344,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/release.py "${GITHUB_REF_NAME#v}" --github-release
-
-  # ---- npm ------------------------------------------------------------------
-  # Built, packed and smoke-tested (installed and run on linux-x64 and
-  # darwin-arm64, release:js:smoke) by the npm-* jobs, on a rehearsal
-  # (`rehearse: npm`, any ref) and on a release when the RLMESH_PUBLISH_NPM
-  # repository variable is 1. They run beside the wheel jobs on a read-only
-  # token with no environment or secrets, and publish needs none of them, so an
-  # npm failure never holds up PyPI, crates or the GitHub Release. Only
-  # publish-npm, after publish and never on a rehearsal, can publish.
 
   npm-linux:
     name: npm - wasm, bundles, Linux and Windows addons
@@ -478,8 +433,6 @@ jobs:
         timeout-minutes: 15
         uses: ./.github/actions/setup
 
-      # Linux uploads two roots, so its artifact keeps repository paths; macOS
-      # uploads only its addons, which land flat.
       - name: Download the npm build
         timeout-minutes: 5
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -498,8 +451,6 @@ jobs:
         timeout-minutes: 5
         run: mise run --skip-tools release:js:package --require-all
 
-      # Contents and every addon's header (aarch64 ELF, PE32+ DLL, Mach-O, the
-      # glibc floor), then rlmesh and @rlmesh/linux-x64 installed and run.
       - name: Check the tarballs and smoke test them on linux-x64
         timeout-minutes: 10
         run: mise run --skip-tools release:js:smoke --require-all --max-glibc 2.28
@@ -542,9 +493,6 @@ jobs:
           [ "$(uname -m)" = arm64 ] || { echo "error: expected an arm64 runner, got $(uname -m)" >&2; exit 1; }
           mise run --skip-tools release:js:smoke --require-all
 
-  # After publish, so PyPI, crates and the GitHub Release are out first and an
-  # npm failure leaves them standing. Re-run failed jobs re-runs only the npm
-  # jobs; release:js:publish skips the versions already on npm.
   publish-npm:
     name: Publish npm
     if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || inputs.rehearse == 'none') && vars.RLMESH_PUBLISH_NPM == '1'
@@ -554,7 +502,7 @@ jobs:
     environment: release
     permissions:
       contents: read
-      id-token: write # OIDC trusted publishing (npm)
+      id-token: write
     steps:
       - name: Checkout repository
         timeout-minutes: 5

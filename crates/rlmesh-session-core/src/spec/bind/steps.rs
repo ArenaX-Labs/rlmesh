@@ -1,6 +1,3 @@
-//! Compatibility steps shared by inputs and actions: frames, names, units,
-//! rotations, casts and affine maps.
-
 use super::problem::{Code, NamesClash, Problem};
 use super::table::Dir;
 use super::{Binder, Slot, cast};
@@ -16,14 +13,11 @@ use crate::spec::policy::{Allow, Names};
 use crate::spec::rotation::{self, Rotation, RotationChange};
 use crate::spec::units::{self, UnitChange};
 
-/// `width_m`, when the part declares it.
 fn width_m(part: &PartSpec) -> Option<(f64, f64)> {
     let value: Value = serde_json::from_str(part.attrs.get(attrs::WIDTH_M)?).ok()?;
     Some((value.get(0)?.as_f64()?, value.get(1)?.as_f64()?))
 }
 
-/// A field's declared range: a gripper's 0…1 (or `width_m` in metres), or
-/// the part's `range` for it.
 pub(super) fn field_range(
     part: &PartSpec,
     kind: Kind,
@@ -43,7 +37,6 @@ pub(super) fn field_range(
 }
 
 impl<'a> Binder<'a> {
-    /// Frame identities: `frame`, pose `child`, wrench `point`.
     pub(super) fn frames(
         &mut self,
         slot: &Slot<'_>,
@@ -106,8 +99,6 @@ impl<'a> Binder<'a> {
         ok
     }
 
-    /// Joint names: the order the model's elements take from the
-    /// robot's, or a refusal.
     pub(super) fn names(
         &mut self,
         slot: &Slot<'_>,
@@ -249,8 +240,6 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// Units for one field: the step, or a refusal. `to` is the target unit,
-    /// `from` the source's.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn unit_step(
         &mut self,
@@ -346,7 +335,6 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// A rotation re-encoding for one field.
     pub(super) fn rotation_step(
         &mut self,
         slot: &Slot<'_>,
@@ -395,7 +383,6 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// A cast to `to`, automatic when exact.
     pub(super) fn cast_step(
         &mut self,
         slot: &Slot<'_>,
@@ -439,7 +426,6 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// The affine's arity: one value, or one per element.
     pub(super) fn affine(
         &mut self,
         slot: &Slot<'_>,

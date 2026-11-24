@@ -1,5 +1,3 @@
-//! Render resolved plans as human-readable summaries.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -13,7 +11,6 @@ use crate::spec::role::frames::{Attr, FrameRef};
 use crate::spec::role::input::StackPad;
 use crate::spec::role::plan::{ActionSegment, Binding, ImagePlan, ObsPlan, StatePlan, TextPlan};
 
-/// Summarize how one model input is derived from the observation.
 fn describe_obs_plan(plan: &ObsPlan) -> String {
     match plan {
         ObsPlan::Image(image) => describe_image(image),
@@ -28,11 +25,6 @@ fn describe_obs_plan(plan: &ObsPlan) -> String {
     }
 }
 
-/// Notable, potentially-surprising outcomes of resolving against *this* env:
-/// per-env data loss or fabrication a caller may want to surface (a zero-filled
-/// camera, an aspect crop/letterbox). Lossless or explicitly-requested steps
-/// (layout, dtype, normalize, stretch) are omitted -- this is the "warn" subset
-/// of [`describe_adapter`], not the full transform list.
 pub(crate) fn binding_advisories(adapter: &Binding) -> Vec<Advisory> {
     let mut notes: Vec<Advisory> = Vec::new();
     for plan in &adapter.obs_plans {
@@ -55,8 +47,6 @@ pub(crate) fn binding_advisories(adapter: &Binding) -> Vec<Advisory> {
                 Fit::Stretch => {}
             },
             ObsPlan::State(state) => {
-                // A declared constant part is authored data, not fabricated:
-                // only an absent role counts.
                 let absent: Vec<String> = state
                     .pieces
                     .iter()
@@ -80,10 +70,6 @@ pub(crate) fn binding_advisories(adapter: &Binding) -> Vec<Advisory> {
             _ => {}
         }
     }
-    // An optional roled actuator the model does not output: the env receives a
-    // fabricated constant where a real command belongs -- the action-side twin
-    // of a zero-filled camera. A role-less fill is the opaque control dim the
-    // env always meant to set itself, so it stays silent.
     for segment in &adapter.action_plan.segments {
         if let (Some(role), Some((width, value))) = (&segment.role, segment.fill) {
             notes.push(Advisory::caution(format!(
@@ -111,25 +97,18 @@ pub(crate) fn describe_binding(adapter: &Binding) -> String {
     lines.join("\n")
 }
 
-/// Append a geometry qualifier: `@robot_base` for a frame, `~target` for a
-/// delta's reference. Renders only when a side declared one, so every
-/// pre-geometry summary is byte-identical.
 fn write_geometry(note: &mut String, attr: Attr, value: Option<&FrameRef>) {
     if let Some(value) = value {
         let _ = write!(note, "{}{value}", attr.sigil());
     }
 }
 
-/// Append the part a leaf was bound under, as `#left_arm`. Renders only when
-/// a side declared one, so every pre-`part` summary is byte-identical.
 fn write_part(note: &mut String, part: Option<&str>) {
     if let Some(part) = part {
         let _ = write!(note, "#{part}");
     }
 }
 
-/// A per-axis vector as `[FR_hip_joint:0.125,FR_thigh_joint:0.25]`, or bare values when
-/// no labels name the axes.
 fn axis_list(values: &[f64], labels: Option<&[String]>) -> String {
     let entries: Vec<String> = values
         .iter()
@@ -144,8 +123,6 @@ fn axis_list(values: &[f64], labels: Option<&[String]>) -> String {
     format!("[{}]", entries.join(","))
 }
 
-/// The per-axis affine tokens `*[..]` and `+[..]`, rendered only when a side
-/// declared a per-axis vector, so every scalar-only summary is unchanged.
 fn axis_affine_tokens(
     axis_scale: Option<&[f64]>,
     axis_offset: Option<&[f64]>,
@@ -161,7 +138,6 @@ fn axis_affine_tokens(
     tokens
 }
 
-/// A comma-joined index list.
 fn index_list(indices: &[u32]) -> String {
     indices
         .iter()
@@ -170,12 +146,8 @@ fn index_list(indices: &[u32]) -> String {
         .join(",")
 }
 
-/// Summarize how one env action component is derived from the model output.
 fn describe_segment(segment: &ActionSegment) -> String {
     if let Some((width, value)) = segment.fill {
-        // A roled fill segment is an *optional* role the model did not output:
-        // surface it as a fabrication (like a zero-filled camera) rather than a
-        // plain opaque dim. A role-less fill is the opaque control-dim case.
         return match &segment.role {
             Some(role) => {
                 let mut note = format!(
@@ -212,8 +184,6 @@ fn describe_segment(segment: &ActionSegment) -> String {
             quoted_range(dst_range)
         );
     }
-    // The model's own affine, in the model's axis order; new tokens, so a
-    // scalar-only model side stays silent as it always was.
     let mut model_affine = axis_affine_tokens(
         segment.model_axis_scale.as_deref(),
         segment.model_axis_offset.as_deref(),
@@ -225,7 +195,6 @@ fn describe_segment(segment: &ActionSegment) -> String {
     if !model_affine.is_empty() {
         let _ = write!(note, " (model {})", model_affine.join(" "));
     }
-    // The permutation onto the env's axes.
     if let Some(scatter) = &segment.scatter {
         let _ = write!(note, " perm[{}]", index_list(scatter));
     }
@@ -267,8 +236,6 @@ fn describe_image(plan: &ImagePlan) -> String {
         return note;
     }
     let mut steps: Vec<String> = Vec::new();
-    // The asserted camera size leads: it describes the frame arriving, not a
-    // step taken on it.
     if let Some((height, width)) = plan.render {
         steps.push(format!("render {height}x{width}"));
     }
@@ -318,10 +285,6 @@ fn describe_image(plan: &ImagePlan) -> String {
     if plan.lead_dims > 0 {
         steps.push(format!("+{} lead dims", plan.lead_dims));
     }
-    // Stacking is the last step: it assembles frames the rest of the pipeline
-    // already produced. A contiguous window says nothing here (the `stack` field
-    // is the whole story, and every spec written before offsets existed prints
-    // exactly as it always did); a declared window shows what it gathers.
     if let Some(offsets) = &plan.offsets {
         let listed: Vec<String> = offsets.iter().map(i32::to_string).collect();
         steps.push(format!("stack {} @[{}]", plan.stack, listed.join(",")));
@@ -342,9 +305,6 @@ fn describe_image(plan: &ImagePlan) -> String {
 fn describe_state(plan: &StatePlan) -> String {
     let mut parts: Vec<String> = Vec::new();
     for piece in &plan.pieces {
-        // An action-source part: the model's own previous output for the role,
-        // reordered by label, and what it reads before the episode's first
-        // action.
         if let Some(action) = &piece.previous {
             let mut note = format!("previous {}", action.role);
             if let Some(gather) = &piece.gather {
@@ -361,9 +321,6 @@ fn describe_state(plan: &StatePlan) -> String {
         }
         if let Some(fill) = piece.fill {
             let width = piece.dim.expect("fill pieces always carry a width");
-            // An absent optional role filled with zeros keeps the original
-            // `zeros(n)` wording; the new tokens render only when the new
-            // features are used.
             let mut note = match (piece.absent_role.is_some(), fill == 0.0) {
                 (true, true) => format!("zeros({width})"),
                 (true, false) => format!("fill({width})={}", number(fill)),
@@ -382,15 +339,10 @@ fn describe_state(plan: &StatePlan) -> String {
             continue;
         }
         let mut note = piece.source.to_string();
-        // A SplitLayout field reads a fixed `[offset, offset+width)` slice of a
-        // flat leaf; show it so the split is visible. A whole-leaf state leaves
-        // src_offset None and reads the entire value.
         if let Some(offset) = piece.src_offset {
             let width = piece.src_dim.expect("layout fields carry src_dim");
             let _ = write!(note, "[{offset}:{}]", offset + width);
         }
-        // The gather by name. The index list states the width, so the
-        // `[:dim]` suffix below stays quiet.
         if let Some(gather) = &piece.gather {
             let _ = write!(note, " perm[{}]", index_list(gather));
         }
@@ -406,8 +358,7 @@ fn describe_state(plan: &StatePlan) -> String {
         if let Some(index) = piece.index {
             let _ = write!(note, "[{index}]");
         } else if let Some(dim) = piece.dim {
-            // The env slice above already states a layout field's width; only
-            // note a model-side truncation when it narrows that slice further.
+            // Note a model-side truncation only when it narrows the env slice further.
             if piece.src_dim != Some(dim) && piece.gather.is_none() {
                 let _ = write!(note, "[:{dim}]");
             }
@@ -445,7 +396,6 @@ fn describe_state(plan: &StatePlan) -> String {
         parts.push(note);
     }
     let mut suffix = String::new();
-    // The container steps in their order: the clamp, then the pad.
     if let Some((low, high)) = plan.clip {
         let _ = write!(suffix, " clip[{},{}]", number(low), number(high));
     }

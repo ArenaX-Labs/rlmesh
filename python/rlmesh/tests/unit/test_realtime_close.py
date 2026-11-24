@@ -1,5 +1,3 @@
-"""Leaving a ``with`` block never swaps the exception in flight for a close failure."""
-
 from __future__ import annotations
 
 import logging
@@ -12,8 +10,6 @@ from rlmesh.realtime import Policy
 
 
 class _SlowHost:
-    """A native controller whose close finds the host not answering."""
-
     def close(self) -> None:
         raise TimeoutError("no reply from the session host within 2s")
 

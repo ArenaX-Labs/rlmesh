@@ -5,9 +5,6 @@
 #USAGE   choices "host" "windows" "macos"
 #USAGE }
 
-# Packaging only, no CI / publish. Assembles prebuilt artifacts (cargo-built
-# libraries, hand-authored headers) and the metadata pointing consumers at them;
-# CMake is never run as a build system here.
 set -euo pipefail
 
 target="${usage_target:-host}"
@@ -19,19 +16,15 @@ fi
 crate="crates/rlmesh-capi"
 inc="$PWD/$crate/include"
 
-# The package dir/tarball keeps the full marketing version. The SONAME, CMake
-# compat, and .pc Version all key off the binary ABI generation instead — the
-# monotonic RLMESH_ABI_VERSION integer in the header, which (unlike the 0.x
-# pre-release semver) can actually express an ABI break.
-version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"   # 0.1.0-beta.2
-abi_gen="$(sed -n 's/^#define RLMESH_ABI_VERSION \([0-9][0-9]*\)$/\1/p' "$inc/rlmesh.h")"  # 1
+version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+abi_gen="$(sed -n 's/^#define RLMESH_ABI_VERSION \([0-9][0-9]*\)$/\1/p' "$inc/rlmesh.h")"
 : "${abi_gen:?could not parse RLMESH_ABI_VERSION from $inc/rlmesh.h}"
 if [ "$target" = windows ]; then
   triple=x86_64-pc-windows-msvc
 elif [ "$target" = macos ]; then
   triple=universal-apple-darwin
 else
-  triple="$(rustc -vV | sed -n 's/host: //p')"                          # x86_64-unknown-linux-gnu
+  triple="$(rustc -vV | sed -n 's/host: //p')"
 fi
 
 name="rlmesh-${version}-${triple}"
@@ -39,20 +32,11 @@ out="$PWD/target/capi-pkg"
 stage="$out/$name"
 echo "==> packaging $name (ABI generation $abi_gen)"
 
-# 1. Release-build the libraries.
-#    Host: build the staticlib + cdylib, then relink the cdylib with an explicit
-#    versioned SONAME (a Rust cdylib carries none by default). Without it a consumer
-#    binary records the build-machine absolute path in DT_NEEDED; with it the binary
-#    records librlmesh_capi.so.${abi_gen} and the loader refuses a different ABI
-#    generation. Deps cache between the two.
-#    Windows: cross-build with cargo-xwin (scripts/xwin-env.sh: the target, the
-#    MSVC CRT and Windows SDK, and Rust's own archiver and linker).
 if [ "$target" = windows ]; then
   . scripts/xwin-env.sh
   cargo xwin build -p rlmesh-capi --release --lib --target "$triple"
 elif [ "$target" = macos ]; then
-  # Build/lipo/sign happens before packaging so these exact signed bytes also
-  # reach NuGet and Unity. Never mutate a signed dylib here.
+  # Build, lipo and sign happen before packaging so these exact signed bytes also reach NuGet and Unity. Never mutate a signed dylib here.
   test -f target/macos-universal/librlmesh_capi.dylib
   test -f target/macos-universal/librlmesh_capi.a
   lipo -verify_arch arm64 x86_64 target/macos-universal/librlmesh_capi.dylib
@@ -64,17 +48,12 @@ else
     -C "link-arg=-Wl,-soname,librlmesh_capi.so.${abi_gen}"
 fi
 
-# 2. Fresh staging tree.
 rm -rf "$stage"
 mkdir -p "$stage/include" "$stage/lib/cmake/rlmesh"
 
-# 3. Headers + licenses + the libs (verbatim — include/ is the one header authority).
 cp "$inc/rlmesh.h" "$inc/rlmesh.hpp" "$inc/dlpack.LICENSE" "$stage/include/"
 cp LICENSE-APACHE LICENSE-MIT          "$stage/"
 if [ "$target" = windows ]; then
-  # The DLL goes in bin/ and its import library in lib/ under the name MSVC
-  # projects link (rustc writes it as rlmesh_capi.dll.lib). The Rust staticlib is
-  # left out: it is over 100 MB and pulls in the whole Rust runtime.
   built="target/$triple/release"
   mkdir -p "$stage/bin"
   cp "$built/rlmesh_capi.dll" "$built/rlmesh_capi.pdb" "$stage/bin/"
@@ -82,16 +61,11 @@ if [ "$target" = windows ]; then
 elif [ "$target" = macos ]; then
   cp target/macos-universal/librlmesh_capi.dylib target/macos-universal/librlmesh_capi.a "$stage/lib/"
 else
-  # Stage the cdylib under its real SONAME + a librlmesh_capi.so dev symlink: the
-  # linker reads the SONAME (records the versioned DT_NEEDED) while find_package and
-  # -lrlmesh_capi still resolve through the bare name at link time.
   cp target/release/librlmesh_capi.so    "$stage/lib/librlmesh_capi.so.${abi_gen}"
   ln -sf "librlmesh_capi.so.${abi_gen}"  "$stage/lib/librlmesh_capi.so"
   cp target/release/librlmesh_capi.a     "$stage/lib/"
 fi
 
-# 4. pkg-config metadata (non-CMake consumers). ${pcfiledir} keeps it relocatable.
-#    Windows consumers use CMake or link the import library directly.
 if [ "$target" != windows ]; then
 mkdir -p "$stage/lib/pkgconfig"
 cat > "$stage/lib/pkgconfig/rlmesh.pc" <<EOF
@@ -119,9 +93,6 @@ PYTHON
 fi
 fi
 
-# 5. CMake config-version: PACKAGE_VERSION is the ABI generation, so the canonical
-#    SameMajorVersion template now genuinely rejects a different ABI generation —
-#    find_package(rlmesh N) gates the binary ABI, not the inert 0.x semver.
 cat > "$stage/lib/cmake/rlmesh/rlmesh-config-version.cmake" <<'EOF'
 set(PACKAGE_VERSION "@ABI@")
 if(PACKAGE_VERSION VERSION_LESS PACKAGE_FIND_VERSION)
@@ -149,16 +120,8 @@ path = pathlib.Path(sys.argv[1])
 path.write_text(path.read_text().replace("@ABI@", sys.argv[2]))
 PYTHON
 
-# 6. The CMake config itself is a committed template (static text, nothing to
-#    interpolate) — copied verbatim so it stays reviewable as a normal source file.
 cp "$crate/packaging/rlmesh-config.cmake" "$stage/lib/cmake/rlmesh/"
 
-# 7. Root CMakeLists.txt, so FetchContent_MakeAvailable / add_subdirectory can
-#    consume the tarball by URL. It loads the same config find_package does, then
-#    promotes the imported targets it created to GLOBAL: a subdirectory's imported
-#    targets are otherwise invisible to the parent project that links them. A
-#    target that already existed (the parent's own find_package(rlmesh) or Threads)
-#    is already visible, and CMake refuses to promote it outside its directory.
 cat > "$stage/CMakeLists.txt" <<'EOF'
 cmake_minimum_required(VERSION 3.20)
 set(_rlmesh_created "")
@@ -175,7 +138,6 @@ foreach(_rlmesh_target IN LISTS _rlmesh_created)
 endforeach()
 EOF
 
-# 8. Terse consume note.
 cat > "$stage/README.md" <<EOF
 # rlmesh $version ($triple)
 
@@ -233,8 +195,6 @@ cat >> "$stage/README.md" <<'EOF'
 EOF
 fi
 
-# 9. Tar from \$out so the archive's single root is the versioned dir, plus the
-#    checksum a FetchContent URL_HASH pins.
 tar -C "$out" -czf "$out/$name.tar.gz" "$name"
 python - "$out/$name.tar.gz" <<'PYTHON'
 import hashlib

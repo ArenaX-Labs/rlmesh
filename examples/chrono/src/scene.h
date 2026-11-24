@@ -1,8 +1,3 @@
-// The camera's scene, shared by every renderer: spheres and capsules over a
-// checkered floor, lit by one directional light. The CPU ray tracer and the
-// Vulkan renderer both draw it, with the same camera and shading.
-//
-// World convention matches the Chrono scene: Y is up, the floor is y = 0.
 #pragma once
 
 #include <cmath>
@@ -35,7 +30,6 @@ struct Sphere {
   Vec3 color;
 };
 
-// A capsule: the segment a-b swept by `radius` (a robot link).
 struct Capsule {
   Vec3 a, b;
   double radius;
@@ -53,7 +47,6 @@ struct Camera {
   double fov_deg = 42;
 };
 
-// Direction towards the light (normalized by the renderers).
 inline Vec3 light_direction() { return Vec3(0.5, 1.0, 0.35); }
 
 }  // namespace scene

@@ -14,21 +14,15 @@ use rlmesh_session_core::wire::{
     ParticipantId, PriorityClass, ReasonCode, StreamSpec,
 };
 
-/// How a stream's values reach JS.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// Packed numbers, delivered as `f64`.
     F64,
-    /// One JPEG per sample.
     Jpeg,
-    /// One raw `u8 [H, W, 3]` image per sample.
     Rgb8,
-    /// UTF-8 text.
     Text,
 }
 
 impl Kind {
-    /// Its name at the JS boundary.
     pub fn name(self) -> &'static str {
         match self {
             Self::F64 => "f64",
@@ -38,86 +32,54 @@ impl Kind {
         }
     }
 
-    /// Whether samples are delivered as frames (bytes) rather than numbers.
     pub fn is_frame(self) -> bool {
         matches!(self, Self::Jpeg | Self::Rgb8)
     }
 }
 
-/// One field, for JS.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FieldDecl {
-    /// Its name.
     pub name: String,
-    /// Its dtype's name (`f32`, `u8`, ...).
     pub dtype: &'static str,
-    /// Its shape.
     pub shape: Vec<u32>,
-    /// Its unit.
     pub unit: String,
-    /// Its first element's index in the `f64` values.
     pub offset: usize,
-    /// Its element count.
     pub len: usize,
 }
 
-/// A stream the browser can subscribe to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StreamDecl {
-    /// `{robot}/{part}` or `{robot}/{part}/_applied`.
     pub path: String,
-    /// The publishing robot.
     pub robot: String,
-    /// The part path.
     pub part: String,
-    /// An applied stream.
     pub applied: bool,
-    /// The stream id.
     pub channel: ChannelId,
-    /// `state` or `bulk`.
     pub class: &'static str,
-    /// How values reach JS.
     pub kind: Kind,
-    /// The declared rate (0 for events).
     pub hz: f64,
     /// The declared freshness bound, ms (`NaN`: none).
     pub max_age_ms: f64,
-    /// The fields.
     pub fields: Vec<FieldDecl>,
-    /// Image width (frames).
     pub width: u32,
-    /// Image height (frames).
     pub height: u32,
 }
 
-/// A commandable part.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ControlDecl {
-    /// `{robot}/{part}`.
     pub path: String,
-    /// The robot.
     pub robot: String,
-    /// The part path.
     pub part: String,
-    /// Its id.
     pub channel: ChannelId,
-    /// Its kind (`joints`, `gripper`, ...).
     pub kind: String,
-    /// Its command mode (`position`, `velocity`, ...).
     pub mode: String,
-    /// Its command group, if any (one member is leased at a time).
     pub group: Option<String>,
-    /// The command fields, in the order `send`/`drive` values follow.
     pub fields: Vec<FieldDecl>,
-    /// Its control rate.
     pub hz: f64,
     /// How long the edge holds before going safe, ms.
     pub hold_max_ms: f64,
-    /// Whether this participant's binding covers it (`lease()` accepts it).
     pub bound: bool,
 }
 
-/// Splits `{robot}/{part}[/_applied]`.
 pub fn split_path(path: &str) -> Option<(ParticipantId, &str, bool)> {
     let (robot, part) = path.split_once('/')?;
     let robot = ParticipantId::new(robot).ok()?;
@@ -128,7 +90,6 @@ pub fn split_path(path: &str) -> Option<(ParticipantId, &str, bool)> {
     }
 }
 
-/// The socket a stream rides.
 pub fn class_of(priority: ChannelPriority) -> &'static str {
     match priority {
         ChannelPriority::Bulk => "bulk",
@@ -136,7 +97,6 @@ pub fn class_of(priority: ChannelPriority) -> &'static str {
     }
 }
 
-/// How a stream's values reach JS.
 pub fn kind_of(spec: &StreamSpec) -> Kind {
     match (&spec.layout, spec.encoding) {
         (Layout::Text, _) => Kind::Text,
@@ -197,8 +157,6 @@ fn stream_decl(part: &PartSpec, spec: &StreamSpec) -> StreamDecl {
     }
 }
 
-/// Every stream of every part: its samples, and the applied stream of each
-/// commandable part.
 pub fn streams(snapshot: &AuthoritySnapshot) -> Vec<StreamDecl> {
     let mut out = Vec::new();
     for part in &snapshot.parts {
@@ -212,7 +170,6 @@ pub fn streams(snapshot: &AuthoritySnapshot) -> Vec<StreamDecl> {
     out
 }
 
-/// The stream at `path`, with its declaration.
 pub fn stream(snapshot: &AuthoritySnapshot, path: &str) -> Option<(StreamSpec, StreamDecl)> {
     let (robot, part_path, applied) = split_path(path)?;
     let part = snapshot.part_at(&robot, part_path)?;
@@ -225,7 +182,6 @@ pub fn stream(snapshot: &AuthoritySnapshot, path: &str) -> Option<(StreamSpec, S
     Some((spec, decl))
 }
 
-/// Every commandable part; `bound` when `me`'s binding lists it.
 pub fn controls(snapshot: &AuthoritySnapshot, me: Option<&ParticipantId>) -> Vec<ControlDecl> {
     let bound = me
         .and_then(|me| snapshot.binding(me))
@@ -253,7 +209,6 @@ pub fn controls(snapshot: &AuthoritySnapshot, me: Option<&ParticipantId>) -> Vec
         .collect()
 }
 
-/// The commandable part at `path`.
 pub fn control<'a>(snapshot: &'a AuthoritySnapshot, path: &str) -> Option<&'a PartSpec> {
     let (robot, part_path, applied) = split_path(path)?;
     if applied {
@@ -264,7 +219,6 @@ pub fn control<'a>(snapshot: &'a AuthoritySnapshot, path: &str) -> Option<&'a Pa
         .filter(|p| p.command.is_some())
 }
 
-/// The session mode, lowercase.
 pub fn mode_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Disarmed => "disarmed",
@@ -275,12 +229,10 @@ pub fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
-/// A reason code, lowercase (`robot_lost`).
 pub fn reason_name(code: ReasonCode) -> String {
     code.name().to_ascii_lowercase()
 }
 
-/// The edge mode, lowercase.
 pub fn edge_mode_name(mode: EdgeMode) -> &'static str {
     match mode {
         EdgeMode::Idle => "idle",
@@ -291,7 +243,6 @@ pub fn edge_mode_name(mode: EdgeMode) -> &'static str {
     }
 }
 
-/// A lease class, lowercase.
 pub fn priority_name(priority: PriorityClass) -> &'static str {
     match priority {
         PriorityClass::Scripted => "scripted",
@@ -363,8 +314,6 @@ fn read_f64(dtype: DType, b: &[u8]) -> f64 {
     }
 }
 
-/// Every element of one packed value as `f64`, field by field, into `out`
-/// (cleared first).
 pub fn unpack_f64(fields: &[FieldSpec], layout: &Layout, value: &[u8], out: &mut Vec<f64>) {
     out.clear();
     for (i, field) in fields.iter().enumerate() {
@@ -411,8 +360,6 @@ fn write(dtype: DType, value: f64, out: &mut Vec<u8>) -> Result<(), String> {
     Ok(())
 }
 
-/// One command value packed at the command layout from `values`, the
-/// command fields' elements in order.
 pub fn pack_command(command: &CommandSpec, values: &[f64]) -> Result<Vec<u8>, String> {
     let layout = command.layout()?;
     let mut fields: Vec<Vec<u8>> = Vec::with_capacity(command.fields.len());

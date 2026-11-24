@@ -3,33 +3,23 @@
 //!
 //! [`StartSchedule`] decides when a controller's policy starts:
 //!
-//! - **One inference in flight.** Starts fall on a fixed grid of slots, one
-//!   per replan period. A slot that falls while `predict` is busy is
-//!   skipped (`busy_skip`), never queued: when the inference completes, the
-//!   next start is the first slot still ahead, with a fresh snapshot.
-//!   Overdue starts are never accumulated or replayed in a burst.
-//! - **Skipped starts** keep their reason: `waiting_for` (an input never
-//!   received in this epoch), `stale_input`, `window_gap`, `decode` (a
-//!   sample did not decode or fit its plan), `no_lease` (a standby, or
-//!   a preempted controller: its inputs stay warm, `predict` does not run;
-//!   a shadow run predicts instead, counted apart), `parked` (a higher
-//!   class took its parts and it waits to be resumed) and `publisher_gone`
-//!   (an input's publisher left the session or withdrew the part, until it
-//!   is back).
+//! - **One inference in flight.** Starts fall on a fixed grid of slots, one per replan
+//!   period. A slot that falls while `predict` is busy is skipped (`busy_skip`), never
+//!   queued or replayed: the next start is the first slot still ahead.
+//! - **Skipped starts** keep their reason: `waiting_for` (an input never received in this
+//!   epoch), `stale_input`, `window_gap`, `decode`, `no_lease` (a standby or preempted
+//!   controller; a shadow run predicts instead, counted apart), `parked` (a higher class
+//!   took its parts) and `publisher_gone` (an input's publisher left or withdrew the part).
 //! - **`rate_drift`** (scope `policy`): the completion rate over a window of
-//!   `max(1 s, 4 / R)`, counting silent intervals, outside `[0.8, 1.25] × R`,
-//!   with hysteresis (one event per transition). It is suppressed until the
-//!   first window after the first start, so warming is not drift; its cause
-//!   is the dominant skip reason in the window (`busy` for a slow model).
-//! - **Inference pending**: [`StartSchedule::pending`] is the age of the
-//!   inference in flight, for a timer outside the policy thread (not an
-//!   average over completions).
+//!   `max(1 s, 4 / R)` outside `[0.8, 1.25] × R`, with hysteresis (one event per
+//!   transition), suppressed until the first window after the first start. Its cause is
+//!   the dominant skip reason in the window (`busy` for a slow model).
+//! - [`StartSchedule::pending`] is the age of the inference in flight, for a timer outside
+//!   the policy thread.
 //!
-//! [`PhaseAlign`] phases a wall-clock grid just after the publication of
-//! one sampled input, so a snapshot reads a fresh sample.
-//!
-//! Nothing here renegotiates: rates, chunk lengths and contracts never change
-//! because something got slow.
+//! [`PhaseAlign`] phases a wall-clock grid just after the publication of one sampled
+//! input, so a snapshot reads a fresh sample. Nothing here renegotiates: rates, chunk
+//! lengths and contracts never change because something got slow.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -42,7 +32,6 @@ use crate::cache::Snapshot;
 use crate::spec::Binding;
 use crate::wire::ContractMode;
 
-/// How many completion latencies the percentiles are taken over.
 const LATENCIES: usize = 1024;
 
 /// Why a slot passed without a start.
@@ -95,7 +84,6 @@ impl SkipReason {
         }
     }
 
-    /// The `rate_drift` cause it stands for.
     fn cause(self) -> &'static str {
         match self {
             Self::Busy => "busy",
@@ -200,9 +188,8 @@ pub enum RunEvent {
         /// What happened.
         message: String,
     },
-    /// The controller bound again against the session's current parts: an
-    /// input's publisher came back or restarted, or a blank input's
-    /// publisher appeared.
+    /// The controller bound again against the session's current parts: an input's
+    /// publisher came back or restarted, or a blank input's publisher appeared.
     Rebound {
         /// The parts bound again, `robot:path`.
         parts: Vec<String>,
@@ -271,10 +258,8 @@ pub struct RunStats {
     pub latency_max: Option<Duration>,
     /// Whether the completion rate is drifting now.
     pub drifting: bool,
-    /// Each input bound to a part, in policy order: the samples its
-    /// subscription received and the seqs it found missing. The controller
-    /// runtime fills it (`Controller::stats` in `rlmesh-session`); a
-    /// [`StartSchedule`] alone leaves it empty.
+    /// Each input bound to a part, in policy order: the samples its subscription
+    /// received and the seqs it found missing.
     pub inputs: Vec<InputStats>,
 }
 
@@ -288,10 +273,8 @@ pub struct InputStats {
     pub part: String,
     /// Samples received.
     pub received: u64,
-    /// Samples missing between those received (seq gaps): dropped on the
-    /// way, as a congested link drops best-effort samples. A window may
-    /// still fill a gap from the host's history store; it counts here all
-    /// the same.
+    /// Samples missing between those received (seq gaps): dropped on the way, as a
+    /// congested link drops best-effort samples.
     pub lost: u64,
 }
 
@@ -373,21 +356,17 @@ impl StartSchedule {
         }
     }
 
-    /// The first slot strictly after `now_ns`.
     fn slot_after(&self, now_ns: i64) -> i64 {
         let anchor = self.anchor_ns.unwrap_or(now_ns);
         let k = (now_ns - anchor).div_euclid(self.period_ns) + 1;
         anchor + k * self.period_ns
     }
 
-    /// The slot `now_ns` falls in (the latest at or before it).
     fn slot_of(&self, now_ns: i64) -> i64 {
         self.slot_after(now_ns) - self.period_ns
     }
 
-    /// The slot due at `now_ns` passed without a start, for `reason`. The
-    /// next attempt is the following slot. Returns a drift transition, if
-    /// any.
+    /// The slot due at `now_ns` passed without a start, for `reason`.
     pub fn skip(&mut self, now_ns: i64, reason: SkipReason) -> Option<RunEvent> {
         self.count_skip(now_ns, reason, 1);
         self.next_ns = Some(self.slot_after(now_ns));
@@ -418,9 +397,9 @@ impl StartSchedule {
         self.stats.starts += 1;
     }
 
-    /// `predict` returned (or raised) now. Every slot that fell while it ran
-    /// is a busy skip; the next start is the first slot still ahead.
-    /// Returns a drift transition, if any.
+    /// `predict` returned (or raised) now. Every slot that fell while it ran is a busy
+    /// skip; the next start is the first slot still ahead. Returns a drift transition, if
+    /// any.
     pub fn finish(&mut self, now_ns: i64) -> Option<RunEvent> {
         let (slot, started) = self.running.take()?;
         let passed = (now_ns - slot).div_euclid(self.period_ns).max(0);
@@ -475,8 +454,6 @@ impl StartSchedule {
         stats
     }
 
-    /// The completion rate over the window ending at `now_ns`, and a drift
-    /// transition when it crosses the band.
     fn check_drift(&mut self, now_ns: i64) -> Option<RunEvent> {
         let since = now_ns - self.window_ns;
         while self.completions.front().is_some_and(|t| *t <= since) {
@@ -490,8 +467,6 @@ impl StartSchedule {
         }
         let measured_hz = self.completions.len() as f64 * 1e9 / self.window_ns as f64;
         let ratio = measured_hz / self.expected_hz;
-        // Hysteresis: leave the band to enter drift; come back inside it,
-        // with margin, to leave.
         let drifting = if self.stats.drifting {
             !(0.85..=1.2).contains(&ratio)
         } else {
@@ -525,21 +500,11 @@ impl StartSchedule {
 /// Phases a clocked run loop's starts just after the publication of one
 /// sampled input (wall clock only; sans-IO, times injected).
 ///
-/// A `latest` input is published at about the replan rate, at a phase set
-/// by its publisher, and the start grid's phase is set by when the run
-/// began: the two lock wherever they happen to fall, often with each start
-/// just before the next sample, so every snapshot reads a sample nearly a
-/// full replan period old. The aligner measures the phase of the aligned
-/// input's newest sample at each snapshot (`(snapshot − capture) mod P`),
-/// takes the freshest tenth over a window of starts and moves the
-/// grid so that phase is [`Self::margin`]: once in full (always later, so no slot
-/// is skipped), then by half the remaining error per window, at most a
-/// quarter period, to follow slow drift between the publisher's clock and
-/// this one.
-///
-/// The aligned input is the first bound input with a `latest` contract
-/// (its publication follows the replan rate). `every` and `history`
-/// inputs are already fresh at any phase, and events have none.
+/// The aligned input is the first bound input with a `latest` contract. At each snapshot
+/// the aligner measures the phase of its newest sample (`(snapshot − capture) mod P`),
+/// takes the freshest tenth over a window of starts and moves the grid so that phase is
+/// [`Self::margin`]: once in full (always later, so no slot is skipped), then by half the
+/// remaining error per window, at most a quarter period, to follow clock drift.
 #[derive(Clone, Debug)]
 pub struct PhaseAlign {
     input: usize,
@@ -558,10 +523,7 @@ impl PhaseAlign {
     /// Consecutive starts reading the previous sample that move the
     /// starts later before the window ends.
     pub const LATE: usize = 4;
-    /// The target sample age at a start: transit plus the publisher's
-    /// loop jitter (`min(1 ms, P / 4)`).
     const MARGIN_NS: i64 = 1_000_000;
-    /// Corrections smaller than this are left alone.
     const DEADBAND_NS: i64 = 50_000;
 
     /// The input `binding`'s starts align to, by index.
@@ -624,9 +586,6 @@ impl PhaseAlign {
 
     /// Moves the grid once a window is full; returns the change.
     pub fn update(&mut self) -> i64 {
-        // Every one of the last few starts read the previous sample: the
-        // publisher's phase moved later (its loop stalled). Follow now
-        // rather than at the end of the window, by the smallest of them.
         let recent = self.errors.len().checked_sub(Self::LATE);
         if let Some(from) = recent.filter(|_| self.aligned)
             && self.errors[from..]
@@ -647,24 +606,14 @@ impl PhaseAlign {
             return 0;
         }
         self.errors.sort_unstable();
-        // The freshest tenth: the samples that land latest set the phase,
-        // so jitter in their arrival never puts one after the start.
         let error = self.errors[self.errors.len() / 10];
         self.errors.clear();
-        // A phase above the margin: start that much earlier, which is the
-        // same as starting `P − error` later on the next sample.
         let p = self.period_ns;
         let change = if (-p / 4..0).contains(&error) {
-            // The samples land just after the starts: start later, in full.
-            // Each start reads a sample almost a period old until then, and
-            // the gap this opens in the chunk coverage is under P/4.
             -error
         } else if error < 0 {
-            // Far later is the same phase as earlier: start sooner (which
-            // never opens a gap), at most P/2 per window.
             (-(error + p)).max(-p / 2)
         } else if self.aligned {
-            // Starts later than they need be: close in by halves.
             (-error / 2).max(-p / 4)
         } else {
             -error
@@ -677,7 +626,6 @@ impl PhaseAlign {
         change
     }
 
-    /// `x` wrapped into `(−P/2, P/2]`.
     fn centered(&self, x: i64) -> i64 {
         let p = self.period_ns;
         let w = x.rem_euclid(p);
@@ -696,7 +644,6 @@ mod tests {
         let mut s = StartSchedule::new(100.0);
         assert_eq!(s.next_start(0), 0);
         s.start(0);
-        // predict took 35 ms: slots 10, 20 and 30 fell while it ran.
         assert_eq!(s.pending(20 * MS), Some(Duration::from_millis(20)));
         assert!(s.finish(35 * MS).is_none());
         assert_eq!(s.stats().skipped(SkipReason::Busy), 3);
@@ -716,7 +663,6 @@ mod tests {
         s.skip(MS, SkipReason::Waiting);
         assert_eq!(s.next_start(MS), 10 * MS);
         s.skip(10 * MS, SkipReason::NoLease);
-        // The loop woke 25 ms late for slot 20: slots 20 and 30 are gone.
         s.start(45 * MS);
         s.finish(46 * MS);
         let stats = s.stats();
@@ -731,20 +677,17 @@ mod tests {
         let mut s = StartSchedule::new(20.0);
         let mut events = Vec::new();
         let mut now = s.next_start(0);
-        // Healthy for 2 s: 5 ms inferences at 20 Hz.
         while now < 2_000 * MS {
             s.start(now);
             events.extend(s.finish(now + 5 * MS));
             now = s.next_start(now + 5 * MS);
         }
         assert!(events.is_empty(), "{events:?}");
-        // 80 ms inferences: one completion per two slots, 10 Hz.
         while now < 5_000 * MS {
             s.start(now);
             events.extend(s.finish(now + 80 * MS));
             now = s.next_start(now + 80 * MS);
         }
-        // Back to healthy.
         while now < 8_000 * MS {
             s.start(now);
             events.extend(s.finish(now + 5 * MS));
@@ -778,7 +721,6 @@ mod tests {
     fn silent_intervals_count_and_warming_is_not_drift() {
         let mut s = StartSchedule::new(10.0);
         let mut now = s.next_start(0);
-        // Waiting for inputs for 3 s: no drift before the first start.
         while now < 3_000 * MS {
             assert!(s.skip(now, SkipReason::Waiting).is_none());
             now = s.next_start(now);
@@ -788,7 +730,6 @@ mod tests {
             assert!(s.finish(now + MS).is_none());
             now = s.next_start(now + MS);
         }
-        // Inputs go stale: starts are skipped, and the silence is drift.
         let mut events = Vec::new();
         while now < 7_000 * MS {
             events.extend(s.skip(now, SkipReason::StaleInput));
@@ -804,9 +745,6 @@ mod tests {
         ));
     }
 
-    /// Starts on a 10 ms grid shifted by `offset`; samples published every
-    /// 10 ms at `publish_phase` (+ `jitter(k)`): the newest sample's age at
-    /// each start.
     fn ages(
         offset: i64,
         publish_phase: i64,
@@ -815,7 +753,6 @@ mod tests {
     ) -> impl Iterator<Item = i64> {
         (from..).map(move |k| {
             let start = k * 10 * MS + offset;
-            // The newest publication at or before the start.
             let mut j = (start - publish_phase).div_euclid(10 * MS) + 1;
             while j * 10 * MS + publish_phase + jitter(j) > start {
                 j -= 1;
@@ -827,7 +764,6 @@ mod tests {
     #[test]
     fn a_start_just_before_each_sample_moves_to_just_after_it() {
         let mut align = PhaseAlign::new(0, 10 * MS);
-        // Published 0.4 ms after each start: snapshots read a 9.6 ms old sample.
         for age in ages(0, 400_000, |_| 0, 1).take(PhaseAlign::FIRST) {
             assert_eq!(age, 9_600_000);
             align.record(age);
@@ -844,14 +780,12 @@ mod tests {
     #[test]
     fn jitter_is_ignored_and_slow_drift_is_followed() {
         let mut align = PhaseAlign::new(0, 10 * MS);
-        // ±0.5 ms publication jitter around a 3 ms phase.
         let jitter = |j: i64| if j % 2 == 0 { 500_000 } else { -500_000 };
         for age in ages(0, 3 * MS, jitter, 1).take(PhaseAlign::WINDOW) {
             align.record(age);
         }
         align.update();
         let mut worst = 0;
-        // The publisher drifts 20 µs per window; the aligner keeps up.
         for round in 0..50 {
             let phase = 3 * MS + round * 20_000;
             let from = 1000 + round * 100;
@@ -877,13 +811,10 @@ mod tests {
     #[test]
     fn a_far_phase_is_reached_by_starting_earlier() {
         let mut align = PhaseAlign::new(0, 10 * MS);
-        // 4 ms old: 3 ms earlier, not 7 ms later.
         for _ in 0..PhaseAlign::FIRST {
             align.record(4 * MS);
         }
         assert_eq!(align.update(), -3 * MS);
-        // 6.5 ms after the margin is 3.5 ms before the next sample's: still
-        // earlier, by at most half a period per window.
         let mut align = PhaseAlign::new(0, 10 * MS);
         for _ in 0..PhaseAlign::FIRST {
             align.record(7_500_000);
@@ -898,8 +829,6 @@ mod tests {
             align.record(age);
         }
         assert_eq!(align.update(), -MS, "2 ms old: 1 ms earlier");
-        // The publisher's loop slips 2 ms: every start now reads the
-        // previous sample, 9 ms old, until the aligner follows.
         let mut moved = 0;
         for (n, age) in ages(align.offset_ns, 10 * MS, |_| 0, 100)
             .take(PhaseAlign::LATE)

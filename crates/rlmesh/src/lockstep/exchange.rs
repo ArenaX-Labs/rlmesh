@@ -5,27 +5,18 @@
 //! driver ◀──LockstepReply{step, observations, reward, terminated, truncated, episode_ids}── env
 //! ```
 //!
-//! The env side is a [`LockstepHandler`] behind a `Gate`: before every
-//! step it checks the step's epoch and lease token against its own
-//! authority view (two atomic loads) and the e-stop latch, with no host
-//! round trip. A v2 robot's handler is also behind [`Limited`], which
-//! validates and clamps its commands as a wall-clock edge would. The
-//! driver side reaches it through a [`LockstepLink`]:
+//! The env side is a [`LockstepHandler`] behind a [`Gate`]: before every step it
+//! checks the step's epoch and lease token against its own authority view and the
+//! e-stop latch, with no host round trip. A v2 robot's handler is also behind
+//! [`Limited`]. The driver reaches it through a [`LockstepLink`]: a [`DirectLink`]
+//! (a function call) in the same process, otherwise a [`ZenohLink`] (a query on
+//! `l/{robot}`, answered by [`serve_zenoh`]).
 //!
-//! | Placement | Link |
-//! |---|---|
-//! | same process | [`DirectLink`]: a function call, no serialisation |
-//! | same host or remote | [`ZenohLink`]: a query on `l/{robot}` over the lockstep class session, answered by [`serve_zenoh`] |
-//!
-//! Over Zenoh every request is a `LockstepRequest` sealed under the lease's
-//! `k_cmd`: a step, a reset, a render (a lane's frame) or a
-//! probe, with a request id. The env answers a `LockstepResponse` with that
-//! id, sealed under the lease's `k_obs`: the observation, the frame's PNG
-//! bytes (empty for none), the probe, or the env's failure as JSON
-//! (`{code, message, recoverable}`). A request that doesn't open under a
-//! lease key the env holds gets a plain error reply, which the driver takes
-//! only as a hint. Both ends check the request's lease token against the
-//! key's.
+//! Over Zenoh every request is sealed under the lease's `k_cmd` and every response
+//! under its `k_obs`; a failure travels as JSON (`{code, message, recoverable}`). A
+//! request that doesn't open under a lease key the env holds gets a plain error
+//! reply, which the driver takes only as a hint. Both ends check the request's lease
+//! token against the key's.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -109,8 +100,6 @@ pub struct Gate {
     changed: tokio::sync::Notify,
 }
 
-/// How long a refused request waits for the env's view to catch up with
-/// the driver's (a lease the driver holds before the env has seen it).
 const VIEW_CATCH_UP: Duration = Duration::from_secs(1);
 
 impl Gate {
@@ -157,8 +146,6 @@ impl Gate {
             })
             .map_or(0, |lease| lease.token.0);
         let estop = snapshot.estop_latched || snapshot.mode == Mode::Estop;
-        // Publish the epoch last: a step that reads the new epoch also sees
-        // its token.
         self.token.store(token, Ordering::Release);
         self.estop.store(estop, Ordering::Release);
         self.epoch.store(snapshot.epoch.0, Ordering::Release);
@@ -178,8 +165,6 @@ impl Gate {
         let epoch = self.epoch.load(Ordering::Acquire);
         let (asked, token) = (request.epoch().0, request.lease_token().0);
         if asked < epoch {
-            // The env re-armed since this driver took its lease: the lease
-            // ended (its driver was not heard from) and went with the epoch.
             return Err(GymError::Refused(format!(
                 "epoch {asked} is stale; the session is in epoch {epoch}: this driver's lease \
                  ended (the host stopped hearing from it) and the env re-armed, so reconnect to \
@@ -222,8 +207,7 @@ impl LockstepHandler for Gated {
         let arrived = std::time::Instant::now();
         let waited = self.gate.check(&request).is_err();
         if waited {
-            // The driver may hold a lease (or epoch) the env's view has not
-            // seen yet: wait for the view, then decide.
+            // The driver may hold a lease or epoch the view has not seen yet: wait for the view, then decide.
             let deadline = tokio::time::Instant::now() + VIEW_CATCH_UP;
             loop {
                 let changed = self.gate.changed.notified();
@@ -261,9 +245,8 @@ impl LockstepHandler for Gated {
 /// A robot's command validation on the lockstep path: every step's
 /// commands pass the checks a wall-clock edge runs ([`CommandCheck`]:
 /// finite values, valid rotations, the declared limits, norm bounds and the
-/// binary snap) before the robot sees them, so the robot enforces its own
-/// limits whoever drives it. A step with an invalid action is refused
-/// whole, as the edge refuses a chunk.
+/// binary snap) before the robot sees them, whoever drives it. A step with an
+/// invalid action is refused whole.
 pub struct Limited {
     checks: BTreeMap<ChannelId, (String, CommandCheck)>,
     inner: Arc<dyn LockstepHandler>,
@@ -337,7 +320,6 @@ pub trait LockstepLink: Send + Sync + 'static {
     -> Result<Option<Bytes>, GymError>;
 }
 
-/// `future` bounded by `timeout`, when there is one.
 async fn within<T>(
     timeout: Option<Duration>,
     future: impl std::future::Future<Output = Result<T, GymError>>,
@@ -352,7 +334,6 @@ async fn within<T>(
 
 /// The same-process link: a function call, no serialisation. It holds
 /// the handler weakly, so a client outliving the env's server fails as a
-/// remote one would instead of stepping an env that stopped serving.
 pub struct DirectLink(pub Weak<dyn LockstepHandler>);
 
 impl DirectLink {
@@ -388,8 +369,6 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600);
 /// A query on `l/{robot}` over the lockstep class session, sealed under
 /// the lease's keys.
 pub struct ZenohLink {
-    /// Held as a transport so that dropping the last handle closes it off
-    /// the dropping thread.
     session: Transport,
     key: String,
     sealer: Sealer,
@@ -436,9 +415,6 @@ impl ZenohLink {
         }
     }
 
-    /// One sealed request: the env's sealed result. An unsealed error reply
-    /// is only a hint (anyone can answer `l/{robot}`), returned when no
-    /// sealed reply came.
     async fn exchange(
         &self,
         op: LockstepOp,
@@ -465,6 +441,8 @@ impl ZenohLink {
             .timeout(timeout)
             .await
             .map_err(|e| GymError::Closed(e.to_string()))?;
+        // An unsealed error reply is only a hint (anyone can answer `l/{robot}`), used only when no
+        // sealed reply came.
         let mut hint = None;
         while let Ok(reply) = replies.recv_async().await {
             match reply.result() {
@@ -492,16 +470,10 @@ impl ZenohLink {
                 Err(err) => hint = failure(&payload_bytes(err.payload())),
             }
         }
-        // No sealed reply: the env's plain refusal, or a Zenoh-level error
-        // (the queryable is gone).
         Err(hint.unwrap_or_else(|| unanswered(&self.robot, started, timeout)))
     }
 }
 
-/// A request whose replies ended with none: a timeout when its time ran
-/// out, else the env went away while it was in flight (its process exited,
-/// it left the session, or the link to it dropped), which waiting would
-/// not mend.
 pub(crate) fn unanswered(
     robot: &ParticipantId,
     started: tokio::time::Instant,
@@ -517,11 +489,8 @@ pub(crate) fn unanswered(
     }
 }
 
-/// How much sooner than its timeout a request's replies must end for the
-/// end to be its server going away rather than the timeout.
 pub(crate) const ENDED_EARLY: Duration = Duration::from_millis(100);
 
-/// The env's failure in `json`, if it names one.
 fn failure(json: &[u8]) -> Option<GymError> {
     failure_from_json(json)
         .filter(|f| !f.message.is_empty())
@@ -557,7 +526,6 @@ impl LockstepLink for ZenohLink {
     }
 }
 
-/// Answers request `request_id` under the lease `token`'s `k_obs`.
 async fn answer(
     query: &zenoh::query::Query,
     key: &str,
@@ -575,8 +543,6 @@ async fn answer(
         sealer.seal_lockstep_response(key, token, &LockstepResponse { request_id, result });
     let sent = match sealed {
         Ok(sealed) => query.reply(key, sealed).express(true).await,
-        // The driver left while its request ran (finished, or Ctrl-C): its
-        // lease, and the key to answer under, went with it.
         Err(err) => {
             debug!(%err, "lockstep reply not sealed");
             return;
@@ -587,9 +553,6 @@ async fn answer(
     }
 }
 
-/// `handled`'s reply with the exchange's own timing: the wire decode added
-/// to the handler's, the handler's whole call as its work when it measured
-/// none, and the total since arrival.
 async fn timed(
     handled: impl std::future::Future<Output = Result<LockstepReply, GymError>>,
     arrived: std::time::Instant,
@@ -609,7 +572,6 @@ async fn timed(
 
 /// Serves `handler` on `key` until `cancel` fires, opening requests and
 /// sealing replies under the lease keys `sealer` holds. `ready` runs once
-/// requests can arrive; what it returns lives as long as the serve.
 pub async fn serve_zenoh<R>(
     session: zenoh::Session,
     key: String,
@@ -618,8 +580,6 @@ pub async fn serve_zenoh<R>(
     sealer: Sealer,
     ready: Option<impl FnOnce() -> R>,
 ) -> Result<(), GymError> {
-    // Held as a transport: a serve cancelled with the last handle closes it
-    // off the dropping thread.
     let session = Transport::from_session(session);
     let queryable = session
         .control()
@@ -645,7 +605,6 @@ pub async fn serve_zenoh<R>(
         let (request, token) = match sealer.open_lockstep_request(&key, msg) {
             Ok(opened) => opened,
             Err(err) => {
-                // Not a lease holder's: a plain refusal, a hint only.
                 let refused = GymError::Refused(err.to_string());
                 if let Err(err) = query
                     .reply_err(failure_to_json(&refused.to_failure()))
@@ -681,7 +640,6 @@ pub async fn serve_zenoh<R>(
             LockstepOp::Reset(reset) => Request::Reset(reset),
             LockstepOp::Step(step) => Request::Step(step),
         };
-        // The request's lease is the one whose key it came under.
         if request.lease_token() != token {
             let refused = GymError::Refused(format!(
                 "lease token {} under the key of {token}",
@@ -691,8 +649,7 @@ pub async fn serve_zenoh<R>(
             continue;
         }
         let decode_ns = arrived.elapsed();
-        // Lane-scoped requests of a lane endpoint run side by side (as on
-        // v1's Join stream); everything else is served in order, inline.
+        // Lane-scoped requests run side by side; everything else is served in order, inline.
         let lane_scoped = match &request {
             Request::Reset(reset) => !reset.lanes.is_empty(),
             Request::Step(step) => !step.lanes.is_empty(),
@@ -770,7 +727,6 @@ mod tests {
             );
             (host, driver, link)
         });
-        // The link holds the only handle on its session.
         let dropped = timer_survives(async move { drop(link) });
         assert!(dropped, "a dropped link's session took a pending wakeup");
         drop((driver, host));

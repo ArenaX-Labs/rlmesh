@@ -1,8 +1,4 @@
-// The lobby and scene runs, unreleased (`fleet`), as python/rlmesh/tests/integration/
-// test_v2_session.py runs them through `rlmesh.realtime._fleet`: a lobby robot and a Node policy in
-// one scene on a loopback rlmesh host. dist/fleet.js is the package plus the private src/fleet.ts;
-// the npm package exports none of it. Needs an addon built with the `fleet` feature (a release
-// addon skips it) and `uv` with the in-tree Python env for the host.
+// The lobby and scene runs (`fleet`). Needs an addon built with the `fleet` feature and `uv` with the in-tree Python env for the host.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -20,7 +16,6 @@ test('the package exports none of the lobby and scenes', async () => {
   assert.equal('leaving' in pkg.Robot.prototype, false);
 });
 
-/** A free loopback port (a daemon listens on it). */
 async function freeBase() {
   const { createServer } = await import('node:net');
   const probe = createServer();
@@ -30,7 +25,6 @@ async function freeBase() {
   return port;
 }
 
-/** A host with its lobby on loopback, whose `local.key` this process attaches with (`rlmesh host --lobby`). */
 async function startDaemon() {
   const { spawn } = await import('node:child_process');
   // Short: its local channel is a Unix socket in there.
@@ -58,7 +52,6 @@ async function startDaemon() {
   };
 }
 
-// Only an addon built with `fleet` has the lobby and scenes.
 const fleetAddon = typeof createRequire(import.meta.url)(
   process.env.RLMESH_NATIVE ?? `../../dist/rlmesh.${process.platform}-${process.arch}.node`,
 ).runScene === 'function';

@@ -1,17 +1,7 @@
-//! The episode ledger under runtime-side truncation and episode caps.
-
 use super::*;
-
-// ---------------------------------------------------------------------------
-// The episode ledger under a runtime-side truncation: the runtime owns episode
-// ids (R1), so a peer-reported completion naming a superseded id is an echo.
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn an_endless_episode_under_next_step_fails_at_the_default_bound() {
-    // Lane 0 keeps finishing, lane 1 never does. Under NEXT_STEP the env owns
-    // its lanes, so the runtime cannot truncate lane 1; the edition's default
-    // bound fails the run there rather than letting it wait forever.
     let env = VectorTestEnv::new(vec![1, usize::MAX]);
     let error = tokio::time::timeout(
         Duration::from_secs(60),
@@ -35,9 +25,6 @@ async fn an_endless_episode_under_next_step_fails_at_the_default_bound() {
 
 #[tokio::test]
 async fn a_runtime_truncated_episode_counts_once() {
-    // max_episode_steps=4 over 3 episodes on an env that never terminates: the
-    // driver truncates and resets mid-episode, and each truncation completes
-    // its episode exactly once, after exactly the cap.
     let env = EndlessEnv::default();
     let hooks = Arc::new(RecordingHooks::default());
     let spec = RuntimeSessionSpec {
@@ -115,8 +102,6 @@ async fn a_runtime_truncated_episode_counts_once() {
     );
 }
 
-/// A scalar env that never ends an episode and reports `is_success: false` on
-/// every step, so only a runtime cap can finish it.
 #[derive(Clone, Default)]
 struct NeverSucceedsEnv;
 
@@ -159,8 +144,6 @@ impl RuntimeEnv for NeverSucceedsEnv {
 
 #[tokio::test]
 async fn a_runtime_capped_episode_keeps_the_last_step_success() {
-    // The capping step's info is the episode's last word on its outcome, as the
-    // Python Session loop reads it; dropping it reported success as unknown.
     let spec = RuntimeSessionSpec {
         max_episode_steps: Some(1),
         ..one_episode_spec()

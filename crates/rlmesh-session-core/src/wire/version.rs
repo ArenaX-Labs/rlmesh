@@ -2,12 +2,12 @@
 //!
 //! | Layer | Identifier | Rule |
 //! |---|---|---|
-//! | Generation | [`GENERATION`]: the key prefix `rlmesh/v2` and the protobuf package `rlmesh.session.v2` | A breaking change is a new generation on new keys; generations never share keys, so they never see each other's traffic. |
+//! | Generation | [`GENERATION`]: the key prefix `rlmesh/v2` and the protobuf package `rlmesh.session.v2` | A breaking change is a new generation on new keys, so generations never see each other's traffic. |
 //! | Schema | protobuf | Additive only. Unknown fields are ignored; unknown enum values are refused where safety depends on them (`Mode`, `PriorityClass`, `EdgeMode`, dtypes) and ignored elsewhere. |
-//! | Protocol minor | [`PROTOCOL_MINOR`], announced in `Attach` and `AuthorityState` | Monotonic, 0 at v0.2. Any minor talks to any other. New behaviour is a **feature string** (`"merge.blend"`). |
+//! | Protocol minor | [`PROTOCOL_MINOR`], announced in `Attach` and `AuthorityState` | Monotonic. Any minor talks to any other; new behaviour is a feature string. |
 //! | Features | `Attach.supports/requires`, `AuthorityState.supports`, `PartSpec.requires` | Attach fails with `CtlStatus::Incompatible` if the host lacks a feature the participant requires. |
-//! | Kind table | [`SPEC_VERSION`], in `DeclareParts` | New kinds and optional settings are additive. A host accepts a robot on any table from 1 up to its own, and refuses a newer one. |
-//! | Wire revision | [`WIRE_REVISION`], in `HandshakeRequest` and `HandshakeAccept` | Pre-release only: bumped on any wire-breaking change before 0.2.0 freezes the protocol, frozen there. A participant refuses a host on another revision, or one that sends none (an earlier 0.2 pre-release). A host refuses a participant on another revision, and admits one that sends none (a board flashed before revisions were sent). Both refuse with `CtlStatus::Incompatible`, naming both revisions. |
+//! | Kind table | [`SPEC_VERSION`], in `DeclareParts` | Additive. A host accepts a robot on any table from 1 up to its own and refuses a newer one. |
+//! | Wire revision | [`WIRE_REVISION`], in `HandshakeRequest` and `HandshakeAccept` | Pre-release only. A participant refuses a host on another revision or none; a host refuses a participant on another revision and admits one that sends none. Both refuse with `CtlStatus::Incompatible`, naming both revisions. |
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -23,13 +23,10 @@ pub const SPEC_VERSION: u32 = 1;
 
 /// This build's session wire revision: which transport and wire a 0.2
 /// pre-release speaks, so two builds of one version that cannot talk say so
-/// instead of timing out. 1: one port, which every traffic class dials.
-/// Bumped on any wire-breaking change before 0.2.0 freezes the protocol;
-/// frozen at 0.2.0. 0 on the wire is absent: a build from before the field,
-/// whose host listened on four ports.
+/// instead of timing out. Bumped on any wire-breaking change before 0.2.0
+/// freezes the protocol, frozen from then on. 0 on the wire means absent.
 pub const WIRE_REVISION: u32 = 1;
 
-/// What each wire revision was, by number.
 const REVISIONS: &[&str] = &["four ports: an earlier 0.2 pre-release", "one port"];
 
 /// What wire revision `revision` is (`"one port"`).
@@ -55,9 +52,9 @@ pub fn host_revision_mismatch(host: &str, revision: u32) -> Option<String> {
     })
 }
 
-/// Why a host refuses `participant`'s hello carrying `revision`, or `None`
-/// when it is this build's or absent (0: a board flashed before revisions
-/// were sent, which still talks to this host).
+/// Why a host refuses `participant`'s hello carrying `revision`, or `None` when
+/// it is this build's or absent (0: a board flashed before revisions were sent,
+/// which still talks to this host).
 pub fn participant_revision_mismatch(participant: &str, revision: u32) -> Option<String> {
     (revision != 0 && revision != WIRE_REVISION).then(|| {
         format!(
@@ -73,57 +70,45 @@ pub fn participant_revision_mismatch(participant: &str, revision: u32) -> Option
 /// listing it publishes on `host/view/{robot}`.
 pub const VIEW_DEVICE: &str = "view.device";
 
-/// A robot's `Attach.supports` asks for its device view sealed under its
-/// own `k_down` on `p/{robot}/view` as well (kind 20): a board opens that at
-/// a symmetric cipher's cost instead of checking a signature on each view.
-/// A host listing it publishes both; the signed one stays for every other
-/// reader and for robots that don't ask.
+/// A robot's `Attach.supports` asks for its device view sealed under its own
+/// `k_down` on `p/{robot}/view` as well (kind 20): a board opens that at a
+/// symmetric cipher's cost instead of checking a signature on each view. A
+/// host listing it publishes both; the signed view stays for every other reader.
 pub const VIEW_DEVICE_SEALED: &str = "view.device.sealed";
 
 /// A robot's `Attach.supports` asks for its device view without its parts
-/// (`DeviceView.parts` empty), except in the answer to its
-/// `DeclareParts`: it declared them, takes the host's normalised form once
-/// from that answer, and reads nothing of them in a view after. A host
-/// listing it sends such a robot each view smaller and cheaper to decode;
-/// one that does not sends the parts, which the robot skips unread.
+/// (`DeviceView.parts` empty), except in the answer to its `DeclareParts`: it
+/// declared them, takes the host's normalised form once from that answer, and
+/// reads nothing of them in a view after. A host that does not list it sends
+/// the parts, which the robot skips unread.
 pub const VIEW_DEVICE_LEAN: &str = "view.device.lean";
 
-/// A robot's `Attach.supports` takes its realtime parts over the datagram
-/// path its host offered in the handshake (`HandshakeAccept.datagram`): the
-/// host lists their routes in its device view, and relays its chunks and
-/// samples between those routes and their keys. A robot that does not list
-/// it, or a host that offered nothing, keeps every part on the session.
+/// A robot's `Attach.supports` takes its realtime parts over the datagram path
+/// its host offered in the handshake (`HandshakeAccept.datagram`): the host
+/// lists their routes in its device view, and relays its chunks and samples
+/// between those routes and their keys.
 pub const LINK_DATAGRAM: &str = "link.datagram";
 
-/// A host listing it may carry a scene's places in its authority state,
-/// and policies that name no robot bind against their view ([`crate::spec::view`]). A
-/// binder that lacks it refuses to bind in a
-/// session whose state carries places, unless given `robot=`: binding robot
-/// by robot there would read the wrong paths.
+/// A host listing it may carry a scene's places in its authority state, and
+/// policies that name no robot bind against their view ([`crate::spec::view`]).
+/// A binder that lacks it refuses to bind in a session whose state carries
+/// places unless given `robot=`.
 pub const SCENE_PLACES: &str = "scene.places";
 
 /// A hand-back: a release that names the participant its lease preempted
-/// (`ReleaseLease.to`), which takes the parts again
-/// (`LeaseEnd.to`). A host listing it checks the hand-back and records
-/// it on the lease's end; one that does not would read a plain release, so
-/// a holder asks only a host that lists it. A participant's
-/// `Attach.supports` says it resumes a part handed back to it; the host
-/// refuses a hand-back to one that does not list it, which would stay
-/// parked.
+/// (`ReleaseLease.to`), which takes the parts again (`LeaseEnd.to`). A holder
+/// asks for one only from a host that lists it. A participant lists it in
+/// `Attach.supports` to say it resumes a part handed back to it; the host
+/// refuses a hand-back to one that does not.
 pub const LEASE_HANDBACK: &str = "lease.handback";
 
-/// A robot's `Attach.supports` declares that it runs on the lockstep
-/// clock: it advances one step per `l/{robot}` request and waits between
-/// them. The roster carries it (`ParticipantInfo.supports`), so every
-/// participant learns a robot's clock from the authority state, before the
-/// robot serves a step. A robot that does not list it is on the wall clock.
-/// The host takes no part in it, so it is not a host feature.
+/// A robot's `Attach.supports` declares that it runs on the lockstep clock: it
+/// advances one step per `l/{robot}` request and waits between them. The roster
+/// carries it (`ParticipantInfo.supports`); a robot that does not list it is on
+/// the wall clock. It is not a host feature.
 pub const CLOCK_LOCKSTEP: &str = "clock.lockstep";
 
-/// Features this build implements as a host: behaviour added in later
-/// minors. `auth.sealed`: participants attach through the handshake and
-/// seal their control traffic; [`VIEW_DEVICE`]; [`VIEW_DEVICE_SEALED`];
-/// [`VIEW_DEVICE_LEAN`]; [`SCENE_PLACES`]; [`LEASE_HANDBACK`].
+/// Features this build implements as a host: behaviour added in later minors.
 pub const FEATURES: &[&str] = &[
     "auth.sealed",
     VIEW_DEVICE,
@@ -160,8 +145,6 @@ mod tests {
                  same release"
             )
         );
-        // A host admits a participant that sends no revision, and refuses
-        // any other.
         assert_eq!(participant_revision_mismatch("eye-3", 0), None);
         assert_eq!(participant_revision_mismatch("eye-3", WIRE_REVISION), None);
         assert_eq!(

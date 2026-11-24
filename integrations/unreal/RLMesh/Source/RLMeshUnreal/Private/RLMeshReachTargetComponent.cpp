@@ -22,7 +22,7 @@ rlmesh::spaces::Space URLMeshReachTargetComponent::ActionSpace() const
 }
 
 rlmesh::ResetResult URLMeshReachTargetComponent::ResetEnv(std::optional<int64_t> Seed,
-														  const std::optional<rlmesh::InfoDict>& /*Options*/)
+														  const std::optional<rlmesh::InfoDict>&)
 {
 	if (Seed)
 	{

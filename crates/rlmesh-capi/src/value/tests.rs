@@ -1,4 +1,3 @@
-//! ABI 5 Value/Tensor ownership, type checks and header discriminants.
 #![allow(unsafe_code)]
 use super::{handle::*, tensor::*};
 use crate::abi::status::{RLMeshStatus as S, rlmesh_last_error_status};

@@ -3,7 +3,6 @@ using UnityEngine;
 
 namespace RLMesh.Unity
 {
-    // A persistent pump survives destruction/disable of the served component.
     public sealed class PlayerShutdown : MonoBehaviour
     {
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
@@ -24,7 +23,7 @@ namespace RLMesh.Unity
         private bool WantsToQuit()
         {
             QuitPreflight.TryShutdown(TimeSpan.FromSeconds(5), UnityEnvHost.Shutdown, UnityEnvHost.Pending, Debug.LogWarning);
-            return true; // Accept the original Quit(code), including failure codes.
+            return true;
         }
         private void Update() { UnityEnvHost.Pump(); }
         private void OnQuitting()

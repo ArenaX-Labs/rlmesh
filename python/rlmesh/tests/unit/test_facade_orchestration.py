@@ -1,5 +1,3 @@
-"""Language glue preserves caller context around the shared Rust run/bind core."""
-
 from __future__ import annotations
 
 import threading
@@ -23,8 +21,6 @@ class Env:
 
     def reset(self, **kwargs: object) -> tuple[int, dict[str, object]]:
         self.calls.append(("reset", threading.get_ident()))
-        # A sync call on another model must be legal from a caller-side env
-        # callback (outside the facade's async driving context).
         assert rlmesh.Model(lambda obs: 0).run(self, episodes=0).num_episodes == 0
         return 0, {"nested": {"flag": True, "large": 2**60, "raw": b"\x00x"}}
 
@@ -319,8 +315,6 @@ def test_ctrl_c_interrupts_reset_over_a_live_episode() -> None:
 
 
 class Counter:
-    """Observes its step count; three steps an episode; records each action."""
-
     render_mode = None
 
     def __init__(self) -> None:
@@ -448,12 +442,10 @@ def test_run_routes_split_the_trials_and_a_failed_route_fails_alone() -> None:
             server.shutdown()
 
     assert isinstance(results[1], Exception) and "env gone" in str(results[1])
-    # A route cannot run routes of its own: the outer Ctrl-C would never reach them.
     assert isinstance(nested, RuntimeError) and "inside a running route" in str(nested)
     merged = rlmesh.RunResult.merge(
         r for r in results if isinstance(r, rlmesh.RunResult)
     )
-    # Five episodes over three routes: trials 0-1, 2-3 (failed) and 4.
     assert [e.trial for e in merged.episodes] == [0, 1, 4]
     assert [e.index for e in merged.episodes] == [0, 1, 2]
     assert all(e.seed is not None for e in merged.episodes)

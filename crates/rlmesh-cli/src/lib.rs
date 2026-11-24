@@ -57,9 +57,9 @@ pub async fn run_cli(
     .await
 }
 
-/// Runs the CLI with explicit settings (file locations, keychain use, API
-/// key), so a test or an embedder can confine it without touching the
-/// process environment.
+/// Runs the CLI with explicit settings (file locations, keychain use, API key),
+/// so a test or an embedder can confine it without touching the process
+/// environment.
 pub async fn run_cli_in(
     settings: Settings,
     argv: Vec<OsString>,

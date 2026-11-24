@@ -1,7 +1,3 @@
-// The browser binding's .wasm (`mise run check:js:wasm`, after `build:js`):
-// - imports: it may only import wasm-bindgen glue ("./<name>_bg.js" / "wbg"). An `env` or `wasi_*`
-//   import means something pulled in libc or WASI, which a browser cannot satisfy;
-// - size: gzip -9 of the optimized .wasm must stay under the budget (--max-gzip N bytes).
 import { readFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 

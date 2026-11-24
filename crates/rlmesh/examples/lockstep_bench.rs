@@ -1,25 +1,3 @@
-//! The acceptance bench: a teleoperation loop in a realtime session.
-//!
-//! T1: the env is the embodiment, observation
-//! `Dict(ft: Box(18) f32, stamp: Box(4) i64)`, action `Box(6) f32`; the
-//! model copies `ft` into the command and tags it with the step seq. No
-//! camera, no pacing: one step as fast as env and model allow. Two
-//! processes: the env server (a child) and `Model::run` with the model in
-//! process.
-//!
-//! Loop latency is `cmd_age`: the time the env receives an action
-//! minus the capture time of the observation it was computed from.
-//!
-//! `--lanes N` (N > 1) is the vectorised case: a vector env of N lanes, one
-//! message per step carrying N-lane slabs, and a model with a batched
-//! corner (one `predict_batch` of N observations per step).
-//!
-//! ```text
-//! cargo run --release -p rlmesh --example lockstep_bench -- \
-//!     [--lanes 1] [--warmup 3] [--measure 30]
-//! ```
-//!
-//! It spawns its own env child, prints one JSON line and exits.
 #![allow(
     clippy::print_stdout,
     clippy::print_stderr,
@@ -98,10 +76,8 @@ fn spaces_t1() -> rlmesh::Result<(Space, Space)> {
     Ok((obs.into(), f32_box(6)?))
 }
 
-/// The env side's measurements.
 struct Clock {
     capture_by_seq: Vec<u64>,
-    /// (ft capture ns, action arrival ns), measured window only.
     applied: Vec<(u64, u64)>,
     start_ns: u64,
     measure_from_ns: u64,
@@ -137,7 +113,6 @@ impl Clock {
         self.end_ns = self.measure_from_ns + (self.measure * 1e9) as u64;
     }
 
-    /// One observation's stamp: `[capture_ns, 0, 0, seq]`.
     fn capture(&mut self) -> (u64, Vec<u8>, Vec<u8>) {
         let capture_ns = now_ns();
         let seq = self.seq;
@@ -203,7 +178,6 @@ impl Clock {
     }
 }
 
-/// The T1 embodiment (one lane).
 struct Embodiment {
     obs: Space,
     act: Space,
@@ -250,7 +224,6 @@ impl Env for Embodiment {
     }
 }
 
-/// The vectorised T1: N lanes stepped in lockstep, one stamp per step.
 struct VectorEmbodiment {
     obs: Space,
     act: Space,
@@ -317,7 +290,6 @@ impl VectorEnv for VectorEmbodiment {
     }
 }
 
-/// The trivial controller: copies ft into the command, tagged with the seq.
 struct Controller;
 
 fn command(observation: &Value) -> rlmesh::Result<[f32; 6]> {
@@ -388,7 +360,6 @@ fn run(args: &Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
         .args(["--measure", &args.get("measure", "30")])
         .stdout(Stdio::piped())
         .spawn()?;
-    /// Stops the env child whatever happens to the run.
     struct Reap(std::process::Child);
     impl Drop for Reap {
         fn drop(&mut self) {
@@ -406,9 +377,7 @@ fn run(args: &Args) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let result = model.run(
         address.as_str(),
         rlmesh::RunOptions {
-            // A vector env truncates every lane on the same step.
             episodes: Some(lanes as u64),
-            // NEXT_STEP (the vector env) owns its truncation.
             max_episode_steps: (lanes == 1).then_some(u64::MAX / 4),
             ..Default::default()
         },

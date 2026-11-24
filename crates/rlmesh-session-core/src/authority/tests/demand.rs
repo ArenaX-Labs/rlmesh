@@ -1,5 +1,3 @@
-//! Delivery contracts: admission, demand and install before authority.
-
 use super::*;
 
 fn contract(
@@ -104,9 +102,6 @@ fn a_lease_waits_until_every_bound_stream_installed_its_plan() {
         Some(1)
     );
 
-    // A second controller wants a deeper window: the demand (and its
-    // revision) changes, but the first binding stays served by
-    // revision 1.
     let deeper = contract(ft, ContractMode::History, 20.0, 100, None);
     f.bind_with("operator", 21, &["cmd2"], vec![deeper])
         .expect("bind");
@@ -124,8 +119,6 @@ fn a_lease_waits_until_every_bound_stream_installed_its_plan() {
     f.ack("ft", 2).expect("ack");
     f.grant("operator", "cmd2", 0).expect("granted");
 
-    // A controller that goes away takes its contract along; the last
-    // one withdraws the demand.
     f.auth.participant_lost(&pid("operator"), 1);
     assert_eq!(f.demand("ft").map(|d| d.revision), Some(3));
     f.run("policy", Command::Detach, 2).expect("detach");
@@ -174,7 +167,6 @@ fn contracts_a_stream_cannot_meet_are_refused_at_admission() {
         assert_eq!(err.status, status, "{}", err.message);
         assert!(err.message.contains(needle), "{}", err.message);
     }
-    // A window on a commandable part's applied stream is a stream too.
     let applied = f
         .auth
         .part(cmd1)
@@ -188,7 +180,6 @@ fn contracts_a_stream_cannot_meet_are_refused_at_admission() {
     )
     .expect("an applied stream");
     assert!(f.auth.demands.contains_key(&applied));
-    // An action grid on a part the binding does not command.
     let off_grid = Command::DeclareBinding {
         fingerprint: Fingerprint::from(33),
         revision: 3,
@@ -323,7 +314,6 @@ fn windows_may_fill_the_ring_cap_exactly_but_not_exceed_it() {
             0,
         )
         .expect("attach");
-    // 1024 samples of 512 KiB is the cap; 8 bytes more per sample is over.
     let exact = 512 << 10;
     let part = |bytes: u64| {
         format!(

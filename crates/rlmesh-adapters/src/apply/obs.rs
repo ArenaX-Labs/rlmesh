@@ -1,7 +1,3 @@
-//! Apply resolved observation plans: dispatch each model input to its
-//! per-kind application (image / state / text / custom), scattering each
-//! produced value into the assembled payload `Value` tree at its placement.
-
 use std::collections::BTreeMap;
 
 use rlmesh_session_core::spec::role::apply::Array;
@@ -15,7 +11,6 @@ use crate::error::ApplyError;
 use crate::path::{NodePath, PathSeg};
 use crate::plans::{ImagePlan, ObsPlan, StackedPlacement, StatePlan};
 
-/// One model image input from a raw observation.
 pub(crate) fn apply_image(
     plan: &ImagePlan,
     raw_obs: &BTreeMap<String, Value>,
@@ -38,9 +33,6 @@ pub(crate) fn apply_image(
     Ok(Value::Tensor(from_array(image)?))
 }
 
-/// A camera value as a tensor: an array as is, encoded image bytes decoded
-/// with their own channel count (grayscale → 1, luma+alpha → 2, RGB → 3,
-/// RGBA → 4), so a declared-channel check sees what the env sent.
 fn decode_frame(value: &Value) -> Result<Tensor, ApplyError> {
     match value {
         Value::Tensor(tensor) => Ok(tensor.clone()),
@@ -67,8 +59,6 @@ fn decode_frame(value: &Value) -> Result<Tensor, ApplyError> {
     }
 }
 
-/// One model state input from a raw observation; `previous` is the raw
-/// action executed at the previous step, for an action-source part.
 pub(crate) fn apply_state(
     plan: &StatePlan,
     raw_obs: &BTreeMap<String, Value>,
@@ -93,14 +83,11 @@ pub(crate) fn apply_state(
 
 /// Convert a raw env observation into the model input payload `Value` tree.
 ///
-/// Each plan produces one leaf [`Value`]; the leaf is scattered to its
-/// `placement` in the tree (materializing `Value::Map`/`Value::List` containers
-/// en route). A root (empty) placement means the whole payload IS that one
-/// value (a bare-tensor model). Role fan-out is automatic: two plans with the
-/// same role but different placements each read the same env source and place
-/// into different positions — no special machinery. `previous` is the raw
-/// action executed at the previous step for any action-source state part
-/// (`None` reads its fill; the stateful seam supplies the recorded row).
+/// Each plan produces one leaf [`Value`], placed at its `placement` in the tree (creating
+/// `Value::Map`/`Value::List` containers as needed); an empty placement makes that value the
+/// whole payload. Plans may share a role and read the same env source into several positions.
+/// `previous` is the raw action executed at the previous step, read by action-source state
+/// parts; `None` uses their fill.
 pub fn transform_obs(
     plans: &[ObsPlan],
     raw_obs: &BTreeMap<String, Value>,
@@ -136,14 +123,6 @@ pub fn transform_obs(
     Ok(builder.finish())
 }
 
-/// Apply only the frame-stacked image plans and return their processed frames,
-/// in `stacked` order.
-///
-/// The observe half of [`transform_obs`]: an env step that replays a queued
-/// action still has to advance every frame window, but it assembles no payload
-/// and calls no model. `plan_index` addresses each stacked input's plan
-/// directly, so nothing else in the spec is applied — a custom input's host
-/// transform in particular never runs on a step that predicts nothing.
 pub(crate) fn observe_obs(
     plans: &[ObsPlan],
     stacked: &[StackedPlacement],
@@ -169,11 +148,6 @@ pub(crate) fn observe_obs(
         .collect()
 }
 
-/// Scatters produced leaves into a payload `Value` tree by placement path.
-///
-/// A `Key` segment materializes a [`Value::Map`]; an `Index` segment a
-/// [`Value::List`] (grown with placeholders as needed). A root (empty)
-/// placement sets the whole payload to that one value (a bare-tensor model).
 struct NodeBuilder {
     /// `None` until the first placement; the bare-tensor (root) case sets it
     /// directly, every keyed/indexed case grows a Map/List from an empty Map.
@@ -195,8 +169,6 @@ impl NodeBuilder {
             self.root = Some(value);
             return Ok(());
         }
-        // Non-root placements grow from a Map root (a dict payload) or a List
-        // root (a tuple payload), chosen by the first segment's kind.
         let root = self.root.get_or_insert_with(|| match placement.0.first() {
             Some(PathSeg::Index(_)) => Value::List(Vec::new()),
             _ => Value::Map(BTreeMap::new()),
@@ -209,15 +181,11 @@ impl NodeBuilder {
     }
 }
 
-/// Insert `value` at the `segments` path within `node`, materializing
-/// `Map`/`List` containers en route.
 fn insert_at(node: &mut Value, segments: &[PathSeg], value: Value) -> Result<(), ApplyError> {
     let Some((head, rest)) = segments.split_first() else {
         *node = value;
         return Ok(());
     };
-    // An empty placeholder (a freshly traversed child or a grown list slot)
-    // takes the container kind its next segment needs.
     match (head, &*node) {
         (PathSeg::Key(_), Value::List(items)) if items.is_empty() => {
             *node = Value::Map(BTreeMap::new());
@@ -325,8 +293,6 @@ mod tests {
 
     #[test]
     fn encoded_image_bytes_decode_with_their_own_channel_count() {
-        // A grayscale or RGBA image must not be silently expanded or cut to 3
-        // channels: a declared-channel check has to see what the env sent.
         for (pixels, color, channels) in [
             (vec![10_u8, 20, 30], image::ColorType::Rgb8, 3),
             (vec![42], image::ColorType::L8, 1),

@@ -1,11 +1,3 @@
-"""How an in-process host carries boards' realtime parts.
-
-- By default it listens for the datagram path on UDP, on its own port number.
-- ``RLMESH_BOARD_DATA=tcp`` or ``Host(board_data="tcp")`` binds no UDP
-  socket there, so a sandbox that forbids UDP sets one variable.
-- A bad value is refused with ``rlmesh host``'s message.
-"""
-
 from __future__ import annotations
 
 import socket
@@ -17,7 +9,6 @@ POSSIBLE = "[possible values: tcp, udp, udp-only]"
 
 
 def _udp_taken(host: realtime.Host) -> bool:
-    """Whether the host holds UDP on its port number."""
     ip, port = host.address.split("/")[0].split("#")[0].rsplit(":", 1)
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         try:
@@ -47,7 +38,7 @@ def test_the_variable_set_to_tcp_binds_no_udp(monkeypatch: pytest.MonkeyPatch) -
 def test_host_board_data_tcp_binds_no_udp(
     board_data: realtime.BoardData | str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("RLMESH_BOARD_DATA", "udp")  # the argument wins
+    monkeypatch.setenv("RLMESH_BOARD_DATA", "udp")
     with realtime.Host(board_data=board_data) as host:  # pyright: ignore[reportArgumentType]
         assert not _udp_taken(host)
 

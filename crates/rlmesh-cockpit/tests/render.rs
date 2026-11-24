@@ -1,16 +1,3 @@
-//! The cockpit's UI, headless: egui_kittest drives the real widgets
-//! (accessibility tree, clicks) and renders frames offscreen with wgpu
-//! (lavapipe without a GPU). No display, no browser.
-//!
-//! Rendered frames go to `$RLMESH_COCKPIT_SNAPSHOTS` (default: this test
-//! binary's target tmpdir, `cockpit/`). Without any wgpu adapter the
-//! rendering test says so and passes, unless `RLMESH_COCKPIT_REQUIRE_RENDER`
-//! is set.
-//!
-//! `live_session` (ignored) attaches to a running session instead:
-//! `RLMESH_COCKPIT_ADDRESS=... cargo test -p rlmesh-cockpit --test render -- --ignored`.
-
-// The helpers report where frames went, or why none were rendered.
 #![allow(clippy::print_stderr)]
 
 mod common;
@@ -48,7 +35,6 @@ fn out_dir() -> PathBuf {
     dir
 }
 
-/// Renders every tab to `{prefix}-{tab}.png`; `false` when no adapter.
 fn render_tabs(harness: &mut Harness<'static, State>, prefix: &str) -> bool {
     for (tab, name) in [
         (Tab::Measured, "measured"),
@@ -80,7 +66,6 @@ fn render_tabs(harness: &mut Harness<'static, State>, prefix: &str) -> bool {
         };
         let path = out_dir().join(format!("{prefix}-{name}.png"));
         image.save(&path).expect("save");
-        // The e-stop button is drawn on every tab, red and large.
         let red = image
             .pixels()
             .filter(|p| {
@@ -104,8 +89,6 @@ fn render_tabs(harness: &mut Harness<'static, State>, prefix: &str) -> bool {
 fn every_tab_renders_headless_with_the_estop_visible() {
     let mut w = World::ur10e();
     w.run(3_000);
-    // A takeover, a fenced chunk, then the edge holding: something in
-    // every panel.
     w.grant("operator");
     w.run(400);
     w.edge_mode = EdgeMode::Hold;
@@ -114,7 +97,6 @@ fn every_tab_renders_headless_with_the_estop_visible() {
     w.run(500);
     let mut h = harness(w.model.view(w.now));
     h.run();
-    // The four panels are there, by their accessible labels.
     for label in [
         "Live channels",
         "Declared vs measured",
@@ -139,7 +121,6 @@ fn estop_is_one_click_and_arm_asks_first() {
     h.run();
     assert_eq!(h.state().2, [Verb::Estop], "one click, no confirmation");
 
-    // ACTIVE: arm is not offered.
     assert!(!h.state().0.header.can_arm);
     w.verb("cockpit", Command::Disarm).expect("disarm");
     w.publish_snapshot();

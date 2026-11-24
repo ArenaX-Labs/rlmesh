@@ -170,7 +170,6 @@ internal static unsafe class Callbacks
     {
         try
         {
-            // Attach first so a text failure preserves the original exception.
             GCHandle payload = ManagedRoots.Allocate(ExceptionDispatchInfo.Capture(exception), "error payload", CallbackContext.HostedBy);
             try { Native.rlmesh_ext_callback_set_tagged_error_payload((void*)GCHandle.ToIntPtr(payload), FreePayloadPointer, (void*)PayloadTag); }
             catch { ManagedRoots.Free(payload); throw; }
@@ -190,7 +189,7 @@ internal static unsafe class Callbacks
         catch
         {
             try { Native.rlmesh_callback_set_error((sbyte*)FallbackText, 0); }
-            catch { /* A manually replaced library cannot unwind through C either. */ }
+            catch { }
         }
         return RLMeshStatus.RLMESH_ERR_ENVIRONMENT;
     }

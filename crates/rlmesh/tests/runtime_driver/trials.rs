@@ -1,5 +1,3 @@
-//! Trial ordinals and reset options on the wire.
-
 use super::*;
 
 #[tokio::test]
@@ -14,14 +12,11 @@ async fn declared_env_receives_the_trial_ordinal_on_every_reset() {
         .await
         .unwrap();
 
-    // One reset per episode (driver-owned resets), each carrying the next ordinal.
     let options = env.reset_options.lock().unwrap().clone();
     assert_eq!(
         options.iter().map(recorded_trial).collect::<Vec<_>>(),
         vec![Some(100), Some(101), Some(102)],
     );
-    // The window rule: a shard walks exactly its `max_episodes` ordinals, so the
-    // next shard's base is base + M.
     assert_eq!(report.total_episodes, 3);
     assert_eq!(
         report
@@ -78,8 +73,6 @@ async fn undeclared_env_is_not_sent_the_ordinal_but_the_report_still_carries_it(
 
 #[tokio::test]
 async fn no_trial_base_walks_the_ordinals_from_zero() {
-    // The ordinal is on by default: with `trial_index_base` unset a declaring env
-    // receives 0, 1, 2 ... and the report / hooks carry the same sweep.
     let env = TestEnv::default();
     let hooks = Arc::new(RecordingHooks::default());
     let spec = trial_spec(3, &["trial_index"]);
@@ -115,8 +108,6 @@ async fn no_trial_base_walks_the_ordinals_from_zero() {
 
 #[tokio::test]
 async fn no_trial_base_still_withholds_the_ordinal_from_an_undeclared_env() {
-    // Minted by default, delivered only on declaration: a plain env keeps its
-    // options-less reset, while the report still records the sweep.
     let env = TestEnv::default();
     let report = new_driver(
         trial_spec(2, &[]),
@@ -148,9 +139,6 @@ async fn no_trial_base_still_withholds_the_ordinal_from_an_undeclared_env() {
 
 #[tokio::test]
 async fn next_step_autoreset_mints_no_ordinal() {
-    // Under NEXT_STEP the env restarts its own lanes: the default base validates
-    // (an explicit 0 as well, the Python surface always passes an integer) but
-    // no ordinal is minted, so neither the declaring env nor the report sees one.
     for base in [None, Some(0)] {
         let env = VectorTestEnv::new(vec![2, 3]);
         let hooks = Arc::new(RecordingHooks::default());
@@ -191,9 +179,6 @@ async fn next_step_autoreset_mints_no_ordinal() {
 }
 #[tokio::test]
 async fn the_driver_sends_the_shared_reset_options_encoding_on_the_wire() {
-    // The literal encoding, not a restatement of the fn the driver calls: a
-    // single-lane reset carries the bare integer and a multi-lane reset the
-    // list in lane order.
     let env = TestEnv::default();
     let hooks = Arc::new(RecordingHooks::default());
     let mut spec = trial_spec(2, &["trial_index"]);

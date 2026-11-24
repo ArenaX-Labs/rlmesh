@@ -1,7 +1,3 @@
-//! Binding a lowered model spec to a lowered Gym env by role: matching
-//! each model leaf and each env actuator to its counterpart, then planning
-//! them (`image`, `state`, `text`, `custom`, `action`).
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -26,14 +22,8 @@ pub(super) fn err(code: ErrorCode, message: String) -> Error {
     Error::new(code, message)
 }
 
-/// Upgrade a would-be `MissingRole` to [`ErrorCode::UnsupportedKind`] when the
-/// env declares the referenced `role` only as an *unrecognized observation
-/// kind*. Called at each planner's role-lookup miss *before* any fallback
-/// (optional zero-fill, text default, lone-camera bind): a role whose data the
-/// env actually provides but under a kind this core cannot read is present-but-
-/// unreadable, so we fail loud ("upgrade the runtime") rather than silently
-/// degrading — and rather than misdirecting the operator to "add the role". A
-/// `role` the env understands (not in `unknown_roles`) passes through.
+/// Fails with [`ErrorCode::UnsupportedKind`] instead of `MissingRole` when the env declares `role`
+/// only as an unrecognized observation kind. Call before any fallback.
 pub(super) fn reject_referenced_unknown(
     role: &str,
     placement: &NodePath,
@@ -54,22 +44,9 @@ pub(super) fn reject_referenced_unknown(
     Ok(())
 }
 
-/// The C14 geometry rules, shared verbatim by `frame` (state parts and action
-/// components) and `reference` (delta action components) -- they differ only in
-/// their vocabulary and wording, carried by [`Attr`].
-///
-/// Returns the *agreed* value to record on the plan, and pushes at most one
-/// advisory. The five cases:
-///
-/// 1. both silent -- nothing to check, nothing said.
-/// 2. env declares, model silent -- the env stated a fact the model has no
-///    requirement against; the value carries through, silently.
-/// 3. model declares, env silent -- the model states a requirement the env
-///    cannot confirm: `caution` (it fires only when a model opts in).
-/// 4. both declare, equal -- agreement, silently.
-/// 5. both declare, differing -- a hard [`ErrorCode::FrameMismatch`]. So is an
-///    unrecognized value on either side: a geometry this core cannot name is a
-///    geometry it cannot verify (the tolerant codec still relays it).
+/// The `frame` and `reference` geometry rules: returns the agreed value to record on the plan and
+/// pushes at most one advisory. Differing declarations, or an unrecognized value, are an
+/// [`ErrorCode::FrameMismatch`].
 pub(super) fn check_geometry(
     attr: Attr,
     role: &str,
@@ -119,9 +96,6 @@ pub(super) fn check_geometry(
     }
 }
 
-/// The identity a leaf binds by: `(role, part, provenance)` exactly as
-/// declared. The provenance lets a sim publish one role as its truth and as
-/// its estimate; images and actions carry none (`None`).
 pub(super) type LeafKey = (String, Option<String>, Option<String>);
 
 fn leaf_key(role: &str, part: Option<&str>, provenance: Option<&str>) -> LeafKey {
@@ -132,11 +106,6 @@ fn leaf_key(role: &str, part: Option<&str>, provenance: Option<&str>) -> LeafKey
     )
 }
 
-/// The `provenance` rules, the frame table verbatim with the model side an
-/// accept set: both silent, silent; env only, silent; model only, `caution`;
-/// the env's value in the model's set, silent; anything else, including a
-/// value outside the vocabulary on either side, a hard
-/// [`ErrorCode::ProvenanceMismatch`]. Returns the value to record on the plan.
 pub(super) fn check_provenance(
     role: &str,
     env: Option<&FrameRef>,
@@ -216,9 +185,6 @@ fn index_by_role<'spec, T>(
     Ok(by_role)
 }
 
-/// Index leaves by `(role, part, provenance)`: a role may repeat across
-/// parts (one `proprio/eef_pos` per arm) or provenances (a sim's truth beside
-/// its estimate), never within one key.
 pub(super) fn index_by_key<'spec, T>(
     features: impl Iterator<Item = (&'spec str, Option<&'spec str>, Option<&'spec str>, T)>,
     label: &str,
@@ -241,42 +207,24 @@ pub(super) fn index_by_key<'spec, T>(
     Ok(by_key)
 }
 
-/// Whether any indexed leaf carries `role` (under any part).
 pub(super) fn has_role<T>(by_key: &BTreeMap<LeafKey, T>, role: &str) -> bool {
     by_key.keys().any(|(indexed, _, _)| indexed == role)
 }
 
-/// What a seeker found for `(role, part)` among the other side's leaves.
 pub(super) struct Bound<'a, T> {
     pub feature: &'a T,
     /// The part the leaf was bound under.
     pub part: Option<String>,
 }
 
-/// The `part` and `provenance` identity rules, shared by every planner.
-/// `seeker` names who is looking (`model input "state"`, `env action`),
-/// `what` the role's kind word (`state role`), `offerer` whose leaves are
-/// searched (`env`, `model`).
+/// The `part` and `provenance` identity rules shared by every planner: a named part binds only
+/// that leaf; otherwise the part-less leaf, else the only leaf of the role under any part.
+/// Ambiguity is never guessed through.
 ///
-/// The part rule picks the `(role, part)` the seeker binds under:
-///
-/// - A named part binds only that leaf; it never rebinds (`Ok(None)` when the
-///   offerer lacks it, for the caller's optional/fill fallback or error).
-/// - No part binds the offerer's part-less leaf when there is one; else its
-///   *only* leaf of that role under any part, with an `info` naming the bind;
-///   else, several candidates are a [`MissingRole`](ErrorCode::MissingRole)
-///   that names the parts -- ambiguity is never guessed through.
-///
-/// The provenance rule then picks one leaf among those under that key (an
-/// env may publish a role as its truth and as its estimate):
-///
-/// - A seeker that accepts provenances binds the first of them, in its own
-///   order, that the offerer declares; when none matches and the offerer has
-///   one leaf, that leaf binds and [`check_provenance`] reports the
-///   disagreement (or the caution) precisely; with several it is a
-///   [`ProvenanceMismatch`](ErrorCode::ProvenanceMismatch) naming them.
-/// - A seeker that pins none binds the only leaf; several are an
-///   [`Ambiguous`](ErrorCode::Ambiguous) naming their provenances.
+/// Among the leaves under that `(role, part)`, a seeker that accepts provenances binds the first
+/// of them the offerer declares; with no match, a single leaf binds and [`check_provenance`]
+/// reports the disagreement, while several are a `ProvenanceMismatch`. A seeker that pins none
+/// binds the only leaf; several are `Ambiguous`.
 #[allow(
     clippy::too_many_arguments,
     reason = "the seeker's identity (role, part, provenance) plus the three message words; \
@@ -378,15 +326,12 @@ pub(super) fn seek<'a, T>(
     }))
 }
 
-/// The named projections a resolve may apply (the model spec's `allow`) and
-/// the ones it has applied so far, each with what it applied to.
 pub(super) struct Projections {
     allowed: Vec<Projection>,
     applied: Vec<AppliedProjection>,
 }
 
 impl Projections {
-    /// A ledger allowing `allowed`, for tests that plan one leaf.
     #[cfg(test)]
     pub(super) fn allowing(allowed: &[Projection]) -> Self {
         Self {
@@ -395,8 +340,6 @@ impl Projections {
         }
     }
 
-    /// Records `projection` applied to `target`; refused with `code` and
-    /// `refusal` (plus how to allow it) when the model spec does not allow it.
     pub(super) fn apply(
         &mut self,
         projection: Projection,
@@ -419,8 +362,6 @@ impl Projections {
     }
 }
 
-/// Model outputs no env actuator reads: refused, unless the model spec allows
-/// `drop_action`, which then records each one it discards.
 fn project(
     projections: &mut Projections,
     outputs: &action::ModelOutputs<'_>,
@@ -480,8 +421,6 @@ pub fn bind(spec: &Spec, env: &Env, trust_entrypoints: bool) -> Result<Binding> 
         allowed: spec.allow.clone(),
         applied: Vec::new(),
     };
-    // The model's own outputs, keyed once: the action planner binds env
-    // actuators to them, and a state part reading its previous action does too.
     let outputs = action::index_outputs(&spec.output)?;
     let images = env
         .images
@@ -500,9 +439,6 @@ pub fn bind(spec: &Spec, env: &Env, trust_entrypoints: bool) -> Result<Binding> 
     let states_by_role: BTreeMap<LeafKey, &EnvState> = index_by_key(states, "env state")?;
     let texts_by_role: BTreeMap<String, &EnvText> = index_by_role(texts, "env text")?;
 
-    // Side table for referenced-unknown detection: a role the env declares only
-    // as an unrecognized observation kind. A roleless unknown leaf is
-    // unreferenceable, so it never enters here (drop-only).
     let unknown_roles: BTreeMap<String, String> = env
         .unknown
         .iter()
@@ -514,10 +450,6 @@ pub fn bind(spec: &Spec, env: &Env, trust_entrypoints: bool) -> Result<Binding> 
         })
         .collect();
 
-    // The quiet channel: surfaced through `advisories()` but kept out of
-    // `describe()`. The geometry cautions belong here -- nothing was dropped or
-    // fabricated, so they have no business in the `dropped:` section describe()
-    // builds from the other channel.
     let mut quiet: Vec<Advisory> = env.advisories.clone();
     let mut obs_plans: Vec<ObsPlan> = Vec::with_capacity(spec.inputs.len());
     for leaf in &spec.inputs {
@@ -554,9 +486,6 @@ pub fn bind(spec: &Spec, env: &Env, trust_entrypoints: bool) -> Result<Binding> 
         });
     }
 
-    // Reaching here means no model input referenced an unknown kind (a reference
-    // hard-errors above), so every recorded unknown leaf was unreferenced: emit
-    // one deterministic advisory per leaf, sorted by tree path. Run proceeds.
     let mut advisories: Vec<Advisory> = env
         .unknown
         .iter()
@@ -579,11 +508,6 @@ pub fn bind(spec: &Spec, env: &Env, trust_entrypoints: bool) -> Result<Binding> 
     )?;
     project(&mut projections, &outputs, &action_plan, &env.action)?;
 
-    // Model-side ad-hoc input roles the env does not answer. An ad-hoc role
-    // matches only on the exact string, so a typo or a private name silently
-    // degrades to a zero fill (an optional input) -- the required cases already
-    // hard-errored above, and an unmatched model output is refused unless
-    // `drop_action` is allowed. One advisory per role, not per placement.
     let mut ad_hoc: BTreeSet<&str> = BTreeSet::new();
     for leaf in &spec.inputs {
         match &leaf.kind {
@@ -593,8 +517,6 @@ pub fn bind(spec: &Spec, env: &Env, trust_entrypoints: bool) -> Result<Binding> 
                 }
             }
             LeafKind::State(input) => {
-                // An action-source part is answered by the model's own
-                // actuator (resolved above), never by an env leaf.
                 ad_hoc.extend(
                     input
                         .pieces
@@ -631,11 +553,6 @@ pub fn bind(spec: &Spec, env: &Env, trust_entrypoints: bool) -> Result<Binding> 
             }),
     );
 
-    // A model-declared range only fires as an affine map when the *env* side also
-    // declares a range to bridge between; against an unbounded env feature the map
-    // is skipped, so a lone model range silently does nothing (it remaps from/into
-    // an env range, it does not clamp). Surface that so the author learns it will
-    // not take effect. (State: env is the source; action: env is the destination.)
     for obs_plan in &obs_plans {
         if let ObsPlan::State(state) = obs_plan
             && state.pieces.iter().any(|piece| {
@@ -649,8 +566,6 @@ pub fn bind(spec: &Spec, env: &Env, trust_entrypoints: bool) -> Result<Binding> 
                 quoted(&state.placement.to_string()),
             )));
         }
-        // Two rescalings on one part compose silently: `range` bridges the two
-        // declared scales, then `scale`/`offset` applies on top of the result.
         if let ObsPlan::State(state) = obs_plan
             && state.pieces.iter().any(|piece| {
                 piece.dst_range.is_some() && (piece.scale.is_some() || piece.offset.is_some())
@@ -676,9 +591,6 @@ pub fn bind(spec: &Spec, env: &Env, trust_entrypoints: bool) -> Result<Binding> 
     advisories.sort_by(|a, b| a.message.cmp(&b.message));
     quiet.sort_by(|a, b| a.message.cmp(&b.message));
 
-    // The frame-stacking × action-chunk-replay guard is the host engine's:
-    // the execution horizon is a runtime decision, so it is checked where the
-    // resolved stacks and the horizon are both known.
     Ok(Binding::new(obs_plans, action_plan, advisories, quiet)
         .with_projections(projections.applied))
 }
@@ -710,8 +622,6 @@ mod geometry_rule_tests {
 
     #[test]
     fn agreement_and_env_only_are_silent() {
-        // Cases 1, 2 and 4: nothing declared, only the env declared, both
-        // declaring the same thing. Every one resolves without a word.
         for (env, model, expected) in [
             (None, None, None),
             (Some("robot_base"), None, Some("robot_base")),
@@ -728,8 +638,6 @@ mod geometry_rule_tests {
 
     #[test]
     fn a_model_only_declaration_is_a_caution() {
-        // Case 6: the model states a requirement the env cannot confirm. It
-        // resolves (the value carries to the plan) with one caution.
         let (result, notes) = check(Attr::Frame, None, Some("robot_base"));
         assert_eq!(
             result.expect("resolves").as_ref().map(FrameRef::as_str),
@@ -747,7 +655,6 @@ mod geometry_rule_tests {
 
     #[test]
     fn a_disagreement_is_a_hard_frame_mismatch() {
-        // Case 4: reject an incompatible pairing.
         let (result, _) = check(Attr::Frame, Some("world"), Some("robot_base"));
         let error = result.expect_err("mismatch");
         assert_eq!(error.code, ErrorCode::FrameMismatch);
@@ -757,8 +664,6 @@ mod geometry_rule_tests {
              but the env declares \"world\""
         );
 
-        // `reference` runs the same rule against its own vocabulary -- an
-        // absolute-pose head bound to a delta controller, named.
         let (result, _) = check(Attr::Reference, Some("current"), Some("target"));
         let error = result.expect_err("mismatch");
         assert_eq!(error.code, ErrorCode::FrameMismatch);
@@ -771,9 +676,6 @@ mod geometry_rule_tests {
 
     #[test]
     fn an_unrecognized_value_is_a_hard_frame_mismatch_on_either_side() {
-        // Case 7. The codec relays an unknown value (a newer peer's vocabulary
-        // survives round-trip); resolve refuses it, because a geometry this core
-        // cannot name is a geometry it cannot verify. Both sides, both attrs.
         for (attr, env, model) in [
             (Attr::Frame, Some("gripper"), None),
             (Attr::Frame, None, Some("base")),

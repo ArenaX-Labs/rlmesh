@@ -36,7 +36,6 @@ def test_dlpack_legacy_capsule_by_default() -> None:
     assert _capsule_name_is(capsule, b"dltensor")
     assert not _capsule_name_is(capsule, b"dltensor_versioned")
 
-    # Dropping an unconsumed capsule must free the export without crashing.
     del capsule
 
 
@@ -48,7 +47,6 @@ def test_dlpack_versioned_capsule_when_requested() -> None:
     capsule = tensor.__dlpack__(max_version=(1, 0))
     assert _capsule_name_is(capsule, b"dltensor_versioned")
 
-    # Pre-1.0 consumers still get the legacy capsule.
     old = tensor.__dlpack__(max_version=(0, 8))
     assert _capsule_name_is(old, b"dltensor")
 
@@ -62,9 +60,8 @@ def test_dlpack_rejects_stream_and_foreign_devices() -> None:
         tensor.__dlpack__(stream=1)
 
     with pytest.raises(BufferError, match="CPU"):
-        tensor.__dlpack__(dl_device=(2, 0))  # kDLCUDA
+        tensor.__dlpack__(dl_device=(2, 0))
 
-    # The tensor's own device is accepted.
     capsule = tensor.__dlpack__(dl_device=(1, 0))
     assert _capsule_name_is(capsule, b"dltensor")
 
@@ -112,11 +109,9 @@ def test_numpy_from_dlpack_roundtrip() -> None:
     assert array.dtype == np.float32
     assert array.tolist() == [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
 
-    # numpy >= 2.1 requests the versioned capsule and honors READ_ONLY.
     if _version(np) >= (2, 1):
         assert array.flags.writeable is False
 
-    # The exported view shares memory with the tensor.
     base = np.from_dlpack(tensor)
     assert base.__array_interface__["data"][0] == array.__array_interface__["data"][0]
 
@@ -134,7 +129,6 @@ def test_numpy_from_dlpack_copy_is_writable() -> None:
     assert array.flags.writeable is True
     array[0] = 42
     assert array.tolist() == [42, 8]
-    # The original tensor bytes are untouched.
     assert tensor.tobytes() == struct.pack("<2q", 7, 8)
 
 
@@ -149,7 +143,7 @@ def test_numpy_sees_int64_and_bool_dtypes() -> None:
     assert np.from_dlpack(int_tensor).dtype == np.int64
     assert np.from_dlpack(int_tensor).tolist() == [-1, 2**60]
 
-    if _version(np) >= (1, 25):  # numpy DLPack bool support
+    if _version(np) >= (1, 25):
         bool_tensor = rlmesh.Tensor(b"\x01\x00", [2], "bool")
         assert np.from_dlpack(bool_tensor).dtype == np.bool_
         assert np.from_dlpack(bool_tensor).tolist() == [True, False]
@@ -161,13 +155,11 @@ def test_from_dlpack_roundtrip_legacy_and_versioned() -> None:
     data = struct.pack("<6f", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
     tensor = rlmesh.Tensor(data, [2, 3], "float32")
 
-    # Object path: from_dlpack calls __dlpack__() with no kwargs -> legacy.
     imported = rlmesh.Tensor.from_dlpack(tensor)
     assert imported.shape == [2, 3]
     assert imported.dtype == "float32"
     assert imported.tobytes() == data
 
-    # Raw capsule paths, both flavors.
     legacy = rlmesh.Tensor.from_dlpack(tensor.__dlpack__())
     assert legacy.tobytes() == data
     versioned = rlmesh.Tensor.from_dlpack(tensor.__dlpack__(max_version=(1, 0)))
@@ -184,7 +176,6 @@ def test_from_dlpack_consumes_capsule_once() -> None:
     assert first.tobytes() == b"\x01\x02"
     assert _capsule_name_is(capsule, b"used_dltensor")
 
-    # A consumed capsule is no longer importable.
     with pytest.raises(TypeError):
         rlmesh.Tensor.from_dlpack(capsule)
 
@@ -203,14 +194,13 @@ def test_from_dlpack_imports_numpy_arrays() -> None:
     assert tensor.dtype == "int32"
     assert tensor.tobytes() == array.tobytes()
 
-    # Strided source: every other column is a non-contiguous view.
     view = array[:, ::2]
     tensor = rlmesh.Tensor.from_dlpack(view)
     assert tensor.shape == [3, 2]
     assert tensor.is_contiguous() is True
     assert tensor.tobytes() == np.ascontiguousarray(view).tobytes()
 
-    if _version(np) >= (1, 25):  # numpy DLPack bool support
+    if _version(np) >= (1, 25):
         bools = np.array([True, False, True])
         tensor = rlmesh.Tensor.from_dlpack(bools)
         assert tensor.dtype == "bool"
@@ -226,8 +216,6 @@ def test_from_dlpack_copies_out_of_the_source() -> None:
     array = np.arange(4, dtype=np.float64)
     refcount_before = sys.getrefcount(array)
     tensor = rlmesh.Tensor.from_dlpack(array)
-    # The import copies and releases the producer immediately: no lingering
-    # reference to the numpy array survives.
     assert sys.getrefcount(array) == refcount_before
 
     array[0] = 99.0
@@ -246,7 +234,6 @@ def test_from_dlpack_rejects_non_dlpack_objects() -> None:
 
 @pytest.mark.parametrize("versioned", [False, True])
 def test_from_dlpack_rejects_non_cpu_devices(versioned: bool) -> None:
-    """Failed imports preserve ownership for both capsule protocols."""
     import rlmesh
 
     class DLDevice(ctypes.Structure):
@@ -303,7 +290,7 @@ def test_from_dlpack_rejects_non_cpu_devices(versioned: bool) -> None:
     name = b"dltensor_versioned" if versioned else b"dltensor"
     used = b"used_dltensor_versioned" if versioned else b"used_dltensor"
     managed.dl_tensor.data = ctypes.cast(payload, ctypes.c_void_p)
-    managed.dl_tensor.device = DLDevice(device_type=2, device_id=0)  # kDLCUDA
+    managed.dl_tensor.device = DLDevice(device_type=2, device_id=0)
     managed.dl_tensor.ndim = 1
     managed.dl_tensor.dtype = DLDataType(code=2, bits=32, lanes=1)
     managed.dl_tensor.shape = shape
@@ -329,7 +316,6 @@ def test_from_dlpack_rejects_non_cpu_devices(versioned: bool) -> None:
         assert calls == []
         assert _capsule_name_is(capsule, name)
 
-    # The caller still owns a failed import and may fix it and try again.
     managed.dl_tensor.device.device_type = 1
     imported = rlmesh.Tensor.from_dlpack(capsule)
     assert imported.tobytes() == bytes(4)
@@ -342,13 +328,6 @@ def test_from_dlpack_rejects_non_cpu_devices(versioned: bool) -> None:
 
 
 def _rss_bytes() -> int:
-    """Resident set size of this process, in bytes.
-
-    Linux exposes current RSS via ``/proc/self/statm``. Elsewhere (macOS/BSD)
-    fall back to peak RSS from ``getrusage`` -- for this leak test that is an
-    equally valid signal: a holder or storage leak keeps the high-water mark
-    climbing across the stress loop, while a leak-free run holds it flat.
-    """
     import sys
 
     if sys.platform.startswith("linux"):
@@ -362,42 +341,27 @@ def _rss_bytes() -> int:
     import resource
 
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    # ru_maxrss is bytes on macOS, kibibytes on Linux/BSD.
     return peak if sys.platform == "darwin" else peak * 1024
 
 
 def test_dlpack_capsule_lifecycle_does_not_leak() -> None:
-    """Stress every capsule lifecycle path and assert RSS stays flat.
-
-    Each export allocates a holder plus a 4 KiB storage refcount; a leak in
-    any of the paths below would grow RSS by hundreds of MiB over the run,
-    far beyond the assertion threshold.
-    """
     import gc
 
     import rlmesh
 
-    # High rank on purpose: the export holder owns shape/strides vectors, so
-    # a leaked holder costs ~1 KiB here and trips the threshold even when
-    # the (shared) storage itself is not leaked.
     shape = [1] * 60 + [1024]
     tensor = rlmesh.Tensor(bytes(4096), shape, "float32")
 
     def exercise(iterations: int) -> None:
         for _ in range(iterations):
-            # Export and drop unconsumed, both capsule flavors: the capsule
-            # destructor must free the holder.
             legacy = tensor.__dlpack__()
             versioned = tensor.__dlpack__(max_version=(1, 0))
             del legacy, versioned
-            # Export consumed by our own importer: the consumer must free
-            # the holder via the producer deleter after renaming.
             imported = rlmesh.Tensor.from_dlpack(tensor.__dlpack__())
-            # A copying export allocates fresh storage that must also die.
             copied = tensor.__dlpack__(copy=True, max_version=(1, 0))
             del imported, copied
 
-    exercise(1_000)  # warmup: allocator pools, import caches
+    exercise(1_000)
     gc.collect()
     baseline = _rss_bytes()
 
@@ -412,7 +376,6 @@ def test_dlpack_capsule_lifecycle_does_not_leak() -> None:
 
 
 def test_dlpack_capsule_data_pointer_and_strides() -> None:
-    """Walk the legacy DLManagedTensor struct via ctypes and check fields."""
     import rlmesh
 
     class DLDevice(ctypes.Structure):
@@ -453,7 +416,6 @@ def test_dlpack_capsule_data_pointer_and_strides() -> None:
     assert managed.byte_offset == 0
     assert (managed.dtype.code, managed.dtype.bits, managed.dtype.lanes) == (2, 32, 1)
     assert [managed.shape[i] for i in range(2)] == [2, 3]
-    # Element-unit strides, C-order.
     assert [managed.strides[i] for i in range(2)] == [3, 1]
     assert managed.device.device_type == 1
 
@@ -498,7 +460,6 @@ def test_numpy_dlpack_strides(layout: str) -> None:
     elif layout == "reverse":
         source = source[::-1, ::-2]
     elif layout == "broadcast":
-        # Keep the zero strides but make the view writable for legacy DLPack.
         source = np.lib.stride_tricks.as_strided(source[0, :2], (3, 2), (0, 4))
     elif layout == "empty":
         source = source[:0]

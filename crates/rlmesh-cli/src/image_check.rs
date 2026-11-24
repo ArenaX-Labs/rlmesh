@@ -1,21 +1,9 @@
-//! Pure checks over a built image's OCI config: the serve command and the address it
-//! binds, the port it
-//! exposes, its platform, its rlmesh labels (including the package label's
-//! `variant` / `profiles` blocks, see [`crate::variant`]), and whether the
-//! rlmesh it was built with shares a workflow edition with an [`EditionTarget`]:
-//! the rlmesh this CLI was built with, or a platform's editions named on the
-//! command line.
-//!
-//! Nothing here touches docker, the network, or Python: the caller hands in an
-//! [`ImageConfig`] (parsed from `docker image inspect`, a registry manifest, ...)
-//! and reads a [`CheckReport`] back. Function names, report buckets and the
-//! [`RuntimeOffer`] field names (which are the describe envelope's
-//! `runtime.*` keys and the wire handshake's) are a contract.
-//!
-//! The deep describe-envelope checks (a model without a spec, an env without
-//! tags, a spec that does not resolve) need the Python gatherer and live in
-//! `rlmesh._describe`; this module only reads the envelope's kind, target, and
-//! edition offer off the label.
+//! Pure checks over a built image's OCI config: the serve command and the
+//! address it binds, the port it exposes, its platform, its rlmesh labels
+//! (including the package label's `variant` / `profiles` blocks, see
+//! [`crate::variant`]), and whether the rlmesh it was built with shares a
+//! workflow edition with an [`EditionTarget`]: the rlmesh this CLI was built
+//! with, or a platform's editions named on the command line.
 
 mod serve;
 
@@ -30,7 +18,8 @@ use rlmesh_proto::{
 use rlmesh_session::wire::version::{WIRE_REVISION, wire_revision_name};
 use serde::{Deserialize, Serialize};
 
-/// OCI config label carrying the describe envelope (`python -m rlmesh._describe`).
+/// OCI config label carrying the describe envelope (`python -m
+/// rlmesh._describe`).
 pub const DESCRIBE_LABEL: &str = "dev.rlmesh.describe";
 /// OCI config label carrying packaged checkpoint declarations.
 pub const PACKAGE_LABEL: &str = "dev.rlmesh.package";
@@ -43,11 +32,7 @@ pub const ADDRESS_ENV: &str = "RLMESH_ADDRESS";
 /// `--workflow-edition` and the class declaration; empty declares none.
 pub const WORKFLOW_EDITION_ENV: &str = "RLMESH_WORKFLOW_EDITION";
 
-/// What a check found, in the buckets the CLI prints. `failed` means the push
-/// contains an invalid or non-runnable image; `warnings` identify inconsistent
-/// or unverifiable claims; `not_checked` names
-/// what could not be decided here (a custom entrypoint, an envelope without
-/// editions) and who decides it instead; `passed` is informational.
+/// What a check found, in the buckets the CLI prints.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckReport {
     #[serde(default)]
@@ -101,9 +86,7 @@ impl Kind {
     }
 }
 
-/// The parts of an OCI image config the checks read. Every field is what
-/// `docker image inspect` reports under `Config` (plus the top-level `Os` /
-/// `Architecture`); a caller with another source fills the same shape.
+/// The parts of an OCI image config the checks read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImageConfig {
     /// `Os`, e.g. `linux`; empty when unknown.
@@ -123,8 +106,8 @@ pub struct ImageConfig {
 }
 
 impl ImageConfig {
-    /// Parse the JSON `docker image inspect <ref>` prints (a one-element array;
-    /// a bare object is accepted too).
+    /// Parse the JSON `docker image inspect <ref>` prints (a one-element array; a
+    /// bare object is accepted too).
     pub fn from_docker_inspect(json: &str) -> Result<Self, String> {
         let value: serde_json::Value =
             serde_json::from_str(json).map_err(|err| format!("docker inspect JSON: {err}"))?;
@@ -146,10 +129,10 @@ impl ImageConfig {
         ))
     }
 
-    /// Parse an OCI image config as a registry serves it (what
-    /// `docker buildx imagetools inspect REF --format '{{json .Image}}'`
-    /// prints): lowercase `os` / `architecture` / `config`, with the
-    /// `config` keys spelled as in `docker image inspect`.
+    /// Parse an OCI image config as a registry serves it (what `docker buildx
+    /// imagetools inspect REF --format '{{json .Image}}'` prints): lowercase `os` /
+    /// `architecture` / `config`, with the `config` keys spelled as in `docker
+    /// image inspect`.
     pub fn from_oci_config(json: &str) -> Result<Self, String> {
         let oci: OciConfig =
             serde_json::from_str(json).map_err(|err| format!("OCI image config JSON: {err}"))?;
@@ -229,8 +212,8 @@ struct InspectConfig {
     labels: Option<BTreeMap<String, String>>,
 }
 
-/// Check the image's OS/architecture against the one RLMesh deploys images
-/// to (linux/amd64).
+/// Check the image's OS/architecture against the one RLMesh deploys images to
+/// (linux/amd64).
 pub fn check_platform(config: &ImageConfig) -> CheckReport {
     let mut report = CheckReport::default();
     if config.os.is_empty() || config.architecture.is_empty() {
@@ -249,11 +232,7 @@ pub fn check_platform(config: &ImageConfig) -> CheckReport {
     report
 }
 
-/// The edition handshake a describe envelope's `runtime` block advertises. The
-/// field names are the envelope's `runtime.*` keys and the wire
-/// `HandshakeRequest`'s: `protocol_generation`, `supported_workflow_editions`
-/// (CAN), `preferred_workflow_edition` (WANT). Every field is optional so an
-/// envelope from an rlmesh that predates them still parses.
+/// The edition handshake a describe envelope's `runtime` block advertises.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeOffer {
     /// The `rlmesh` package the image was described with.
@@ -263,10 +242,9 @@ pub struct RuntimeOffer {
     #[serde(default)]
     pub protocol_generation: Option<String>,
     /// The session wire revision the image's rlmesh speaks
-    /// (`rlmesh_session::wire::version::WIRE_REVISION`, 1 for one port):
-    /// a 0.2 pre-release bumps it on a wire break, so two builds of one
-    /// generation that cannot talk differ here. Absent from an envelope an
-    /// earlier pre-release described.
+    /// (`rlmesh_session::wire::version::WIRE_REVISION`, 1 for one port): a 0.2
+    /// pre-release bumps it on a wire break, so two builds of one generation that
+    /// cannot talk differ here.
     #[serde(default)]
     pub session_wire_revision: Option<u32>,
     /// Every edition the image's rlmesh can drive a session at.
@@ -275,17 +253,17 @@ pub struct RuntimeOffer {
     /// The edition the image declares (its ceiling).
     #[serde(default)]
     pub preferred_workflow_edition: Option<String>,
-    /// Why the class's declared edition cannot be run by the rlmesh that
-    /// described it (`rlmesh.serve` refuses to start on the same declaration);
-    /// absent when the declaration is fine.
+    /// Why the class's declared edition cannot be run by the rlmesh that described
+    /// it (`rlmesh.serve` refuses to start on the same declaration); absent when
+    /// the declaration is fine.
     #[serde(default)]
     pub workflow_edition_error: Option<String>,
-    /// Nothing declares an edition, so the image floats to its rlmesh's
-    /// newest; absent for a declaration or a deliberate float.
+    /// Nothing declares an edition, so the image floats to its rlmesh's newest;
+    /// absent for a declaration or a deliberate float.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub workflow_edition_floats: bool,
-    /// The OS the envelope was generated on (`linux`); a label baked on a
-    /// Mac carries `macos` and fails validation.
+    /// The OS the envelope was generated on (`linux`); a label baked on a Mac
+    /// carries `macos` and fails validation.
     #[serde(default)]
     pub os: Option<String>,
     /// The architecture the envelope was generated on (`x86_64` / `amd64`).
@@ -295,8 +273,8 @@ pub struct RuntimeOffer {
 
 impl RuntimeOffer {
     /// The image's bind-time offer, or `None` when the envelope advertises no
-    /// editions (an older rlmesh); the session handshake checks it when the
-    /// image runs.
+    /// editions (an older rlmesh); the session handshake checks it when the image
+    /// runs.
     pub fn session_offer(&self) -> Option<SessionOffer> {
         if self.supported_workflow_editions.is_empty() {
             return None;
@@ -366,7 +344,7 @@ struct RawTarget {
 }
 
 /// Parse a describe label's wrapper: schema version 1, an env/model kind, the
-/// target, and the runtime offer. Sub-pieces are not validated here.
+/// target, and the runtime offer.
 pub fn parse_describe_label(raw: &str) -> Result<DescribeLabel, String> {
     let describe: RawDescribe = serde_json::from_str(raw)
         .map_err(|err| format!("{DESCRIBE_LABEL} is not valid JSON: {err}"))?;
@@ -399,9 +377,6 @@ pub fn parse_describe_label(raw: &str) -> Result<DescribeLabel, String> {
     })
 }
 
-/// The note for an image without a describe label, by what it serves: an
-/// `rlmesh.serve` image is described on its handshake; a custom entrypoint is
-/// most likely a native host, whose env describes itself through the C ABI.
 fn missing_describe_note(config: &ImageConfig) -> String {
     let command = parse_serve_command(config);
     if command.serve.is_some() || command.argv.is_empty() {
@@ -420,10 +395,7 @@ fn missing_describe_note(config: &ImageConfig) -> String {
     )
 }
 
-/// Check the rlmesh labels' wrappers and read the describe label. A missing
-/// describe label is not a failure: the parser reads describe off the served
-/// peer's handshake instead, which `rlmesh.serve` stamps, and a native (C/C++)
-/// env stamps through the C ABI when it binds.
+/// Check the rlmesh labels' wrappers and read the describe label.
 pub fn check_labels(config: &ImageConfig) -> (CheckReport, Option<DescribeLabel>) {
     let mut report = CheckReport::default();
     let label = match config.labels.get(DESCRIBE_LABEL) {
@@ -474,10 +446,10 @@ pub fn check_labels(config: &ImageConfig) -> (CheckReport, Option<DescribeLabel>
     (report, label)
 }
 
-/// Check where a describe label was generated: reject a label
-/// whose `runtime.os` is not `linux` (the host's spaces, versions, and
-/// editions are not the image's), and warns on an architecture other than
-/// `x86_64` / `amd64`. Absent fields are not checked.
+/// Check where a describe label was generated: reject a label whose
+/// `runtime.os` is not `linux` (the host's spaces, versions, and editions are
+/// not the image's), and warns on an architecture other than `x86_64` /
+/// `amd64`.
 pub fn check_label_runtime(runtime: &RuntimeOffer) -> CheckReport {
     let mut report = CheckReport::default();
     match runtime.os.as_deref().map(str::trim) {
@@ -501,9 +473,9 @@ pub fn check_label_runtime(runtime: &RuntimeOffer) -> CheckReport {
     report
 }
 
-/// What `check-image` checks an image's editions against, and how its
-/// messages name it: this rlmesh build (the default), or a target platform's
-/// editions given on the command line.
+/// What `check-image` checks an image's editions against, and how its messages
+/// name it: this rlmesh build (the default), or a target platform's editions
+/// given on the command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditionTarget {
     /// The editions the target can drive.
@@ -530,8 +502,8 @@ impl EditionTarget {
     }
 }
 
-/// A platform's offer from the editions it says it can drive (undeclared
-/// WANT, so it admits everything it can).
+/// A platform's offer from the editions it says it can drive (undeclared WANT,
+/// so it admits everything it can).
 pub fn platform_offer(editions: &[String]) -> SessionOffer {
     SessionOffer {
         editions: editions
@@ -543,13 +515,7 @@ pub fn platform_offer(editions: &[String]) -> SessionOffer {
     }
 }
 
-/// A platform's offer from the `rlmesh` version it runs. Only this CLI's own
-/// version is known: a build's retained list is generated from its own
-/// `rlmesh.toml`, and it changes between releases (the `0.1.0-rc.10` to
-/// `rc.12` builds offered only their cohort, `2026.06` first appears in
-/// `rc.13`), so any other version returns `None` and the caller asks for
-/// `--platform-editions`. Spellings are normalized with [`normalize_version`],
-/// so PyPI's `0.1.0rc13` names the same build as `0.1.0-rc.13`.
+/// A platform's offer from the `rlmesh` version it runs.
 pub fn platform_offer_for_version(version: &str) -> Option<SessionOffer> {
     (normalize_version(version) == normalize_version(env!("CARGO_PKG_VERSION"))).then(|| {
         SessionOffer {
@@ -559,11 +525,9 @@ pub fn platform_offer_for_version(version: &str) -> Option<SessionOffer> {
     })
 }
 
-/// Spell a package version the SemVer way this workspace does
-/// (`0.1.0-rc.13`), accepting PEP 440 (`0.1.0rc13`), a loose `0.1.0-rc13` /
-/// `0.1.0.rc.13`, a `v` prefix, and mixed case. `alpha`/`beta` collapse to
-/// `a`/`b` as PEP 440 does. A spelling this cannot read is returned trimmed
-/// and lowercased, so it only ever matches itself.
+/// Spell a package version the SemVer way this workspace does (`0.1.0-rc.13`),
+/// accepting PEP 440 (`0.1.0rc13`), a loose `0.1.0-rc13` / `0.1.0.rc.13`, a `v`
+/// prefix, and mixed case.
 pub fn normalize_version(version: &str) -> String {
     let version = version.trim().to_ascii_lowercase();
     let version = version.strip_prefix('v').unwrap_or(&version);
@@ -591,10 +555,10 @@ pub fn normalize_version(version: &str) -> String {
     format!("{base}-{tag}.{number}")
 }
 
-/// Reconcile an image's offer with a target's the way the runtime will at
-/// bind time: the image sits in its own tier (env or model; an unknown kind
-/// takes the env tier, the rule is symmetric), the target stands in for the
-/// runtime and for the peer on the other side.
+/// Reconcile an image's offer with a target's the way the runtime will at bind
+/// time: the image sits in its own tier (env or model; an unknown kind takes
+/// the env tier, the rule is symmetric), the target stands in for the runtime
+/// and for the peer on the other side.
 pub fn negotiate_image(
     image: &SessionOffer,
     kind: Option<Kind>,
@@ -607,8 +571,7 @@ pub fn negotiate_image(
 }
 
 /// Check that the image's rlmesh speaks the target's protocol generation and
-/// shares a workflow edition with it. An envelope without the fields is
-/// `not_checked`: the session handshake checks them when the image runs.
+/// shares a workflow edition with it.
 pub fn check_editions(
     runtime: &RuntimeOffer,
     kind: Option<Kind>,
@@ -684,9 +647,6 @@ pub fn check_editions(
     report
 }
 
-/// Check that an image of this protocol generation speaks this rlmesh's
-/// session wire revision: a 0.2 pre-release's wire may break before 0.2.0
-/// freezes it, and a pair on two revisions cannot talk.
 fn check_wire_revision(image: Option<u32>, report: &mut CheckReport) {
     match image {
         None => report.warnings.push(format!(
@@ -708,9 +668,7 @@ fn check_wire_revision(image: Option<u32>, report: &mut CheckReport) {
 
 /// The workflow edition the image's serve command declares above whatever the
 /// describe label recorded: `ENV RLMESH_WORKFLOW_EDITION` (an empty value
-/// declares none, deliberately), else a baked `--workflow-edition`. `None`
-/// when neither is present, so the label's value stands. The value's
-/// validity is the runtime's to judge; this only reads the precedence.
+/// declares none, deliberately), else a baked `--workflow-edition`.
 pub fn declared_workflow_edition(config: &ImageConfig) -> Option<Option<String>> {
     if let Some(value) = config.env_value(WORKFLOW_EDITION_ENV) {
         let value = value.trim();
@@ -724,11 +682,8 @@ pub fn declared_workflow_edition(config: &ImageConfig) -> Option<Option<String>>
 
 /// Run every image-config check: platform, serve command, labels, the compute
 /// variant ([`crate::variant::check_variant`]: declared or inferred), and (when
-/// the describe label advertises editions) edition compatibility with
-/// `target`, or a `not_checked` note when the caller has no target to check
-/// against. A `--workflow-edition` or `ENV RLMESH_WORKFLOW_EDITION`
-/// on the image overrides the label's `preferred_workflow_edition`, as it
-/// does for the served peer.
+/// the describe label advertises editions) edition compatibility with `target`,
+/// or a `not_checked` note when the caller has no target to check against.
 pub fn check_image(config: &ImageConfig, target: Option<&EditionTarget>) -> CheckReport {
     let mut report = check_platform(config);
     let (labels, describe) = check_labels(config);

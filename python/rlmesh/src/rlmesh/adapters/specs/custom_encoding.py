@@ -1,16 +1,12 @@
 """A host-side custom rotation encoding layered on a known base encoding.
 
 A :class:`CustomEncoding` lets a model spec use a rotation packing RLMesh does
-not ship as a built-in, without changing the closed native vocabulary. The
-field resolves natively as its ``base`` encoding -- so role matching, range
-mapping, and the env->base conversion are unchanged -- and the adapter applies
-host-side transforms at the field boundary: ``from_base`` on the observation
-side (base -> custom) and ``to_base`` on the action side (custom -> base).
+not ship as a built-in. The field resolves natively as its ``base`` encoding and
+the adapter applies host-side transforms at the field boundary: ``from_base`` on
+the observation side (base -> custom) and ``to_base`` on the action side
+(custom -> base).
 
-See :doc:`the adapters guide </user-guide/adapters>`. For a general, stable
-convention (a published model's), add it to the native ``RotationEncoding``
-instead; this host-side path is the one-off / proprietary escape hatch that
-keeps the declarative pipeline.
+See :doc:`the adapters guide </user-guide/adapters>`.
 """
 
 from __future__ import annotations
@@ -28,15 +24,9 @@ if TYPE_CHECKING:
     from ...numpy import NumpyArray
 
 # One arm of a custom encoding: an in-process callable, or a ``module:callable``
-# entrypoint string.
 RotationTransform: TypeAlias = Callable[["NumpyArray"], "ArrayLike"]
 
-# Wire sentinel for an in-process callable arm. A closure has no serializable
-# form, so a published spec records this non-portable marker instead of a
-# ``module:callable`` reference: the spec stays showable and validatable (base
-# vs env), but the arm cannot be reconstructed or run from the wire -- only the
-# process that defined the callable can apply it. A spec read back from the wire
-# carrying this marker is a describe-only stub, not a runnable encoding.
+# Wire marker for an in-process callable arm; a spec carrying it is describe-only, not runnable.
 LOCAL_ARM = "<local>"
 
 
@@ -44,9 +34,8 @@ LOCAL_ARM = "<local>"
 class CustomEncoding:
     """A rotation packing layered on a known native ``base`` encoding.
 
-    The two arms mirror the native encode/decode pair; each is required only on
-    the side it is used (validated at resolve time). The packing must preserve
-    the base width (``ROTATION_DIMS[base]``).
+    Each arm is required only on the side it is used (validated at resolve
+    time). The packing must preserve the base width (``ROTATION_DIMS[base]``).
 
     Attributes:
         base: The native encoding the field resolves as.

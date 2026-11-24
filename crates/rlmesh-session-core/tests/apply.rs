@@ -1,6 +1,3 @@
-//! Bound plans applied to samples and chunks, on the conformance
-//! robots and policies.
-
 use std::path::PathBuf;
 
 use rlmesh_session_core::spec::apply::{Tensor, Value};
@@ -37,7 +34,6 @@ fn binding(policy: &str, robot: &str) -> Binding {
     bind(&policy, &parts, &RunOptions::named("test")).expect("bound")
 }
 
-/// A packed sample of `part` with each named field's f32 values.
 fn sample(part: &PartSpec, values: &[(&str, &[f32])]) -> Vec<u8> {
     let layout = Layout::of(&part.fields).expect("layout");
     let mut out = vec![0_u8; layout.stride().expect("packed")];
@@ -103,8 +99,6 @@ fn windows_and_concatenations_on_the_force_policy() {
 fn a_wrist_camera_is_cropped_resized_laid_out_and_normalised() {
     let b = binding("force_policy", "ur10e");
     let wrist = b.input("wrist").expect("wrist");
-    // Left half black, right half white; the cover crop keeps the middle
-    // 480 columns, so the left and right edges of the 96x96 result differ.
     let mut frame = vec![0_u8; 480 * 640 * 3];
     for row in 0..480 {
         for col in 320..640 {
@@ -116,7 +110,6 @@ fn a_wrist_camera_is_cropped_resized_laid_out_and_normalised() {
     assert_eq!(image.shape, [3, 96, 96]);
     let values = f32s(&image);
     assert!(values.iter().all(|v| (0.0..=1.0).contains(v)));
-    // Channel 0 plane, middle row: black on the left, white on the right.
     let row = &values[48 * 96..49 * 96];
     assert_eq!((row[0], row[95]), (0.0, 1.0));
     let flat = vec![51_u8; 480 * 640 * 3];
@@ -131,13 +124,11 @@ fn a_wrist_camera_is_cropped_resized_laid_out_and_normalised() {
 fn loco_go2_reorders_offsets_and_derives_gravity() {
     let b = binding("loco_go2", "go2");
     let legs = b.input("q").expect("q").part.clone().expect("legs");
-    // SDK order: FR, FL, RR, RL (hip, thigh, calf each); value = SDK index.
     let pos: Vec<f32> = (0..12).map(|i| i as f32).collect();
     let packed = sample(&legs, &[("pos", &pos)]);
     let q = f32s(&tensor(
         b.input("q").expect("q").apply(&[&packed]).expect("q"),
     ));
-    // Isaac order: FL_hip (SDK 3), FR_hip (0), RL_hip (9), RR_hip (6), ...
     let default = [
         0.1, -0.1, 0.1, -0.1, 0.8, 0.8, 1.0, 1.0, -1.5, -1.5, -1.5, -1.5,
     ];
@@ -155,7 +146,6 @@ fn loco_go2_reorders_offsets_and_derives_gravity() {
         .part
         .clone()
         .expect("imu");
-    // quat_wxyz identity: gravity points down the sensor's z.
     let packed = sample(&imu, &[("orientation", &[1.0, 0.0, 0.0, 0.0])]);
     let gravity = f32s(&tensor(
         b.input("gravity")
@@ -179,8 +169,6 @@ fn loco_go2_reorders_offsets_and_derives_gravity() {
     ));
     assert_eq!(command, [0.5, 0.1, 0.3]);
 
-    // The action: Isaac order out of the model, scaled and offset, packed in
-    // SDK order.
     let legs_out = b.action("legs").expect("legs");
     let model: Vec<f64> = (0..12).map(|i| i as f64).collect();
     let packed = legs_out
@@ -256,7 +244,6 @@ fn grippers_rescale_and_poses_re_encode() {
         (state[5] - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
         "{state:?}"
     );
-    // The upside-down cameras are rotated back.
     let image = libero.input("observation/image").expect("image");
     let mut frame = vec![0_u8; 256 * 256 * 3];
     frame[..3].copy_from_slice(&[200, 100, 50]);
@@ -300,7 +287,6 @@ fn untouched_u8_images_pass_through_as_bytes_hwc_or_chw() {
     )
     .expect("policy");
     let b = bind(&policy, &parts, &RunOptions::named("test")).expect("bound");
-    // Pixel (row, col) has channels (10 * row + col) + {0, 100, 200}.
     let pixels: Vec<u8> = (0..2_u8)
         .flat_map(|r| (0..3_u8).flat_map(move |c| [10 * r + c, 10 * r + c + 100, 10 * r + c + 200]))
         .collect();

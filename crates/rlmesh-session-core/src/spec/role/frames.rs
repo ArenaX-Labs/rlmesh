@@ -1,34 +1,16 @@
-//! The check-only attributes a state leaf can carry: `frame`, `reference`
-//! and `provenance`.
+//! The check-only attributes a state leaf can carry: `frame`, `reference` and `provenance`.
 //!
-//! The first two answer "relative to what?" for a quantity whose numbers are
-//! otherwise indistinguishable:
+//! - **`frame`** qualifies an absolute pose (`proprio/eef_*`, `action/eef_*`): the coordinate frame
+//!   its components are expressed in.
+//! - **`reference`** qualifies a delta command (`action/delta_eef_*`): the pose the controller
+//!   integrates it against, the measured pose (`current`) or the last commanded target (`target`).
+//!   A delta may also carry a `frame`; declared frames must agree.
+//! - **`provenance`** says where a number came from: `sensed`, `estimated` or `privileged`
+//!   (simulator truth). It stops a checkpoint trained on privileged state binding an estimate.
+//!   An env declares one value per leaf; a model declares one, or the set it accepts.
 //!
-//! - **`frame`** qualifies an *absolute* pose (`proprio/eef_*`,
-//!   `action/eef_*`): the coordinate frame its components are expressed in.
-//! - **`reference`** qualifies a *delta* command (`action/delta_eef_*`): the
-//!   pose the env's controller integrates the delta against — the measured
-//!   pose (`current`) or the last commanded target (`target`). A delta may
-//!   also carry a `frame`, the axes it is expressed in (a tool-frame delta
-//!   and a base-frame delta are different commands); the require-frames
-//!   tier does not demand one, but declared frames must agree.
-//!
-//! **`provenance`** answers "where did the number come from?": a physical
-//! sensor or its simulated equivalent (`sensed`), a state estimator
-//! (`estimated`), or simulator truth with no hardware counterpart
-//! (`privileged`). It is what stops a checkpoint trained on privileged sim
-//! state from binding an estimate on the robot without anyone noticing. The
-//! env declares one value per leaf and may publish a role under several; a
-//! model declares one, or the set it accepts.
-//!
-//! They are one mechanism with three vocabularies ([`Attr`]), so every rule —
-//! the tolerant string codec, the resolve-time agreement check, the publish
-//! gate, the describe suffix — is written once and parameterized.
-//!
-//! **Tolerant vocabulary.** A value outside the vocabulary parses and
-//! round-trips verbatim (a newer peer's frame survives relay) but is rejected
-//! at *resolve*, where a frame this core cannot reason about is a geometry it
-//! cannot verify. Same shape as an unrecognized rotation encoding.
+//! The three share one mechanism ([`Attr`]). A value outside a vocabulary parses and round-trips
+//! verbatim but is rejected at resolve.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -161,12 +143,9 @@ impl Attr {
 /// that is `Frameless` still has any declared `frame` checked for agreement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameLaw {
-    /// No frame is required: a scalar (gripper width), a joint vector (joint
-    /// space has no Cartesian frame), or a delta (qualified by
-    /// [`ReferenceLaw`]; a `frame` it does declare is still checked).
+    /// No frame is required: a scalar, a joint vector, or a delta (qualified by [`ReferenceLaw`]).
     Frameless,
-    /// An absolute Cartesian pose component: its numbers mean nothing without
-    /// the frame they are expressed in.
+    /// An absolute Cartesian pose: its numbers mean nothing without their frame.
     Framed,
 }
 
@@ -176,8 +155,7 @@ pub enum FrameLaw {
 pub enum ReferenceLaw {
     /// Not a delta: nothing is integrated, so there is no reference pose.
     Unreferenced,
-    /// A per-step delta: the env's controller adds it to a reference pose, and
-    /// a policy trained against the other one drifts silently.
+    /// A per-step delta, qualified by the reference pose the controller adds it to.
     Referenced,
 }
 

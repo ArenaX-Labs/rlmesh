@@ -413,7 +413,6 @@ pub fn of(part: &Json) -> Of {
         "tactile" => Tactile::KEYS,
         "text" | "reward" | "success" => Event::KEYS,
         _ if kind.contains('/') => Custom::KEYS,
-        // Not a kind: the normaliser refuses it.
         _ => return Of(draft),
     };
     Of(draft.taking(takes))

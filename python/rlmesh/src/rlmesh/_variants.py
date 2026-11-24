@@ -1,5 +1,3 @@
-"""The catalog primitive: one concrete sub-environment a factory contains."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping

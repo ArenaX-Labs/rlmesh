@@ -11,14 +11,10 @@ use crate::model::predict_fn::PredictFn;
 use crate::model::types::EpisodeInfo;
 use crate::{Error, Result};
 
-/// The episodes (or, for an anonymous lane, the routes) already warned that
-/// their model returned a chunk shorter than the horizon; warns once per
-/// episode.
 #[derive(Debug, Default)]
 pub(crate) struct ShortChunkWarned(Mutex<HashSet<String>>);
 
 impl ShortChunkWarned {
-    /// Whether `key` has not been warned yet (and mark it).
     pub(crate) fn first(&self, key: &str) -> bool {
         self.0
             .lock()
@@ -26,14 +22,11 @@ impl ShortChunkWarned {
             .insert(key.to_string())
     }
 
-    /// Forget `key` (its episode ended).
     pub(crate) fn remove(&self, key: &str) {
         self.0.lock().expect("short-chunk set poisoned").remove(key);
     }
 }
 
-/// The once-key of a lane's short-chunk warning: its episode, or its route
-/// for an anonymous lane.
 fn warn_key(episode: Option<&EpisodeInfo>) -> String {
     match episode {
         Some(episode) if !episode.episode_id.is_empty() => episode.episode_id.clone(),
@@ -41,25 +34,6 @@ fn warn_key(episode: Option<&EpisodeInfo>) -> String {
         None => "route:".to_string(),
     }
 }
-/// Dispatch to the most-specific available corner, yielding each lane's raw
-/// chunk frames (a single-element Vec when not chunking). Prefer a *batched*
-/// corner (one forward for the whole vector) over the per-lane loop, and a
-/// *chunk* corner when the runtime pinned a horizon > 1. A horizon > 1 with no
-/// chunk corner was already warned at configure and falls through to a
-/// single-action corner (the runtime then re-plans every step). split_chunk
-/// caps each chunk to the horizon (a receding-horizon model may over-produce).
-///
-/// This is the ONE corner-precedence table: the direct predict path wraps it
-/// with the input-signature annotation ([`dispatch_route_corners`]) and the
-/// fused grouped path calls it on a cross-route batch whose corner
-/// [`bucket_fuses`] proved identical, so grouping can never change which model
-/// function runs.
-///
-/// `episodes` is row-aligned with `inputs` on EVERY corner: the per-lane ones
-/// take row `i`'s identity, the batched ones take the whole row-aligned slice
-/// (a fused bucket concatenates lanes from independent episodes, so identity is
-/// per row, never per call). A length disagreement is a malformed request, so
-/// it fails here rather than silently mis-attributing a lane.
 pub(super) fn dispatch_corners(
     predict: &Arc<dyn PredictFn>,
     inputs: Vec<Value>,
@@ -139,8 +113,6 @@ pub(super) fn dispatch_corners(
     }
 }
 
-/// [`dispatch_corners`] with a predict failure annotated with the
-/// assembled-input signature.
 pub(super) fn dispatch_route_corners(
     predict: &Arc<dyn PredictFn>,
     inputs: Vec<Value>,
@@ -161,17 +133,6 @@ pub(super) fn dispatch_route_corners(
     .map_err(|err| annotate_predict_error(err, &input_summary))
 }
 
-/// Cap one lane's split chunk to the runtime's execution prefix — the ONE place
-/// the engine turns a native chunk into executed frames.
-///
-/// A model that DECLARED its native chunk K is held to it exactly: anything but
-/// K frames means the model is slicing its own chunk to the horizon (the glue
-/// this contract removes), which silently short-replays instead of failing, so
-/// it is a model error. An UNDECLARED model is elastic — the prefix is
-/// `min(len, horizon)` — but a chunk shorter than the pinned horizon still means
-/// the runtime re-plans sooner than the run was configured for, so warn once per
-/// endpoint (the flag is endpoint-wide because the fused grouped path spans
-/// routes).
 pub(super) fn take_prefix(
     mut frames: Vec<Value>,
     horizon: u32,
@@ -208,7 +169,6 @@ pub(super) fn take_prefix(
     Ok(frames)
 }
 
-/// Warning text for an undeclared model's short chunk.
 pub(crate) fn short_chunk_text(frames: usize, horizon: u32) -> String {
     format!(
         "the model returned {frames} actions for execution_horizon={horizon}; replaying what \
@@ -217,14 +177,6 @@ pub(crate) fn short_chunk_text(frames: usize, horizon: u32) -> String {
     )
 }
 
-/// Whether a bucket of grouped lanes at `horizon` may fuse into one batched
-/// corner call: true only when that batched corner is the SAME corner
-/// [`dispatch_corners`] picks for a direct predict (`predict_chunk_batch` at
-/// horizon > 1, else the per-lane chunk corner, else `predict_batch`, else the
-/// per-lane predict loop). Fusion can only substitute a batched corner, so a
-/// bucket whose direct choice is a per-lane corner serves per group instead —
-/// grouping is purely an optimization and never changes which model function
-/// runs or its chunk semantics.
 pub(super) fn bucket_fuses(predict: &dyn PredictFn, horizon: u32) -> bool {
     if horizon > 1 {
         predict.has_chunk_batch() || (!predict.has_chunk() && predict.has_batch())

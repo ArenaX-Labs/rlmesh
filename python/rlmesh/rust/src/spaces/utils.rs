@@ -3,9 +3,6 @@ use pyo3::types::{PyAny, PyTuple};
 use rlmesh_spaces::DType;
 
 /// Parse a tensor dtype name, rejecting anything unknown.
-///
-/// Unlike [`extract_dtype`], there is no `Unspecified` fallback: tensors
-/// must carry a concrete dtype.
 pub fn parse_dtype_strict(dtype: &str) -> PyResult<DType> {
     DType::from_name(dtype).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!("unsupported tensor dtype {dtype:?}"))
@@ -43,7 +40,6 @@ where
     T: Into<i32>,
 {
     match DType::try_from(dt.into()).unwrap_or(DType::Unspecified) {
-        // Legacy display fallback: unspecified specs surface as float32.
         DType::Unspecified => "float32",
         dtype => dtype.name(),
     }
@@ -51,10 +47,8 @@ where
 
 /// Flatten an arbitrarily nested array-like (numpy ndarray of any rank,
 /// nested lists/tuples, or a scalar) into a flat row-major `Vec<f64>`.
-///
-/// Unlike [`extract_1d_f64`], this descends into rank>=2 arrays so that the
-/// per-element bounds of a multi-dimensional Box survive instead of being
-/// silently collapsed to a global min/max.
+/// Rank>=2 arrays are descended into, so a multi-dimensional Box keeps its
+/// per-element bounds.
 pub fn flatten_f64<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<f64>> {
     let mut out = Vec::new();
     flatten_f64_into(obj, &mut out)?;

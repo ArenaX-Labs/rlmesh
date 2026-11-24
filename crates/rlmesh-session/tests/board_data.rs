@@ -1,7 +1,3 @@
-//! An embedded host offers boards the datagram path by default (UDP on its
-//! own port number): a session without boards sees no change, and a UDP port
-//! that won't open leaves the host running on TCP.
-
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
@@ -22,7 +18,6 @@ fn udp_taken(at: SocketAddr) -> bool {
     UdpSocket::bind(at).is_err_and(|e| e.kind() == std::io::ErrorKind::AddrInUse)
 }
 
-/// Waits for the host's health row of `robot`, as of its next interval.
 async fn row(host: &sdk::EmbeddedHost, robot: &str) -> rlmesh_session::ParticipantHealth {
     let deadline = Instant::now() + WAIT;
     loop {
@@ -56,8 +51,6 @@ async fn an_embedded_host_offers_udp_and_a_session_without_boards_sees_no_change
     let udp = host.address().base;
     assert!(udp_taken(udp), "the datagram path listens on udp/{udp}");
 
-    // A robot from the SDK does not take the path: its parts ride TCP, and
-    // its health row says so as it did before.
     let robot = sdk::connect_robot(host.address(), "eye", EYE, WAIT)
         .await
         .expect("robot");

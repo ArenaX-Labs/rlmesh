@@ -1,6 +1,3 @@
-//! The robot's retries with no host at all: what it asks of the transport
-//! when nothing answers, or something other than a host does.
-
 use rlmesh_device::robot::{
     Action, Config, Fault, LINK_LOST_MS, Phase, QUERY_MARGIN_MS, QUERY_MS, Robot,
 };
@@ -37,7 +34,6 @@ fn robot(homes: &[(&str, u16)]) -> Box<Robot> {
     .expect("a valid map")
 }
 
-/// The query among `actions`.
 fn query(actions: &[Action]) -> Option<u32> {
     actions.iter().find_map(|a| match a {
         Action::Query { id, .. } => Some(*id),
@@ -57,7 +53,6 @@ fn declares(actions: &[Action]) -> (usize, usize) {
     (subs, tokens)
 }
 
-/// Asks the host, and lets the query end unanswered.
 fn unanswered(robot: &mut Robot, now: u64) {
     let id = query(&robot.poll(now)).expect("it asks for the host");
     robot.query_done(id, now);
@@ -72,8 +67,6 @@ fn a_retry_declares_its_subscriptions_again() {
     assert_eq!(robot.phase(), Phase::Retry);
     assert_eq!(robot.fault(), Some(&Fault::NoReply));
 
-    // The transport may not have reached the host to declare anything: it
-    // drops what it holds and declares it all again, then waits its pause.
     let retry = robot.poll(0);
     assert!(matches!(retry.first(), Some(Action::Reset)), "{retry:?}");
     assert_eq!(declares(&retry), (6, 1));
@@ -104,12 +97,10 @@ fn the_home_keeps_one_found_address_besides_its_stored_ones() {
     robot.add_home("10.0.0.2", 7447, 0);
     assert_eq!(robot.host(), ("10.0.0.2", 7447));
     unanswered(&mut robot, 0);
-    // A whole round failed: back off before the next.
     assert_eq!(robot.host(), ("10.0.0.1", 7447));
     unanswered(&mut robot, 2 * S);
     assert_eq!(robot.host(), ("10.0.0.2", 7447));
 
-    // Another answer replaces the one found before.
     robot.add_home("10.0.0.3", 7447, 2 * S);
     assert_eq!(robot.host(), ("10.0.0.3", 7447));
     unanswered(&mut robot, 2 * S);
@@ -118,7 +109,6 @@ fn the_home_keeps_one_found_address_besides_its_stored_ones() {
     assert_eq!(robot.host(), ("10.0.0.3", 7447), "10.0.0.2 is gone");
 }
 
-/// When a query the robot asked at `now` is over without a word.
 fn deadline(now: u64) -> u64 {
     now + u64::from(QUERY_MS + QUERY_MARGIN_MS) * 1000
 }
@@ -128,8 +118,6 @@ fn a_query_nobody_reports_on_is_over_at_its_deadline() {
     let mut robot = robot(&[("10.0.0.1", 7447)]);
     let id = query(&robot.poll(0)).expect("a query");
 
-    // No reply and no end from the transport: the robot still waits, up to
-    // its own deadline.
     robot.poll(deadline(0) - 1);
     assert_eq!(robot.phase(), Phase::Host);
     assert_eq!(robot.fault(), None);
@@ -137,8 +125,6 @@ fn a_query_nobody_reports_on_is_over_at_its_deadline() {
     assert_eq!(robot.phase(), Phase::Retry);
     assert_eq!(robot.fault(), Some(&Fault::NoReply));
 
-    // Whatever comes for it later changes nothing, and the normal retry
-    // follows.
     let at = deadline(0);
     robot.reply(id, b"late", at, &mut Zeros);
     robot.query_done(id, at);
@@ -148,7 +134,6 @@ fn a_query_nobody_reports_on_is_over_at_its_deadline() {
     assert_ne!(retried, id);
 }
 
-/// `Action::Reconnect`s over ten minutes of silence.
 fn reconnects_in_silence(robot: &mut Robot) -> Vec<u64> {
     let mut at = Vec::new();
     let mut now = 0;
@@ -175,7 +160,6 @@ fn silence_reopens_the_links_with_backoff_for_ever() {
         "not before the link counts as lost: {at:?}"
     );
     assert!(first <= 15 * S, "soon after: {at:?}");
-    // Each pause is at least the last, up to the backoff's cap plus a query.
     let gaps: Vec<u64> = at.windows(2).map(|w| w[1] - w[0]).collect();
     assert!(gaps.windows(2).all(|g| g[1] + S / 10 >= g[0]), "{gaps:?}");
     assert!(gaps.iter().all(|g| *g <= 33 * S), "{gaps:?}");

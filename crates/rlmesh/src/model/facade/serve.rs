@@ -10,9 +10,6 @@ use super::{CancelWatcher, Model, ModelServeOptions};
 use crate::editions::EditionSources;
 use crate::{Error, Result};
 
-/// One serve, blocking the calling thread: validate, resolve the edition,
-/// join the session of the participant address as the model it names, as
-/// Python's serve does, serve until stopped, then close the model.
 pub(super) fn serve_blocking(
     shared: &Arc<Shared>,
     address: &str,
@@ -60,7 +57,6 @@ pub(super) fn serve_blocking(
                  rlmesh 0.2 for a session address)",
             ));
         }
-        // The call's edition wins over the environment variable (COR-6).
         let edition = crate::editions::resolve_native(EditionSources {
             call: serve.workflow_edition.as_deref(),
             option: None,
@@ -72,12 +68,8 @@ pub(super) fn serve_blocking(
     }
 }
 
-/// How long a session model's join and close may take when the options set
-/// no `close_timeout`, as Python's serve.
 const SESSION_JOIN: Duration = Duration::from_secs(30);
 
-/// Joins the session of the participant address `address` as the model and
-/// answers whoever drives it there, until stopped.
 fn serve_session(
     shared: &Arc<Shared>,
     address: &str,
@@ -88,7 +80,6 @@ fn serve_session(
     tokens: Vec<crate::ext::CancelToken>,
 ) -> Result<()> {
     let handler = super::super::bridge::engine_handler(Arc::clone(shared));
-    // The envelope a driver reads the model's own horizon (and spec) from.
     let describe = crate::describe::describe_json(
         crate::describe::Describable::built(shared),
         crate::describe::DescribeJsonOptions {
@@ -120,9 +111,6 @@ fn serve_session(
     serve_until_stopped(shared, trigger, foreground, tokens, join, serve)
 }
 
-/// Serves until `trigger` fires (a signal, a cancel token, the model's
-/// close), then closes the model: the cancellation class when a token or
-/// SIGINT stopped it.
 fn serve_until_stopped(
     shared: &Arc<Shared>,
     trigger: ShutdownTrigger,
@@ -148,8 +136,6 @@ fn serve_until_stopped(
     }
 }
 
-/// Drive `model` in-process against a remote env (the binding's run path
-/// until `run` lands): the run borrows the model and never closes it.
 pub(crate) async fn run_local(
     model: &Model,
     options: super::super::worker::RunLocalOptions,

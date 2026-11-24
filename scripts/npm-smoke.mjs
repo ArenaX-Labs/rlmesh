@@ -1,19 +1,3 @@
-// Check the packed npm release (`mise run release:js:smoke`, after release:js:package), as the
-// release rehearsal does on Linux and macOS. Publishes nothing.
-//
-// Contents, for every tarball in target/npm-pkg: one version throughout, the Cargo workspace's;
-// rlmesh pins each @rlmesh/{platform}-{arch} at it; a .node only in the platform packages and no
-// dist/fleet.js anywhere; every file rlmesh's exports name is packed; each addon is a shared
-// library for its own target (its ELF, Mach-O or PE32+ header) and, with --max-glibc, needs no
-// newer glibc.
-//
-// Install (unless --no-install), for this machine's platform: a fresh project gets the rlmesh
-// tarball and this platform's addon tarball, and no registry, so nothing comes from npm and the
-// other platforms' optional dependencies are skipped. Then it imports rlmesh, loads the addon
-// through it (its version check), opens a Host, and runs examples/node/hold.mjs with its import
-// pointed at the installed package, on a scratch RLMESH_STATE_DIR and a free RLMESH_PORT.
-//
-//   node scripts/npm-smoke.mjs [--require-all] [--max-glibc 2.28] [--no-install]
 import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
@@ -29,7 +13,6 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// The addon each platform package must carry: its binary format and machine.
 const PLATFORMS = {
   "linux-x64": { os: "linux", cpu: "x64", binary: "elf", machine: 0x3e, label: "ELF x86-64" },
   "linux-arm64": { os: "linux", cpu: "arm64", binary: "elf", machine: 0xb7, label: "ELF aarch64" },
@@ -114,13 +97,10 @@ function checkBinary(buf, platform) {
     if (machine !== want.machine) return `PE machine 0x${machine.toString(16)}, not ${want.label}`;
     if (!(buf.readUInt16LE(pe + 22) & 0x2000)) return "a PE image, but not a DLL";
     if (buf.readUInt16LE(pe + 24) !== 0x20b) return "not PE32+";
-    // Node for Windows does not ship the MSVC runtime: release:js:native links it statically.
     if (/vcruntime\d+\.dll/i.test(buf.toString("latin1"))) return "imports the MSVC runtime DLL";
   }
   return null;
 }
-
-// ---- contents -------------------------------------------------------------------------------
 
 if (!existsSync(pkgDir)) {
   console.error(`${pkgDir} is missing: run \`mise run release:js:package\` first`);
@@ -193,8 +173,6 @@ for (const tgz of [mainTgz, ...present.map(platformTgz)].filter((f) => tarballs.
 }
 if (missing.length && !requireAll) console.log(`(no platform package for ${missing.join(", ")})`);
 
-// ---- install --------------------------------------------------------------------------------
-
 async function freePort() {
   const server = createServer();
   await new Promise((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
@@ -203,7 +181,6 @@ async function freePort() {
   return port;
 }
 
-// Run inside the installed project: everything it imports resolves from its node_modules.
 const CHECK = `import { createRequire } from 'node:module';
 import { Host } from 'rlmesh';
 
@@ -233,8 +210,6 @@ async function smokeInstall() {
     join(project, "package.json"),
     `${JSON.stringify({ name: "rlmesh-npm-smoke", private: true, type: "module" }, null, 2)}\n`,
   );
-  // A registry nothing listens on, and a cache of its own: npm can only use the two tarballs, and
-  // the other platforms' optional dependencies fail to resolve and are skipped.
   run(
     "npm",
     [
@@ -256,7 +231,6 @@ async function smokeInstall() {
     throw new Error("the installed rlmesh carries an addon of its own");
   ok(`installed rlmesh and @rlmesh/${target} from the tarballs, with no registry`);
 
-  // examples/node/hold.mjs, importing the installed package and reading its fixture from here.
   const repoImport = "'../../javascript/rlmesh/dist/node.js'";
   const fixture = "'../../crates/rlmesh-session-core/tests/fixtures/robots/ur10e.json'";
   let hold = readFileSync("examples/node/hold.mjs", "utf8");

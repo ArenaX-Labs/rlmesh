@@ -139,7 +139,6 @@ def test_tensor_simple_byte_consumers_still_work() -> None:
     data = struct.pack("<3i", 1, 2, 3)
     tensor = rlmesh.Tensor(data, [3], "int32")
 
-    # bytes() issues a PyBUF_SIMPLE request (no shape/strides/format).
     assert bytes(memoryview(tensor)) == data
 
 

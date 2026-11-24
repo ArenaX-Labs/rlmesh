@@ -6,16 +6,6 @@
 
 #include "RLMeshReachTargetComponent.generated.h"
 
-/**
- * Example env: move the owning actor along its world X axis to a target.
- *
- * Each reset puts the actor back where play began and picks a target up to
- * TargetRange away (from the reset seed, when one is given). The observation is
- * the offset to the target in units (a Box of shape [1]); the action is
- * Discrete(3): 0 moves back by StepSize, 1 stays, 2 moves forward. The reward is
- * minus the remaining distance over TargetRange; an episode terminates within
- * half a step of the target and truncates after MaxSteps.
- */
 UCLASS(ClassGroup = (RLMesh), meta = (BlueprintSpawnableComponent))
 class RLMESHUNREAL_API URLMeshReachTargetComponent : public URLMeshEnvComponent
 {

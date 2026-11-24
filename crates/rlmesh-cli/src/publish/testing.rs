@@ -16,26 +16,22 @@ use crate::cli::PublishArgs;
 use crate::image_check::PACKAGE_LABEL;
 use crate::render::Style;
 
-/// Canned registry contents, in the shapes `docker buildx imagetools
-/// inspect` prints for `.Manifest` and `.Image`.
+/// Canned registry contents, in the shapes `docker buildx imagetools inspect`
+/// prints for `.Manifest` and `.Image`.
 #[derive(Default)]
 pub(super) struct FakeRegistry {
     pub(super) manifests: RefCell<BTreeMap<String, String>>,
     pub(super) raws: RefCell<BTreeMap<String, String>>,
     pub(super) configs: BTreeMap<String, String>,
     pub(super) created: RefCell<Vec<Vec<String>>>,
-    /// Applied to each index a push assembles before it is stored, as a
-    /// registry or docker that loses part of it would.
+    /// Applied to each index a push assembles before it is stored, as a registry or
+    /// docker that loses part of it would.
     pub(super) mangle: Cell<Option<fn(&mut Value)>>,
-    /// Tags a push fails on (recorded, nothing stored), as a registry that
-    /// rejects or drops the request would.
+    /// Tags a push fails on (recorded, nothing stored), as a registry that rejects
+    /// or drops the request would.
     pub(super) failing: RefCell<Vec<String>>,
 }
 
-/// The index `imagetools create ARGS` assembles, reduced to what the
-/// tests compare: one child per source, the index annotation. Like
-/// docker, it is a Docker manifest list, without annotations, when every
-/// descriptor the sources carry is a Docker manifest.
 fn assembled(registry: &FakeRegistry, args: &[String]) -> (Vec<String>, Value) {
     let (mut tags, mut manifests, mut annotations) = (Vec::new(), Vec::new(), Map::new());
     let mut docker_only = true;
@@ -73,7 +69,6 @@ impl Imagetools for FakeRegistry {
     fn manifest(&self, reference: &str) -> Result<String> {
         let key = self.resolve(reference);
         match self.manifests.borrow().get(&key) {
-            // A canned failure other than "not found".
             Some(error) if error.starts_with("ERROR:") => Err(anyhow!("{error}")),
             Some(manifest) => Ok(manifest.clone()),
             None => Err(anyhow!("ERROR: {reference}: not found")),
@@ -87,8 +82,6 @@ impl Imagetools for FakeRegistry {
             .ok_or_else(|| anyhow!("ERROR: {reference}: not found"))
     }
 
-    /// The canned raw manifest when one was set, else the `.Manifest`
-    /// view without the descriptor fields docker adds to it.
     fn raw(&self, reference: &str) -> Result<String> {
         if let Some(raw) = self.raws.borrow().get(&self.resolve(reference)) {
             return Ok(raw.clone());
@@ -101,8 +94,6 @@ impl Imagetools for FakeRegistry {
         Ok(view.to_string())
     }
 
-    /// Like docker: a lone index source without annotations is copied
-    /// byte for byte; anything else is assembled into a new index.
     fn create(&self, args: &[String]) -> Result<String> {
         self.created.borrow_mut().push(args.to_vec());
         let (tags, mut index) = assembled(self, args);
@@ -193,8 +184,8 @@ pub(super) const MODEL: &[&str] = &["python", "-m", "rlmesh.serve", "pi0:Policy"
 pub(super) const ENV: &[&str] = &["python", "-m", "rlmesh.serve", "--env", "sim:Env"];
 
 impl FakeRegistry {
-    /// Register `reference` as a BuildKit index (when `index_digest` is
-    /// set) or a bare manifest, with `config` as its image's config.
+    /// Register `reference` as a BuildKit index (when `index_digest` is set) or a
+    /// bare manifest, with `config` as its image's config.
     pub(super) fn add(
         &mut self,
         reference: &str,
@@ -217,8 +208,6 @@ impl FakeRegistry {
         self.configs.insert(format!("{repository}@{image}"), config);
     }
 
-    /// The media types of the descriptors the manifest at `digest`
-    /// brings into an index: its children, or itself.
     fn media_types(&self, digest: &str) -> Vec<String> {
         let manifests = self.manifests.borrow();
         let Some(manifest) = manifests
@@ -235,8 +224,6 @@ impl FakeRegistry {
         }
     }
 
-    /// The key `reference` is stored under: itself, or for
-    /// `repository@digest`, a tag of that repository holding the digest.
     fn resolve(&self, reference: &str) -> String {
         let manifests = self.manifests.borrow();
         if manifests.contains_key(reference) {
@@ -255,8 +242,8 @@ impl FakeRegistry {
             .map_or_else(|| reference.to_owned(), |(key, _)| key.clone())
     }
 
-    /// Store `raw` under `reference` as a registry would: at the sha256
-    /// of its bytes, docker's view adding that digest and the size.
+    /// Store `raw` under `reference` as a registry would: at the sha256 of its
+    /// bytes, docker's view adding that digest and the size.
     pub(super) fn store(&self, reference: &str, raw: &str) {
         let mut view: Value = serde_json::from_str(raw).unwrap();
         view["digest"] = Value::from(sha256(raw));
@@ -267,9 +254,9 @@ impl FakeRegistry {
             .insert(reference.to_owned(), raw.to_owned());
     }
 
-    /// Make the manifest at the digest `tag` points at read as `raw`, for
-    /// every tag holding that digest (they are one manifest), while docker's
-    /// view, digest included, stays as it was.
+    /// Make the manifest at the digest `tag` points at read as `raw`, for every tag
+    /// holding that digest (they are one manifest), while docker's view, digest
+    /// included, stays as it was.
     pub(super) fn set_raw_at_digest(&self, tag: &str, raw: &str) {
         let digest = self.digest_of(tag);
         let repository = Reference::parse(tag).unwrap().repository;
@@ -405,8 +392,8 @@ pub(super) fn version_json(dir: &tempfile::TempDir, raw: &str) -> std::path::Pat
     path
 }
 
-/// Builds nothing: answers each build with the digest seeded for its
-/// variant key (read off the label argument), recording the arguments.
+/// Builds nothing: answers each build with the digest seeded for its variant
+/// key (read off the label argument), recording the arguments.
 #[derive(Default)]
 pub(super) struct FakeBuilder {
     pub(super) digests: BTreeMap<String, char>,

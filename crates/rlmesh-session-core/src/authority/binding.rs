@@ -1,5 +1,5 @@
-//! Controller bindings and the delivery contracts that come with them:
-//! admission, the per-stream demand and its acknowledgement.
+//! Controller bindings and the delivery contracts that come with them: admission, the
+//! per-stream demand and its acknowledgement.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 
@@ -11,10 +11,8 @@ use crate::wire::{
     BindingRecord, ChannelId, CtlError, CtlStatus, Demand, Lease, ParticipantId, ReasonCode, Role,
 };
 
-/// The highest replan rate a binding declares.
 const MAX_REPLAN_HZ: f64 = 10_000.0;
 
-/// The longest action period a binding declares.
 const MAX_ACTION_DT: core::time::Duration = core::time::Duration::from_secs(60);
 
 impl Authority {
@@ -64,9 +62,6 @@ impl Authority {
             }
             return Ok(());
         }
-        // A new binding: the holder's leases are re-issued under a fresh
-        // token (or released when the new binding leaves their part out), so
-        // every in-flight chunk of the old binding is fenced.
         let held: Vec<ChannelId> = self
             .leases
             .values()
@@ -113,8 +108,6 @@ impl Authority {
         Ok(())
     }
 
-    /// The part a stream belongs to, and whether it is the part's applied
-    /// stream.
     pub(super) fn stream_part(&self, channel: ChannelId) -> Option<(&PartSpec, bool)> {
         self.parts.values().find_map(|p| {
             if p.channel == channel {
@@ -127,8 +120,8 @@ impl Authority {
         })
     }
 
-    /// How a refusal or log names a stream: `robot:path`; a stream the
-    /// table does not hold keeps its id.
+    /// How a refusal or log names a stream: `robot:path`; a stream the table does not hold
+    /// keeps its id.
     pub fn part_name(&self, channel: ChannelId) -> String {
         self.stream_part(channel).map_or_else(
             || channel.to_string(),
@@ -142,9 +135,6 @@ impl Authority {
         )
     }
 
-    /// Admission: every contract names a stream once and is one the
-    /// stream can meet, the rings fit the cap, and every grid is on a
-    /// commanded part.
     fn admit_contracts(&self, record: &BindingRecord) -> Result<(), CtlError> {
         let invalid = |message: String| CtlError::new(CtlStatus::InvalidRequest, message);
         let mut seen = BTreeSet::new();
@@ -191,8 +181,6 @@ impl Authority {
         Ok(())
     }
 
-    /// Re-derives every stream's publication plan from the contracts of the
-    /// attached controllers; a changed plan bumps its demand's revision.
     pub(super) fn recompute_demands(&mut self, events: &mut Vec<AuthorityEvent>) {
         let mut wanted: BTreeMap<ChannelId, Vec<&crate::wire::StreamContract>> = BTreeMap::new();
         for (participant, binding) in &self.bindings {
@@ -251,8 +239,6 @@ impl Authority {
                 demand: Some(demand),
             });
         }
-        // Each attached binding's contracts are included from the current
-        // revision on, unless an earlier one already included them.
         for (participant, binding) in &self.bindings {
             if !self.is_attached(participant) {
                 continue;

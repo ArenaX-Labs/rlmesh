@@ -327,7 +327,6 @@ def tensor_jax_readonly(*, tier: str, samples: int, warmups: int) -> list[Measur
         measurements.append(
             measure(
                 f"tensor.jax.readonly/{size_label(size)}",
-                # block_until_ready keeps async dispatch honest in the timing.
                 lambda tensor=tensor: rlmesh_jax.asarray(tensor).block_until_ready(),
                 samples=samples,
                 warmups=warmups,

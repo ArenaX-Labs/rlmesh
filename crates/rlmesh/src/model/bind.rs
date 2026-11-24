@@ -1,10 +1,4 @@
 //! A model bound to one env, stepped by hand: `Model.bind(target)`.
-//!
-//! The run loop's single-lane step, driven one call at a time: `reset`
-//! starts an episode (with the model's reset options), `step` asks the
-//! model for an action (replaying a chunk across steps) unless the caller
-//! passes one, and an episode's end evicts its state on the model, as a
-//! run does.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -20,17 +14,12 @@ use crate::env::client::lockstep_error;
 use crate::lockstep::LockstepClient;
 use crate::{Error, Result};
 
-/// The live episode.
 struct Episode {
     info: EpisodeInfo,
-    /// The observation the next action answers, as leaf slabs.
     observation: Vec<Bytes>,
     step: i64,
-    /// The rest of the last predicted chunk.
     replay: VecDeque<SpaceValue>,
-    /// The steps a replayed action took, for the next predict's history.
     history: Vec<HistoryFrame>,
-    /// Ended (its state evicted on the model).
     done: bool,
 }
 
@@ -63,8 +52,6 @@ pub struct Binding {
     client: LockstepClient,
     contract: Arc<EnvContract>,
     env_id: String,
-    /// The route keeps frame windows: every replayed step goes to the next
-    /// predict as a history row.
     history: bool,
     episode: Option<Episode>,
 }
@@ -148,9 +135,8 @@ impl Binding {
         &self.contract
     }
 
-    /// Ends the live episode, if any, and starts the next: seeded with
-    /// `seed`, with the model's reset options under the caller's `options`.
-    /// Returns its first observation and the reset's info.
+    /// Ends the live episode, if any, and starts the next: seeded with `seed`, with the
+    /// model's reset options under the caller's `options`.
     pub async fn reset(
         &mut self,
         seed: Option<i64>,
@@ -199,7 +185,6 @@ impl Binding {
         };
         let mut predict = std::time::Duration::ZERO;
         let action = match action {
-            // The caller's action makes the rest of a chunk stale.
             Some(action) => {
                 episode.replay.clear();
                 action
@@ -255,8 +240,6 @@ impl Binding {
         let truncated = step.truncated.first().copied().unwrap_or(false);
         if let Some(episode) = &mut self.episode {
             episode.step += 1;
-            // The model sees this step's observation now only when it
-            // predicts on it; a step a replayed action takes is history.
             if self.history && !episode.replay.is_empty() {
                 episode.history.push(HistoryFrame {
                     observation: Some(step.observation.clone()),
@@ -310,7 +293,6 @@ impl Binding {
         ended.and(closed)
     }
 
-    /// Evicts the live episode's state on the model, once.
     pub(crate) async fn end(&mut self) -> Result<()> {
         let Some(episode) = &mut self.episode else {
             return Ok(());

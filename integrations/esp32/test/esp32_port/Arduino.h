@@ -1,1 +1,0 @@
-/* Nothing of Arduino.h is used by the port under test. */

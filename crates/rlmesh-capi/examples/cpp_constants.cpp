@@ -1,4 +1,3 @@
-// Count C reads to catch eager initialization, and fail the first lazy attempt.
 #define rlmesh_adapters_parts_len test_parts_len
 #define rlmesh_adapters_parts_get test_parts_get
 #define rlmesh_adapters_rotation_dims_len test_dims_len

@@ -1,15 +1,7 @@
-//! Bridge for the Python SDK to enrich the handshake [`PeerInfo`] with its real
-//! runtime (language/version, OS, arch, framework versions).
-//!
-//! The Python package collects this best-effort at import (see
-//! `rlmesh._peer_info.collect_peer_info`) and calls
-//! [`_set_python_peer_info`](set_python_peer_info) once. It installs a
-//! process-wide [`PeerInfoOverride`] that `rlmesh_proto::peer_info` merges over
-//! the Rust-detected defaults for every handshake this (Python-hosted) process
-//! performs. Purely additive diagnostics; PeerInfo never gates compatibility.
-//!
-//! The entry point is `_`-prefixed and intentionally not a public API symbol, so
-//! it does not appear in the Python public API surface.
+//! Lets the Python package enrich the handshake `PeerInfo` with its real runtime (language and
+//! version, OS, arch, framework versions). The package calls `_set_python_peer_info` once at
+//! import; the override is merged over the Rust-detected defaults for every handshake this
+//! process performs. Diagnostics only: peer info never gates compatibility.
 
 use std::collections::HashMap;
 
@@ -20,9 +12,7 @@ use rlmesh_proto::{PeerInfoOverride, set_peer_info_override};
 
 /// Install the process-wide handshake [`PeerInfoOverride`] from Python.
 ///
-/// Every argument is optional and best-effort; empty/absent values fall back to
-/// the Rust-detected defaults during the merge. The high-level package passes
-/// the dict produced by `rlmesh._peer_info.collect_peer_info`.
+/// Every argument is optional; empty or absent values fall back to the Rust-detected defaults.
 #[cfg_attr(
     feature = "stub-gen",
     gen_stub_pyfunction(

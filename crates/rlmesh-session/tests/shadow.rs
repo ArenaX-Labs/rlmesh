@@ -1,8 +1,3 @@
-//! Shadow runs ([`RunMode::Shadow`]) over a real session: a policy that
-//! cannot command still predicts and sends nothing, starts commanding the
-//! moment it holds a lease, and keeps predicting while an operator has the
-//! robot, and once the operator lets go, until it is resumed.
-
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,7 +20,6 @@ const UR10E: &str = r#"{
             "command": "position", "safe": "stop", "hold_max_ms": 100, "max_action_age_ms": 1000}
 }"#;
 
-/// Reads the joints, commands 5 actions at 100 Hz, replans at 50 Hz.
 const POLICY: &str = r#"{
     "hz": 50,
     "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"]}},
@@ -86,7 +80,6 @@ impl World {
             .expect("attach")
     }
 
-    /// The UR10e, declared and not armed.
     async fn robot(&self, id: &str) -> Arc<Robot> {
         let p = self
             .join(id, Role::Embodiment, PriorityClass::Scripted)
@@ -118,10 +111,8 @@ fn f32s(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
-/// The first joint of each action the robot dispatched.
 type Log = Arc<Mutex<Vec<f32>>>;
 
-/// The robot's 500 Hz loop: publish, then apply what is due.
 fn spin(robot: Arc<Robot>, stop: Arc<AtomicBool>, log: Log) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let clock = robot.participant().clock().clone();
@@ -142,19 +133,15 @@ fn spin(robot: Arc<Robot>, stop: Arc<AtomicBool>, log: Log) -> std::thread::Join
     })
 }
 
-/// Chunks the robot's edge took in at all: accepted or refused.
 fn chunks_received(robot: &Robot) -> u64 {
     let stats = robot.edge_stats("arm").expect("edge stats");
     stats.accepted + stats.rejected.iter().map(|(_, n)| n).sum::<u64>()
 }
 
-/// Commands call `n` as every joint's target, so the robot tells which
-/// start it applies; can be held inside `predict` (`gate`).
 #[derive(Clone, Default)]
 struct Counter {
     calls: Arc<AtomicUsize>,
     gate: Arc<AtomicBool>,
-    /// The call held at the gate.
     gated: Arc<Mutex<Option<usize>>>,
     steps: Arc<Mutex<Vec<Step>>>,
 }
@@ -224,7 +211,6 @@ async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
-/// Every event drained so far, kept so a test can look twice.
 #[derive(Default)]
 struct Events(Vec<RunEvent>);
 
@@ -252,8 +238,6 @@ impl Events {
     }
 }
 
-/// Runs `model` in shadow for `n` more predictions than it has made, and
-/// checks nothing reached the robot meanwhile.
 async fn predicts_and_sends_nothing(
     controller: &Arc<Controller>,
     model: &Counter,
@@ -280,7 +264,6 @@ async fn predicts_and_sends_nothing(
         };
         assert_eq!(action.seq, None);
         assert_eq!(action.part.as_deref(), Some("ur10e:arm"));
-        // The actions as the edge would take them: the part's `pos` field.
         let Some(Value::Dict(fields)) = action.actions() else {
             panic!("converted actions: {action:?}");
         };
@@ -323,8 +306,6 @@ async fn a_shadow_run_sends_nothing_while_another_holder_has_its_lease() {
     robot.participant().arm().await.expect("arm");
     let (stop, log): (_, Log) = (Arc::new(AtomicBool::new(false)), Arc::default());
     let robot_loop = spin(robot.clone(), stop.clone(), log.clone());
-    // The operator holds the arm and sends nothing: every chunk the edge
-    // takes in would be the model's.
     let operator = world.controller("operator", PriorityClass::Operator).await;
     operator.acquire().await.expect("operator lease");
     let model = world.controller("model", PriorityClass::Model).await;
@@ -349,7 +330,6 @@ async fn a_shadow_run_sends_nothing_while_another_holder_has_its_lease() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_shadow_run_sends_nothing_while_its_robot_is_held() {
     let world = World::start().await;
-    // Armed before the UR10e declares: it is held until re-armed by name.
     let other = world.robot("other").await;
     other.participant().arm().await.expect("arm");
     let robot = world.robot("ur10e").await;
@@ -371,8 +351,6 @@ async fn a_shadow_run_sends_nothing_while_its_robot_is_held() {
     robot_loop.join().expect("robot loop");
 }
 
-/// The start in flight when the lease arrives was read without it: it stays
-/// a shadow start, and the robot first applies a later one.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_shadow_run_commands_from_the_first_start_read_with_its_lease() {
     let world = World::start().await;
@@ -387,7 +365,6 @@ async fn a_shadow_run_commands_from_the_first_start_read_with_its_lease() {
     })
     .await;
 
-    // Hold a prediction, arm and take the lease meanwhile, then let it go.
     counter.gate.store(true, Ordering::Relaxed);
     wait_until("a prediction held", || {
         counter.gated.lock().expect("gated").is_some()
@@ -413,7 +390,6 @@ async fn a_shadow_run_commands_from_the_first_start_read_with_its_lease() {
     assert!(first > gated);
     assert!(steps[first..].iter().all(|s| !s.shadow));
     assert!(steps[first].actions[0].seq.is_some());
-    // The robot applies nothing predicted in shadow.
     let applied = log.lock().expect("log").clone();
     let first_value = f32::from(u16::try_from(first).expect("start"));
     assert!(
@@ -453,11 +429,7 @@ fn model_steps(counter: &Counter) -> Vec<Step> {
     counter.steps.lock().expect("steps").clone()
 }
 
-/// While preempted, or parked: in command mode its starts are skipped
-/// (`reason`) and `predict` does not run; in shadow mode it predicts. Waits
-/// for 25 more starts, and checks nothing was sent meanwhile.
 async fn stopped(controller: &Controller, model: &Counter, mode: RunMode, reason: SkipReason) {
-    // A start already past its lease check finishes as it began.
     let (skipped, shadowed) = {
         let stats = controller.stats();
         (stats.skipped(reason), stats.shadow_predictions)
@@ -493,11 +465,6 @@ async fn stopped(controller: &Controller, model: &Counter, mode: RunMode, reason
     assert!(!controller.holds_any());
 }
 
-/// What an operator taking the robot and letting go of it does to a model,
-/// in each mode. By default ([`Resume::Manual`]) the model stays stopped
-/// (parked) when the operator releases, and when its process dies, until it
-/// is resumed. Set to [`Resume::Auto`], released, it takes the robot back
-/// at once; the operator's process gone, once its lease lapsed.
 async fn operator_hand_back(mode: RunMode, resume: Resume) {
     let world = World::start().await;
     let robot = world.robot("ur10e").await;
@@ -518,7 +485,6 @@ async fn operator_hand_back(mode: RunMode, resume: Resume) {
         (SkipReason::NoLease, SkipReason::NoLease)
     };
 
-    // An operator takes the arm and lets go.
     let operator = world.controller("operator", PriorityClass::Operator).await;
     operator.acquire().await.expect("operator preempts");
     wait_until("the model preempted", || !model.holds()).await;
@@ -538,11 +504,9 @@ async fn operator_hand_back(mode: RunMode, resume: Resume) {
     })
     .await;
 
-    // The operator takes the arm again and its process dies.
     operator.acquire().await.expect("operator preempts");
     wait_until("the model preempted", || !model.holds()).await;
     let mut host_events = world.host.events();
-    // Its heartbeats stop and nothing of it runs any more: nothing released.
     operator.participant().set_heartbeats_enabled(false);
     drop(operator);
     let died = Instant::now();
@@ -561,8 +525,6 @@ async fn operator_hand_back(mode: RunMode, resume: Resume) {
         model.stats().chunks_sent > sent
     })
     .await;
-    // The host ended the dead operator's lease by its lapse and held no
-    // robot.
     let mut told = Vec::new();
     while let Ok(event) = host_events.try_recv() {
         if let AuthorityEvent::RobotHeld { robot, .. } = &event {
@@ -580,9 +542,6 @@ async fn operator_hand_back(mode: RunMode, resume: Resume) {
         "{told:#?}"
     );
     if !manual {
-        // Released, the arm is back at the next authority view; dead, only
-        // once the operator's lease lapsed (300 ms after its last
-        // heartbeat).
         assert!(
             back_after_release < back_after_death,
             "{back_after_release:?}"
@@ -613,7 +572,6 @@ async fn operator_hand_back(mode: RunMode, resume: Resume) {
     }
     if mode == RunMode::Shadow {
         let said = events.shadowing(&model);
-        // Parked, it says so while the operator holds the arm too.
         assert_eq!(
             said.iter().any(|m| m.contains("leased to operator")),
             !manual,
@@ -628,7 +586,6 @@ async fn operator_hand_back(mode: RunMode, resume: Resume) {
                 "{said:#?}"
             );
         }
-        // Commanding, then back after each preemption.
         assert!(events.commanding(&model) >= 3, "{:#?}", events.0);
     } else {
         assert!(events.shadowing(&model).is_empty());

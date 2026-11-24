@@ -1,12 +1,3 @@
-"""rlmesh.sanitize_metadata: the lossy mirror of the native metadata codec.
-
-Pins that sanitize accepts exactly what the codec accepts (passthrough), unwraps
-wrappers the way ``normalization.rs`` does, matches the codec's enum handling
-(``value`` first, ``name`` fallback, scalar extraction first for mixins), and
-stringifies everything else -- so a sanitized dict always survives the served
-info path.
-"""
-
 from __future__ import annotations
 
 import time
@@ -19,8 +10,6 @@ import rlmesh
 
 
 class _Pose:
-    """A sapien.Pose-like rich object the codec rejects."""
-
     def __repr__(self) -> str:
         return "Pose([0, 0, 0], [1, 0, 0, 0])"
 
@@ -99,8 +88,6 @@ def test_non_mapping_input_raises_type_error() -> None:
 
 
 class _RichInfoEnv:
-    """An env whose reset info only serves after sanitize_metadata."""
-
     def __init__(self) -> None:
         self.observation_space = rlmesh.spaces.Discrete(2)
         self.action_space = rlmesh.spaces.Discrete(2)
@@ -169,7 +156,6 @@ def _int32_tensor(values: list[int], shape: list[int]) -> rlmesh.Tensor:
 
 
 def test_a_tensor_becomes_the_nested_list_of_its_elements() -> None:
-    # As a NumPy array does through tolist (COR-P10).
     info = {
         "grid": _int32_tensor([1, 2, 3, 4, 5, 6], [2, 3]),
         "scalar": _int32_tensor([7], []),
@@ -183,8 +169,6 @@ def test_a_tensor_becomes_the_nested_list_of_its_elements() -> None:
 
 
 class _TensorInfoEnv(_RichInfoEnv):
-    """An env whose reset info carries a raw rlmesh.Tensor."""
-
     def reset(  # pyright: ignore[reportIncompatibleMethodOverride]
         self, *, seed: int | None = None, options: dict[str, object] | None = None
     ) -> tuple[int, dict[str, Any]]:
@@ -204,7 +188,6 @@ def test_the_metadata_codec_carries_a_tensor_as_an_array() -> None:
         remote = _connect_with_retry(rlmesh.RemoteEnv, server.address)
         try:
             _obs, info = remote.reset(seed=1)
-            # As a NumPy array travels (COR-P10).
             assert np.asarray(info["grid"]).dtype == np.int32
             assert np.asarray(info["grid"]).tolist() == [[1, 2], [3, 4]]
         finally:

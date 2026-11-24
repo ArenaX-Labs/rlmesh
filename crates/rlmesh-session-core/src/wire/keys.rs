@@ -22,12 +22,6 @@
 //! rlmesh/v2/{tenant}/s/{session}/l/{robot}                     lockstep step (queryable)
 //! rlmesh/v2/{tenant}/s/{session}/m/{model}                     served model requests (queryable)
 //! ```
-//!
-//! The `v2` chunk is the protocol generation
-//! ([`crate::wire::version::GENERATION`]), so peers of different generations never
-//! route to each other. `{robot}` is the embodiment's participant id, and
-//! each path segment is one key chunk, so `d/ur10e/wrist/**` subscribes to a
-//! subtree.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -325,7 +319,6 @@ mod tests {
             keys.handshake(),
             keys.ctl(),
         ] {
-            // Concrete keys: no empty chunks, no wildcards.
             assert!(key.split('/').all(|c| !c.is_empty() && !c.contains('*')));
         }
     }

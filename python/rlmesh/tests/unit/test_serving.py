@@ -7,8 +7,6 @@ def test_serving_is_private_module() -> None:
     import rlmesh
     import rlmesh._serving
 
-    # Serving helpers are internal (v0.1 surface lock): not a public top-level
-    # attribute, only reachable via the _-prefixed module.
     assert not hasattr(rlmesh, "serving")
     assert rlmesh._serving.__all__ == [
         "import_packages",

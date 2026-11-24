@@ -57,13 +57,9 @@ pub enum ObsPlan {
     Custom(CustomPlan),
 }
 
-/// One frame-stacked placement, precomputed once at resolve time.
+/// One frame-stacked placement, precomputed at resolve time.
 ///
-/// The single source of truth for stacking: the assemble path walks these to
-/// stack in place (using `placement` for the payload-tree slot and `key` for
-/// the per-episode window), and the observe path walks the same list to tick a
-/// window on a step that predicts nothing. `key` is `placement.to_string()`,
-/// precomputed so the per-step path never re-renders the canonical name.
+/// `key` is `placement.to_string()`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StackedPlacement {
     /// Where the stacked tensor lands.
@@ -107,32 +103,11 @@ pub struct Binding {
     pub obs_plans: Vec<ObsPlan>,
     /// The action vector's plan.
     pub action_plan: ActionPlan,
-    /// Frame-stacked placements (depth `> 1`), precomputed once from
-    /// `obs_plans` so both the stacking presence check and the per-step assemble
-    /// path read one canonical list — see [`StackedPlacement`]. Private and only
-    /// ever built by [`Binding::new`] (the binder), which derives it
-    /// from `obs_plans` in the same step; do not mutate `obs_plans` afterward or
-    /// this summary goes stale.
+    /// Derived from `obs_plans` by [`Binding::new`]; stale if `obs_plans` is mutated afterward.
     stacked: Vec<StackedPlacement>,
-    /// Canonical placements of the state inputs with an action-source part
-    /// (`source="action"`), precomputed like `stacked`: each reads the raw
-    /// action executed at the previous step from the per-episode window, so a
-    /// route with one is a history route the same way a stacked one is.
     previous: Vec<String>,
-    /// Resolve-time advisories the plans cannot reconstruct: one per
-    /// *unreferenced* unknown observation kind the env declared (an old core
-    /// ignored it). Surfaced through [`advisories`](Self::advisories) alongside
-    /// the per-apply data-loss notes. Empty on a fully-understood spec.
     resolve_advisories: Vec<Advisory>,
-    /// Advisories surfaced through [`advisories`](Self::advisories) but kept out
-    /// of [`describe`](Self::describe): the hints the env's own declaration raised
-    /// at join (e.g. an image layout that looks mis-declared given its shape),
-    /// and the geometry cautions from resolve (a model-declared `frame` or
-    /// `reference` the env does not confirm). None of these is a *dropped* env
-    /// modality, so none may land under that header (which vectors pin).
     quiet_advisories: Vec<Advisory>,
-    /// The named projections the resolve applied (each was allowed by the
-    /// model spec), in model output order.
     projections: Vec<AppliedProjection>,
 }
 
@@ -146,11 +121,6 @@ pub struct AppliedProjection {
 }
 
 impl Binding {
-    /// Assemble a binding, precomputing the frame-stacked placements
-    /// ([`stacked`](Self::stacked_placements)) once from `obs_plans`. The single
-    /// entry point so the precomputed stacking list can never drift from the
-    /// plans it summarizes. `resolve_advisories` carries notes derived at resolve
-    /// (unreferenced unknown kinds) that the plans no longer encode.
     pub(crate) fn new(
         obs_plans: Vec<ObsPlan>,
         action_plan: ActionPlan,
@@ -167,9 +137,6 @@ impl Binding {
                     depth: image.stack,
                     plan_index,
                     offsets: image.offsets.clone(),
-                    // A contiguous window spans exactly its depth; a strided one
-                    // reaches back to its oldest offset. Resolve already proved
-                    // the offsets law, so the arithmetic cannot go negative.
                     span: image
                         .offsets
                         .as_ref()
@@ -203,7 +170,6 @@ impl Binding {
         }
     }
 
-    /// The same binding, recording the named projections its resolve applied.
     pub(crate) fn with_projections(mut self, projections: Vec<AppliedProjection>) -> Self {
         self.projections = projections;
         self
@@ -214,14 +180,10 @@ impl Binding {
         &self.projections
     }
 
-    /// Human-readable summary of the resolved transformations.
+    /// Human-readable summary of the resolved transformations, ending with a `dropped:` section for
+    /// any env modality this core ignored.
     ///
-    /// A *reference snapshot*: the conformance vectors pin the exact text so
-    /// implementations stay consistent, but the wording is not a stable
-    /// cross-language contract. Ends with a `dropped:` section listing any env
-    /// modality this core ignored (an unrecognized kind no model input needed) —
-    /// a genuine data-loss event the per-plan transform list cannot show, since a
-    /// dropped leaf produces no plan.
+    /// The wording is not a stable cross-language contract.
     pub fn describe(&self) -> String {
         let mut summary = describe::describe_binding(self);
         if !self.projections.is_empty() {
@@ -240,14 +202,9 @@ impl Binding {
         summary
     }
 
-    /// Per-env data-loss / fabrication notes (a zero-filled camera, an aspect
-    /// crop or letterbox, a dropped unknown-kind modality): the "warn" subset of
-    /// [`describe`](Self::describe), for a caller to surface (e.g. log) without
-    /// failing. Empty when nothing noteworthy happened.
+    /// Per-env data-loss and fabrication notes (a zero-filled camera, an aspect crop or letterbox, a
+    /// dropped modality): the warning subset of [`describe`](Self::describe).
     pub fn advisories(&self) -> Vec<Advisory> {
-        // Resolve-time advisories (unreferenced unknown kinds) first, then the
-        // env-declaration hints raised at join, then the per-apply data-loss
-        // notes derived from the plans.
         let mut all = self.resolve_advisories.clone();
         all.extend(self.projections.iter().map(|applied| {
             Advisory::caution(format!(
@@ -260,18 +217,13 @@ impl Binding {
         all
     }
 
-    /// The observation keys this adapter actually reads.
-    ///
-    /// Lets a caller decode only the referenced observation leaves instead of
-    /// the whole observation — so an unused (possibly unencodable) env key
-    /// never aborts a step. Custom inputs are excluded: they resolve against
-    /// the raw host observation, not the decoded payload.
+    /// The observation keys this adapter reads, so a caller can decode only those leaves. Custom
+    /// inputs are excluded: they resolve against the raw host observation.
     pub fn referenced_obs_keys(&self) -> BTreeSet<String> {
         let mut keys = BTreeSet::new();
         for plan in &self.obs_plans {
             match plan {
                 ObsPlan::Image(image) => {
-                    // A zero-filled image has no env source.
                     if image.zero_fill.is_none() {
                         keys.insert(envelope_key(&image.source));
                     }
@@ -284,9 +236,6 @@ impl Binding {
                     }
                 }
                 ObsPlan::Text(text) => {
-                    // A default-only text input has `source = None` (it never
-                    // looks one up); reporting nothing avoids encoding a
-                    // non-existent top-level key.
                     if let Some(source) = &text.source {
                         keys.insert(envelope_key(source));
                     }
@@ -297,16 +246,7 @@ impl Binding {
         keys
     }
 
-    /// Frame-stack depths the model wants, keyed by canonical placement string.
-    ///
-    /// Only entries with depth `> 1` (actual stacking) appear — a `stack == 1`
-    /// image needs no per-episode buffer and is omitted. The episode-keyed
-    /// frame-stack windows (the host's `FrameBuffers`) buffer exactly these
-    /// placements. This is the single source of truth for stacking depth
-    /// (replacing the old Python `stacks` dict). The key is the placement's
-    /// [`Display`](core::fmt::Display) form so a nested/positioned stacked input
-    /// has a stable canonical name. Built from the precomputed per-episode
-    /// `stacked_placements` list.
+    /// Frame-stack depths the model wants, keyed by canonical placement string; only depths above 1 appear.
     pub fn stacks(&self) -> BTreeMap<String, u32> {
         self.stacked
             .iter()
@@ -314,13 +254,11 @@ impl Binding {
             .collect()
     }
 
-    /// Canonical placement strings of the inputs that hold per-episode history:
-    /// a frame window (`stack > 1`), or a previous-action part (`source="action"`).
+    /// Canonical placement strings of the inputs that hold per-episode history: a frame window
+    /// (`stack > 1`) or a previous-action part.
     ///
-    /// The set a host drives its observe step for:
-    /// empty means an env step that predicts nothing has no state to advance,
-    /// so the tick can be skipped entirely. A runtime that replays chunks must
-    /// deliver every step to a route with any of these.
+    /// Empty means a step that predicts nothing has no state to advance. A runtime that
+    /// replays chunks must deliver every step to a route with any of these.
     pub fn history_keys(&self) -> Vec<String> {
         self.stacked
             .iter()
@@ -354,9 +292,7 @@ impl Binding {
             .collect()
     }
 
-    /// The precomputed frame-stacked placements: the single iterator the assemble
-    /// path consumes so it never re-derives the `stack > 1` filter (or re-renders
-    /// each placement string) on the per-step hot path.
+    /// The precomputed frame-stacked placements.
     pub fn stacked_placements(&self) -> &[StackedPlacement] {
         &self.stacked
     }
@@ -383,8 +319,6 @@ mod tests {
         NodePath::root().push_key(name)
     }
 
-    /// A camera input at `placement` read from `source`, stacked `stack`
-    /// deep (at `offsets`, when given).
     fn image(placement: &str, source: &str, stack: u32, offsets: Option<Vec<i32>>) -> ImagePlan {
         ImagePlan {
             placement: key(placement),
@@ -414,7 +348,6 @@ mod tests {
         }
     }
 
-    /// A state piece read from `source`.
     fn piece(source: &str) -> StatePiece {
         StatePiece {
             source: key(source),
@@ -488,8 +421,6 @@ mod tests {
         }
     }
 
-    /// What each binding reads, stacks and holds per episode, one row per
-    /// shape of input.
     #[test]
     fn a_binding_reports_what_it_reads_stacks_and_holds() {
         let zeroed = ImagePlan {
@@ -529,7 +460,6 @@ mod tests {
                 &[("image", 3, 12)],
             ),
             (
-                // Two frames, the older four steps back: five held.
                 "a strided stack",
                 vec![ObsPlan::Image(image("image", "cam", 2, Some(vec![-4, 0])))],
                 &["cam"],
@@ -602,7 +532,6 @@ mod tests {
                 .collect();
             assert_eq!(bound.history_windows(), want, "{what}: windows");
         }
-        // A stack and a previous action together hold history.
         let both = binding(vec![
             ObsPlan::Image(image("image", "cam", 2, None)),
             state("state", vec![previous()]),

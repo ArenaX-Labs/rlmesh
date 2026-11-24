@@ -1,5 +1,3 @@
-"""Shared single-environment remote client base."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -49,7 +47,6 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
             connect_timeout_seconds=connect_timeout_seconds,
             request_timeout_seconds=request_timeout_seconds,
             workflow_edition=workflow_edition,
-            # A Gymnasium face's info is the env's own, exactly.
             **({"runtime_info": False} if self._gym_active else {}),
         )
 
@@ -87,7 +84,6 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
         """
         seeds = [seed] if seed is not None else None
         if self._gym_active:
-            # Seeds this env's own ``np_random``, as ``gymnasium.Env.reset`` does.
             cast("Any", _gym.gym).Env.reset(self, seed=seed)
         obs, info = self._client.reset(seeds=seeds, options=options)
         return self._observation(obs), info
@@ -107,7 +103,6 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
             wins and shadows the runtime's; the client logs that once.
         """
         if self._drives_view:
-            # A v2-native robot's one action entry may be given alone.
             entries = cast("dict[str, Any]", cast("Any", self.action_space).spaces)
             if len(entries) == 1 and not isinstance(cast("Any", action), Mapping):
                 action = cast("ActionT", {next(iter(entries)): action})

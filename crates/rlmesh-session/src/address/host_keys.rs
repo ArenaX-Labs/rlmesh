@@ -3,11 +3,6 @@
 //! (`127.0.0.1:5587/cartpole`) finds it: one file per listening address in
 //! `hosts` under the runtime directory ([`runtime_dirs`]), 0600 in a 0700
 //! directory, removed when the host closes.
-//!
-//! The host holds a shared lock on its file while it runs. A file nothing
-//! holds is a leftover of a host that is gone (its process crashed or was
-//! killed) and is passed over, so a host that later takes the port (rlmeshd,
-//! another user's) is joined as if no file were there.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -20,7 +15,6 @@ use zeroize::Zeroizing;
 use crate::address::hosting::runtime_dirs;
 use crate::error::SessionError;
 
-/// A host's key file, removed when dropped (the host closed).
 pub(super) struct KeyFile {
     path: PathBuf,
     /// Open, with the shared lock that says its host runs.
@@ -33,16 +27,13 @@ impl std::fmt::Debug for KeyFile {
     }
 }
 
-/// A key found on file for a host, and where.
 #[derive(Debug)]
 pub(super) struct Filed {
     pub key: AddressKey,
     pub path: PathBuf,
 }
 
-/// The file name of the key of the host listening at `base`.
 fn file_name(base: SocketAddr) -> String {
-    // An IPv6 address's colons are no file name on Windows.
     format!(
         "{}-{}.key",
         base.ip().to_string().replace(':', "_"),
@@ -50,7 +41,6 @@ fn file_name(base: SocketAddr) -> String {
     )
 }
 
-/// The directories key files are written to and looked for in, in order.
 fn key_dirs() -> Vec<PathBuf> {
     runtime_dirs()
         .into_iter()
@@ -59,10 +49,6 @@ fn key_dirs() -> Vec<PathBuf> {
 }
 
 impl KeyFile {
-    /// Leaves `key` for this user's other processes as the key of the host
-    /// listening at `base` (loopback), in the first of the key directories
-    /// that takes it. `None` (logged) where none does: other processes then
-    /// join with the keyed address.
     pub(super) fn write(base: SocketAddr, key: &AddressKey) -> Option<Self> {
         let mut last = None;
         for dir in key_dirs() {
@@ -81,9 +67,6 @@ impl KeyFile {
         None
     }
 
-    /// [`Self::write`] in `dir`: written to a new 0600 file, locked, then
-    /// renamed into place, so the key is never readable by anyone else nor
-    /// found half-written or unlocked.
     pub(super) fn write_in(
         dir: &Path,
         base: SocketAddr,
@@ -129,7 +112,6 @@ impl KeyFile {
 }
 
 impl Drop for KeyFile {
-    /// Removes the file, unless another host has since put its own there.
     fn drop(&mut self) {
         #[cfg(unix)]
         {
@@ -148,10 +130,6 @@ impl Drop for KeyFile {
     }
 }
 
-/// The key this user's host listening at `base` left on file, when `base`
-/// is loopback and a host that still runs left one. A file this user
-/// doesn't own, that others can read, or that isn't a key is refused with
-/// an error, never read past.
 pub(super) fn filed_key(base: SocketAddr) -> Result<Option<Filed>, SessionError> {
     if !base.ip().is_loopback() {
         return Ok(None);
@@ -164,7 +142,6 @@ pub(super) fn filed_key(base: SocketAddr) -> Result<Option<Filed>, SessionError>
     Ok(None)
 }
 
-/// [`filed_key`] in `dir`.
 pub(super) fn filed_in(dir: &Path, base: SocketAddr) -> Result<Option<Filed>, SessionError> {
     let path = dir.join(file_name(base));
     let refused = |why: String| {
@@ -194,8 +171,6 @@ pub(super) fn filed_in(dir: &Path, base: SocketAddr) -> Result<Option<Filed>, Se
         use std::os::unix::fs::MetadataExt;
         trusted(meta.uid(), meta.mode(), effective_uid()).map_err(refused)?;
     }
-    // Its host holds a shared lock while it runs: a file this takes an
-    // exclusive one on outlived its host.
     match file.try_lock() {
         Ok(()) => {
             let _ = file.unlock();
@@ -217,8 +192,6 @@ pub(super) fn filed_in(dir: &Path, base: SocketAddr) -> Result<Option<Filed>, Se
     Ok(Some(Filed { key, path }))
 }
 
-/// Whether a key file owned by `uid` with `mode` may be read by user `me`:
-/// theirs, and no one else's to read or write.
 #[cfg(unix)]
 fn trusted(uid: u32, mode: u32, me: u32) -> Result<(), String> {
     if uid != me {

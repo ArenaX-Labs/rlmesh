@@ -234,8 +234,6 @@ fn exact(p: &[u8], n: usize) -> Result<(), MsgError> {
     }
 }
 
-/// `head` fixed bytes followed by exactly `len` value bytes, without
-/// overflow however large `len` is.
 fn head_and(p: &[u8], head: usize, len: usize) -> Result<(), MsgError> {
     if p.len().checked_sub(head) == Some(len) {
         Ok(())
@@ -419,8 +417,6 @@ pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) -> Result<(), MsgError
     let mut head = [0_u8; 31];
     let (t, n, tail): (u8, usize, &[u8]) = match *msg {
         Msg::Hello(ref h) => {
-            // Decode's order after the name length (which frames the payload, so
-            // decode checks it first): reserved bits, ranges, UTF-8.
             no_reserved(h.flags, hello_flags::ALL)?;
             if h.name.len() > MAX_NAME
                 || !WATCHDOG_MS.contains(&h.watchdog_ms)
@@ -443,7 +439,6 @@ pub fn write(msg: &Msg<'_>, seq: u8, out: impl FnMut(u8)) -> Result<(), MsgError
             head[22..26].copy_from_slice(&h.map_crc.to_le_bytes());
             head[26..28].copy_from_slice(&h.watchdog_ms.to_le_bytes());
             head[28..30].copy_from_slice(&h.rx_max.to_le_bytes());
-            // A name is at most MAX_NAME (32) bytes, checked above.
             head[30] = h.name.len() as u8;
             (ty::HELLO, 31, h.name)
         }
@@ -669,8 +664,6 @@ mod tests {
 
     #[test]
     fn the_spec_lengths_hold() {
-        // Encoded sizes: HELLO 31 + name, STATUS 13, ATTACH 12, GET_MAP 5, SAFE 2,
-        // PING/DETACH 1; COMMAND and STATE frames are dense + 9.
         let len = |msg: Msg<'_>| {
             let mut n = 0;
             let mut dec = Decoder::<MAX_DECODED>::new();
@@ -780,7 +773,6 @@ mod tests {
         assert_eq!(payload, want);
     }
 
-    /// Decodes as the end a frame of this type is meant for.
     fn decode_any<'a>(
         f: &Frame<'a>,
         dense: impl Fn(u8) -> Option<usize>,
@@ -795,7 +787,6 @@ mod tests {
 
     #[test]
     fn a_frame_for_the_other_end_is_refused() {
-        // An echoing adapter: the bridge hears its own COMMAND.
         let cmd = [1_u8, 0, 0, 60, 0, 0, 0, 0, 0];
         let f = frame(ty::COMMAND, &cmd);
         assert_eq!(
@@ -818,24 +809,23 @@ mod tests {
         hello[31] = b'a';
         let none = |_| None;
         assert!(decode_any(&frame(ty::HELLO, &hello), none).is_ok());
-        hello[28..30].copy_from_slice(&8_u16.to_le_bytes()); // rx_max under 16
+        hello[28..30].copy_from_slice(&8_u16.to_le_bytes());
         assert_eq!(
             decode_any(&frame(ty::HELLO, &hello), none),
             Err(MsgError::Range)
         );
         hello[28..30].copy_from_slice(&64_u16.to_le_bytes());
-        hello[26..28].copy_from_slice(&0_u16.to_le_bytes()); // watchdog 0
+        hello[26..28].copy_from_slice(&0_u16.to_le_bytes());
         assert_eq!(
             decode_any(&frame(ty::HELLO, &hello), none),
             Err(MsgError::Range)
         );
         hello[26..28].copy_from_slice(&250_u16.to_le_bytes());
-        hello[31] = 0xFF; // not UTF-8
+        hello[31] = 0xFF;
         assert_eq!(
             decode_any(&frame(ty::HELLO, &hello), none),
             Err(MsgError::Utf8)
         );
-        // The magic alone is a short HELLO, not a bad magic.
         assert_eq!(
             decode_any(&frame(ty::HELLO, b"RLMT"), none),
             Err(MsgError::Length)
@@ -930,7 +920,6 @@ mod tests {
             decode_any(&frame(ty::HELLO, b"RLMX\x01"), none),
             Err(MsgError::Magic)
         );
-        // A future version is reported as such, whatever its length.
         assert_eq!(
             decode_any(&frame(ty::HELLO, b"RLMT\x02xyz"), none),
             Err(MsgError::Version(2))
@@ -941,18 +930,18 @@ mod tests {
         );
         let mut hello = [0_u8; 31];
         hello[..5].copy_from_slice(b"RLMT\x01");
-        hello[19] = 0b10; // reserved flag
+        hello[19] = 0b10;
         assert_eq!(
             decode_any(&frame(ty::HELLO, &hello), none),
             Err(MsgError::Reserved)
         );
         hello[19] = 0;
-        hello[30] = 33; // name too long
+        hello[30] = 33;
         assert_eq!(
             decode_any(&frame(ty::HELLO, &hello), none),
             Err(MsgError::Range)
         );
-        hello[30] = 1; // claims a name, has none
+        hello[30] = 1;
         assert_eq!(
             decode_any(&frame(ty::HELLO, &hello), none),
             Err(MsgError::Length)
@@ -983,7 +972,6 @@ mod tests {
             decode_any(&frame(ty::NOTE, &[0; 51]), none),
             Err(MsgError::Length)
         );
-        // COMMAND: the exact dense length, a known part, no reserved flags.
         assert_eq!(
             decode_any(&frame(ty::COMMAND, &[1, 0, 0, 60, 0]), none),
             Err(MsgError::UnknownPart)

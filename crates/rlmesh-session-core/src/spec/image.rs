@@ -153,13 +153,11 @@ impl Roi {
         }
     }
 
-    /// The whole axis mapped 1:1: nothing to resample.
     fn is_identity(self) -> bool {
         self.dst == self.src && self.start == 0.0 && self.end == self.src as f64
     }
 }
 
-/// A resample filter (the `_aa` kernels and `area`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Kernel {
     Triangle,
@@ -178,8 +176,6 @@ impl Kernel {
         }
     }
 
-    /// PIL's filters widen by the downscale factor and keep the unit filter
-    /// when upscaling; `area` is always the output pixel's footprint.
     fn filterscale(self, scale: f64) -> f64 {
         match self {
             Self::Area => scale,
@@ -191,8 +187,6 @@ impl Kernel {
         let tap = tap as f64;
         let x = ((tap + 0.5 - center) / filterscale).abs();
         match self {
-            // cv2 integrates the box over each source pixel, so a partly
-            // covered edge pixel weighs exactly its coverage.
             Self::Area => {
                 let (low, high) = (center - filterscale / 2.0, center + filterscale / 2.0);
                 (high.min(tap + 1.0) - low.max(tap)).max(0.0)
@@ -226,8 +220,6 @@ impl Kernel {
         }
     }
 
-    /// Per output pixel: the first source pixel it reads and the
-    /// normalised weights from there.
     fn weights(self, roi: Roi) -> Vec<(usize, Vec<f64>)> {
         let scale = (roi.end - roi.start) / roi.dst as f64;
         let filterscale = self.filterscale(scale);
@@ -261,26 +253,19 @@ impl Kernel {
     }
 }
 
-/// One axis' weights.
 type AxisWeights = Rc<Vec<(usize, Vec<f64>)>>;
 
 #[cfg(feature = "std")]
-/// What an axis' weights are keyed by: the kernel, both sizes and the span's
-/// bits.
 type WeightKey = (Kernel, usize, usize, u64, u64);
 
 #[cfg(feature = "std")]
 std::thread_local! {
-    /// Weights depend only on the kernel and the axis, so a camera resized
-    /// every step builds them once (a Lanczos-3 row is six `sin` per output
-    /// pixel).
     static WEIGHTS: RefCell<HashMap<WeightKey, AxisWeights>> =
         RefCell::new(HashMap::new());
 }
 
 #[cfg(not(feature = "std"))]
 fn axis_weights(kernel: Kernel, roi: Roi) -> AxisWeights {
-    // No thread-locals without `std`: build the weights each call.
     Rc::new(kernel.weights(roi))
 }
 
@@ -310,7 +295,6 @@ fn finish(values: Vec<f64>) -> Vec<u8> {
 }
 
 impl Image<u8> {
-    /// The 4-tap half-pixel-center bilinear resample (cv2/torch).
     fn resize_bilinear(&self, rows: Roi, cols: Roi) -> Self {
         let coords = |roi: Roi| -> Vec<(usize, usize, f64)> {
             let scale = (roi.end - roi.start) / roi.dst as f64;
@@ -345,7 +329,6 @@ impl Image<u8> {
         }
     }
 
-    /// A separable filtered resample: horizontal then vertical, in float64.
     fn resize_filter(&self, rows: Roi, cols: Roi, kernel: Kernel) -> Self {
         let c = self.channels;
         let (height, width) = (rows.dst, cols.dst);
@@ -427,8 +410,6 @@ pub fn normalise_table(low: f64, high: f64) -> [f32; 256] {
     core::array::from_fn(|v| low + (v as f32 / 255.0) * (high - low))
 }
 
-/// The intermediate size a fit resamples a `height × width` box to before
-/// its crop or pad.
 fn fitted(height: f64, width: f64, target: (usize, usize), fit: Fit) -> (usize, usize) {
     let (th, tw) = target;
     let (sy, sx) = (th as f64 / height, tw as f64 / width);
@@ -516,9 +497,7 @@ mod tests {
         }
     }
 
-    /// Pinned bytes: the host (`std`) and a device (no `std`) both take
-    /// `sin` from libm, so they resample to the same pixels. The platform
-    /// `sin` gives 127 for the middle pixel here.
+    /// Pinned bytes: the host and a device both take `sin` from libm; the platform `sin` gives 127 for the middle pixel.
     #[test]
     fn lanczos_resamples_to_pinned_bytes() {
         let stripes = Image {
@@ -562,7 +541,6 @@ mod tests {
                 "{kernel:?}"
             );
         }
-        // area of a 2x2 block is its average.
         let block = Image {
             height: 2,
             width: 2,
@@ -577,7 +555,6 @@ mod tests {
         let img = gradient(480, 640);
         let padded = fit_resize(&img, (224, 224), Some(Fit::Pad), Resample::Bilinear, None);
         assert_eq!((padded.height, padded.width), (224, 224));
-        // 640x480 into 224x224: 224x168, letterboxed 28 rows top and bottom.
         assert!(padded.data[..28 * 224 * 3].iter().all(|v| *v == 0));
         assert!(padded.data[(224 - 28) * 224 * 3..].iter().all(|v| *v == 0));
         let cropped = fit_resize(&img, (96, 96), Some(Fit::Crop), Resample::Bilinear, None);
@@ -620,7 +597,6 @@ mod tests {
         }
         let first = axis_weights(Kernel::Lanczos3, Roi::full(256, 224));
         let again = axis_weights(Kernel::Lanczos3, Roi::full(256, 224));
-        // Without `std` there is no cache: the weights are rebuilt per call.
         #[cfg(feature = "std")]
         assert!(Rc::ptr_eq(&first, &again), "the second call rebuilt them");
         assert_eq!(first, again);

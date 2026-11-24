@@ -1,9 +1,3 @@
-//! Golden: each conversion gives the same values through the binder's two
-//! doors, a Gym binding (env tags and a model spec, lowered, bound and
-//! applied) and a v2 binding (a robot map and a policy map, bound and
-//! applied), including the inputs where they once differed: a quaternion
-//! with w < 0, gimbal lock, the input affine and the binary snap.
-
 use std::collections::BTreeMap;
 
 use rlmesh_adapters::v1::{
@@ -17,8 +11,6 @@ use rlmesh_session_core::wire::{ChannelId, ParticipantId};
 use rlmesh_spaces::{DType, Tensor};
 use serde_json::json;
 
-/// Quaternions (xyzw) the codecs used to disagree on: w < 0, a 200° turn,
-/// a gimbal-locked pose (as an f32 quaternion), a half turn, the identity.
 const QUATS: [[f32; 4]; 6] = [
     [0.0, 0.0, 0.1, -0.995],
     [0.001_257_12, 0.305_294_78, -0.280_147_64, -0.910_115_84],
@@ -42,8 +34,6 @@ fn frame() -> Vec<u8> {
         })
         .collect()
 }
-
-// v1: a LIBERO-shaped env and model.
 
 fn v1_adapter(model: serde_json::Value) -> rlmesh_adapters::v1::ResolvedAdapter {
     let tags: EnvTags = serde_json::from_value(json!({
@@ -111,8 +101,6 @@ fn v1_bytes(payload: &Value, key: &str) -> Vec<u8> {
     }
 }
 
-// v2: the same scene as a robot map, the same model as a policy map.
-
 fn v2_binding(policy: serde_json::Value) -> Binding {
     let robot = json!({
         "scene/cam": {"kind": "camera", "width": W, "height": H, "hz": 20, "mount": "upside_down"},
@@ -162,7 +150,6 @@ fn v2_input(b: &Binding, entry: &str, sample: &[u8]) -> Vec<u8> {
     }
 }
 
-/// Byte equality, reporting the first difference rather than both buffers.
 fn same(v1: &[u8], v2: &[u8], what: &str) {
     assert_eq!(v1.len(), v2.len(), "{what}: lengths");
     if let Some(i) = v1.iter().zip(v2).position(|(a, b)| a != b) {
@@ -179,10 +166,6 @@ fn part(b: &Binding, entry: &str) -> PartSpec {
 
 #[test]
 fn a_libero_pair_converts_identically_through_v1_and_v2() {
-    // Images: 180° rotation, a 0.9 slice crop, area resize to 32x40 with a
-    // cover fit, BGR, CHW, normalised into [-1, 1] as float32; the wrist
-    // stays u8 HWC, bilinear_aa, letterboxed. State: the pose's rotation as
-    // axis_angle; the fingers through the affine `x * -2 + 1`.
     let v1 = v1_adapter(json!({
         "input": {
             "image": {"type": "image", "role": "image/primary", "height": 32, "width": 40,
@@ -256,8 +239,6 @@ fn a_libero_pair_converts_identically_through_v1_and_v2() {
 
 #[test]
 fn the_v1_gripper_snap_and_the_edge_snap_are_one_rule() {
-    // v1: model [0, 1] mapped onto the env's [-1, 1], then ±1 at 0. The
-    // edge: a v2 binary command, 0/1 at 0.5. Both are the midpoint rule.
     let v1 = v1_adapter(json!({
         "input": {"prompt": {"type": "text", "role": "text/instruction"}},
         "output": {"components": [
@@ -271,7 +252,6 @@ fn the_v1_gripper_snap_and_the_edge_snap_are_one_rule() {
         let out = transform_action(&v1, &action).expect("v1 action");
         let got = f32::from_le_bytes(out.to_contiguous_bytes()[24..28].try_into().expect("f32"));
         let edge = convert::binary(f64::from(g), 0.0, 1.0);
-        // The neutral raw 0.0 at the exact midpoint is v1's one exception.
         if g == 0.5 {
             assert_eq!(got, 0.0);
             continue;

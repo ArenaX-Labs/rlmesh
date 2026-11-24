@@ -26,20 +26,14 @@ use crate::host::{HostActor, lock};
 #[cfg(feature = "fleet")]
 use crate::lobby::is_lobby_verb;
 
-/// What the host answers a request it cannot authenticate.
 const UNSEALED: &str = "this session requires authenticated participants (feature auth.sealed): \
                         attach through the handshake with the session's address";
 
-/// The least time between two Keeps of one session: each links the last
-/// minutes of segments out of the purge's reach, so a flood would hold the
-/// disk.
 const KEEP_EVERY: Duration = Duration::from_secs(5);
 
-/// The longest label a Keep may carry.
 const KEEP_LABEL_MAX: usize = 64;
 
 impl HostActor {
-    /// Opens a `ctl` request under its sender's `k_up`.
     fn open_ctl(&self, mut raw: Vec<u8>) -> Result<(Arc<Peer>, Vec<u8>), CtlError> {
         let unauthenticated = |why: String| CtlError::new(CtlStatus::Unauthenticated, why);
         let header = Header::parse(&raw).map_err(|_| unauthenticated(UNSEALED.into()))?;
@@ -70,7 +64,6 @@ impl HostActor {
         let (peer, body) = match self.open_ctl(raw) {
             Ok(opened) => opened,
             Err(err) => {
-                // Unauthenticated: a plain refusal, a hint only.
                 info!(status = ?err.status, "ctl refused: {}", err.message);
                 Self::reply(query, self.refusal(err, 0));
                 return;
@@ -78,7 +71,6 @@ impl HostActor {
         };
         let request = codec::decode_request(&body);
         let request_id = request.as_ref().map_or(0, |r| r.request_id);
-        // A robot that takes its view without its parts gets them here.
         let declares = request
             .as_ref()
             .is_ok_and(|r| matches!(r.command, Command::DeclareParts { .. }));
@@ -88,7 +80,6 @@ impl HostActor {
             Admit::Pending => None,
             Admit::Execute => None,
         };
-        // A retry of a lobby verb still waiting joins it.
         #[cfg(feature = "fleet")]
         let lobby_key = (
             peer.participant.clone(),
@@ -105,7 +96,6 @@ impl HostActor {
             }
             return;
         }
-        // A retry of a grant still waiting for its keys joins it.
         if admitted.is_none()
             && let Some(waiting) = self
                 .waiting
@@ -116,7 +106,6 @@ impl HostActor {
             return;
         }
         let encoded = match admitted {
-            // A retry of an answered request: the same reply, sealed afresh.
             Some(cached) if !cached.is_empty() => cached,
             Some(_) => {
                 let expired = CtlError::new(
@@ -141,8 +130,6 @@ impl HostActor {
                     Err(err) => Outcome::refused(CtlError::new(CtlStatus::InvalidRequest, err)),
                 };
                 let (result, leases, keys) = match outcome {
-                    // A verb a candidate may not send yet is dropped
-                    // unanswered.
                     Outcome::Drop => {
                         Self::discard(query);
                         return;
@@ -209,8 +196,7 @@ impl HostActor {
                 encoded
             }
         };
-        // Ticks go out before the reply: a `Ready` that completed a step
-        // returns after the step is published.
+        // Ticks go out before the reply: a `Ready` that completed a step returns after the step is published.
         self.publish_ticks().await;
         let sealed = lock(&peer.down).seal(Kind::CtlReply, &self.keys.ctl(), &encoded);
         match sealed {
@@ -219,7 +205,6 @@ impl HostActor {
         }
     }
 
-    /// Applies a verb from `peer`.
     async fn execute(&mut self, peer: &Arc<Peer>, request: crate::wire::Request) -> Outcome {
         let now = self.now();
         if request.from != peer.participant {
@@ -290,7 +275,6 @@ impl HostActor {
                     self.take_effect(peer);
                 }
                 self.record(events).await;
-                // An attach's reply carries the generation's `k_estop`.
                 let keys = if attaching {
                     let estop = self.auth.issuer().estop_key(&peer.participant, generation);
                     estop.into_iter().collect()
@@ -306,7 +290,6 @@ impl HostActor {
         }
     }
 
-    /// `Keep`: the authority checks the sender, then the recording is kept.
     fn keep(&mut self, peer: &Arc<Peer>, request: crate::wire::Request, now: i64) -> Outcome {
         let Command::Keep { label } = &request.command else {
             return Outcome::Drop;
@@ -351,8 +334,6 @@ impl HostActor {
         }
     }
 
-    /// Whether `peer` is the generation in effect for its participant: its
-    /// identity is established.
     fn in_effect(&self, peer: &Arc<Peer>) -> bool {
         self.peers
             .read()
@@ -361,10 +342,6 @@ impl HostActor {
             .is_some_and(|current| Arc::ptr_eq(&current, peer))
     }
 
-    /// A refusal of a requester whose identity is not established (an
-    /// attach refused, a request that did not open): the status, the
-    /// message and the state's header, never the whole state, which can be
-    /// larger than a board reassembles.
     fn refusal(&self, err: CtlError, request_id: u64) -> Vec<u8> {
         codec::encode_reply(&CtlReply {
             result: Err(err),
@@ -377,8 +354,6 @@ impl HostActor {
         })
     }
 
-    /// The encoded reply: the result, the snapshot right after it and the
-    /// caller's keys.
     pub(super) fn answer(
         &self,
         to: &ParticipantId,
@@ -390,9 +365,6 @@ impl HostActor {
         self.answer_with(to, result, (leases, keys), request_id, (None, None), false)
     }
 
-    /// [`Self::answer`] with a lobby's order or a run's state, and the
-    /// robot's parts in its view when `parts` (the answer to its
-    /// declaration).
     pub(super) fn answer_with(
         &self,
         to: &ParticipantId,
@@ -406,9 +378,6 @@ impl HostActor {
         parts: bool,
     ) -> Vec<u8> {
         let state = self.snapshot();
-        // A robot that takes its device view gets it in place of the state: a board
-        // never decodes the state. A refusal carries no view: the reason is
-        // what it needs, and its view keeps coming on its own.
         if asks_for_view(&state, to) {
             let view = result.is_ok().then(|| self.view_for(&state, to, parts));
             return codec::encode_view_reply(&ViewReply {
@@ -433,8 +402,6 @@ impl HostActor {
     }
 }
 
-/// `state` without its lists: what the session is (its id, epoch, revision,
-/// mode and why, the host's protocol), not who is in it or what they hold.
 fn header(state: AuthoritySnapshot) -> AuthoritySnapshot {
     AuthoritySnapshot {
         roster: Vec::new(),

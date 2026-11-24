@@ -55,7 +55,6 @@ fn health_to_pb(health: Health) -> pb::Health {
     }
 }
 
-/// An unknown (newer) health value reads as unknown, not an error.
 fn health_from_pb(raw: i32) -> Health {
     match pb::Health::try_from(raw) {
         Ok(pb::Health::Ok) => Health::Ok,
@@ -65,7 +64,6 @@ fn health_from_pb(raw: i32) -> Health {
     }
 }
 
-/// Rejection counts on the wire: the reason's stats index plus one.
 fn clock_refused_to_pb(refused: &[ClockRefusal]) -> Vec<pb::ClockRefusal> {
     refused
         .iter()
@@ -103,8 +101,6 @@ fn rejected_to_pb(rejected: &[(Rejection, u64)]) -> Vec<pb::RejectionCount> {
         .collect()
 }
 
-/// An unknown (newer) reason is skipped, not an error: counters are
-/// telemetry.
 fn rejected_from_pb(rejected: Vec<pb::RejectionCount>) -> Vec<(Rejection, u64)> {
     rejected
         .into_iter()
@@ -157,7 +153,6 @@ fn timings_to_pb(timings: &[ChunkTiming]) -> Vec<pb::ChunkTiming> {
         .collect()
 }
 
-/// Buckets past [`LATE_BUCKETS`] (a newer sender's) count in the last.
 fn timings_from_pb(timings: Vec<pb::ChunkTiming>) -> Vec<ChunkTiming> {
     timings
         .into_iter()

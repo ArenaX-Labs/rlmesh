@@ -1,4 +1,3 @@
-// The env's camera backends: each turns a scene (scene.h) into an RGB8 image.
 #pragma once
 
 #include <cstdint>
@@ -15,7 +14,6 @@ class Renderer {
   virtual ~Renderer() = default;
   // A human-readable name, e.g. the GPU a Vulkan renderer runs on.
   virtual std::string describe() const = 0;
-  // Row-major RGB8, width x height x 3. Throws std::runtime_error on failure.
   virtual std::vector<uint8_t> render(const scene::Scene& scene, const scene::Camera& camera,
                                       int width, int height) = 0;
 };

@@ -1,5 +1,4 @@
-//! The immutable EnvContract handle and typed reset-option helper.
-#![allow(unsafe_code)] // FFI: owned handles, out parameters and borrowed spec pointers.
+#![allow(unsafe_code)]
 
 use crate::abi::status::{CapiError, RLMeshStatus, guard, guard_ptr, guard_value};
 use crate::codec::RLMeshBytes;
@@ -28,9 +27,6 @@ impl RLMeshEnvContract {
             metadata,
         }))
     }
-    /// A legacy handler can receive a contract with missing spaces. Keep its
-    /// wire representation for adapter resolution; shared methods requiring
-    /// the full contract return the facade's ProtocolException for that case.
     pub(crate) unsafe fn as_ref<'a>(ptr: *const Self) -> Option<&'a rlmesh_spaces::EnvContract> {
         unsafe { ptr.as_ref() }.map(|c| &c.0.wire)
     }
@@ -41,8 +37,6 @@ impl RLMeshEnvContract {
             .map_err(|e| CapiError::from(e.clone()))
     }
 }
-/// # Safety
-/// A non-NULL handle stays live for the returned reference's lifetime.
 unsafe fn require<'a>(
     contract: *const RLMeshEnvContract,
 ) -> Result<&'a RLMeshEnvContract, CapiError> {

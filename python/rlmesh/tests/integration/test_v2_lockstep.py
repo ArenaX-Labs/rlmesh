@@ -1,15 +1,3 @@
-"""The v2 lockstep path from Python.
-
-- Existing Gymnasium envs and v1 models run unchanged at participant
-  addresses: the same env and model over v2 (lockstep) leave the traces the
-  v1 runtime left (kept in ``golden/lockstep``), bit for bit, across every
-  space kind and v1 dtype, a vector env with NEXT_STEP autoreset, seeds and
-  chunking.
-- A served model (``Model(address)``) runs a lockstep env as v1 ran a gRPC one.
-- ``RemoteEnv`` drives a v2-native robot served in lockstep through its Gym
-  view; a lockstep robot needs no rates or kinds.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -30,7 +18,6 @@ import rlmesh.realtime as v2  # noqa: E402
 
 
 def _digest(value: Any) -> str:
-    """A stable digest of a (nested) observation or action, bytes and dtypes."""
     h = hashlib.sha256()
 
     def walk(v: Any) -> None:
@@ -75,8 +62,6 @@ def catalog_spaces() -> tuple[Any, Any]:
 
 
 class CatalogEnv(gym.Env):  # type: ignore[misc]
-    """Deterministic given its seeds and actions; records every call."""
-
     def __init__(self, log: list[str] | None = None) -> None:
         self.observation_space, self.action_space = catalog_spaces()
         self.log = log if log is not None else []
@@ -129,8 +114,6 @@ class CatalogEnv(gym.Env):  # type: ignore[misc]
 
 
 class Recorder:
-    """A v1 model: the action is a pure function of the observation."""
-
     def __init__(self) -> None:
         self.seen: list[str] = []
 
@@ -143,7 +126,6 @@ class Recorder:
         return self._action(obs, 0)
 
     def predict_batch(self, observations: Any) -> Any:
-        """One batched forward over a vector env's lanes (leaves batch-leading)."""
         lanes = int(np.asarray(observations["state"]).shape[0])
         self.seen.append(f"batch of {lanes} {_digest(observations)}")
         return np.stack([self._action(observations, lane) for lane in range(lanes)])
@@ -176,8 +158,6 @@ GOLDEN = Path(__file__).parent / "golden" / "lockstep"
 
 
 def _golden(name: str, traces: Any) -> None:
-    """Checks ``traces`` against the golden file ``name``: what the v1 runtime
-    left before it was deleted."""
     path = GOLDEN / f"{name}.json"
     assert json.loads(path.read_text()) == json.loads(json.dumps(traces)), (
         f"traces differ from {path}"
@@ -243,8 +223,6 @@ def test_a_served_model_runs_a_lockstep_env_as_v1_ran_a_grpc_one(
             )
         finally:
             server.shutdown()
-        # Steps' info carries run-minted episode ids; the env's log and the
-        # episodes say what ran.
         return log, len(hooks.steps), hooks.episodes
 
     try:
@@ -362,9 +340,6 @@ def test_a_lockstep_robot_holds_its_commands_to_its_declared_limits() -> None:
 
 @pytest.mark.perf
 def test_a_remote_env_view_step_is_not_delayed_by_the_signal_poll() -> None:
-    # Blocked calls poll for Ctrl-C on a timer. Its first tick used to be
-    # awaited before the call started, and it waited for the timer's next
-    # millisecond, so every Gym step took over 1 ms in-process.
     import statistics
 
     with v2.Host() as host:
@@ -395,7 +370,6 @@ def test_a_remote_env_view_step_is_not_delayed_by_the_signal_poll() -> None:
 
 
 def test_a_lockstep_robot_needs_no_rates_or_kinds() -> None:
-    # A game: no hz (lockstep steps it), no kinds (each part is its own).
     game = {
         "board": {"fields": {"cells": ["int8", [9]]}},
         "move": {"fields": {"cell": ["int64", []]}, "command": "value", "safe": "stop"},
@@ -420,9 +394,9 @@ def test_a_lockstep_robot_needs_no_rates_or_kinds() -> None:
         try:
             _, info = env.reset(seed=1, options={"first": np.arange(2)})
             assert info["options"] == {"first": [0, 1]}
-            obs, reward, _, _, info = env.step(np.int32(4))  # the one action entry
+            obs, reward, _, _, info = env.step(np.int32(4))
             assert obs["board"].tolist() == [0, 0, 0, 0, 1, 0, 0, 0, 0]
-            assert (reward, info["filled"]) == (1 / 3, 1)  # f64, not f32
+            assert (reward, info["filled"]) == (1 / 3, 1)
         finally:
             env.close()
             robot.close()
@@ -482,7 +456,6 @@ def _undecodable() -> UnicodeDecodeError:
     [
         (KeyError("k"), KeyError, True),
         (OSError("disk"), OSError, True),
-        # A builtin whose own constructor takes more than a message.
         (_undecodable(), UnicodeDecodeError, True),
         (rlmesh.EnvironmentException("own"), rlmesh.EnvironmentException, False),
     ],
@@ -515,7 +488,6 @@ def test_a_spec_that_is_not_json_forwards_its_basic_fields() -> None:
     from gymnasium.envs.registration import EnvSpec
 
     env = gym.make("CartPole-v1").unwrapped
-    # Its own metadata: a vector env elsewhere writes the class's autoreset mode.
     env.metadata = {"render_modes": []}
     env.spec = EnvSpec(
         "Mine-v0", entry_point=type(env), max_episode_steps=9, kwargs={"x": object()}
@@ -588,8 +560,6 @@ def test_a_second_process_joins_the_first_by_its_printed_address(
     import subprocess
     import sys
 
-    # A free well-known port of this test's own, so a running rlmeshd or a
-    # concurrent run cannot meet it.
     port = session_port
     monkeypatch.setenv("RLMESH_PORT", str(port))
     child = subprocess.Popen(
@@ -601,10 +571,8 @@ def test_a_second_process_joins_the_first_by_its_printed_address(
     assert child.stdout is not None and child.stdin is not None
     try:
         printed = child.stdout.readline().strip()
-        # The address carries the host's key (``#...``), as an invite.
         host, rest = printed.split("#", 1)
         assert host == f"127.0.0.1:{port}" and rest.endswith("/cartpole"), printed
-        # The printed address is the invite: it carries the key.
         remote = rlmesh.numpy.RemoteEnv(printed)
         try:
             obs, _ = remote.reset(seed=0)

@@ -1,5 +1,3 @@
-"""A one-lane vector env serves as the scalar env it is."""
-
 from __future__ import annotations
 
 import gymnasium as gym
@@ -11,8 +9,6 @@ from rlmesh.numpy import Model, RemoteEnv
 
 
 class _Success(gym.Wrapper):
-    """CartPole that reports a task outcome through info, as a benchmark env would."""
-
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         return obs, reward, terminated, truncated, {**info, "is_success": terminated}
@@ -63,8 +59,6 @@ def test_same_step_is_refused():
 
 
 class _Meta:
-    """A one-lane vector env stand-in carrying only metadata."""
-
     num_envs = 1
 
     def __init__(self, metadata):
@@ -77,7 +71,6 @@ class _Meta:
     "mode", [None, 3, "SameStep", "Bogus", gym.vector.AutoresetMode.SAME_STEP]
 )
 def test_an_invalid_autoreset_mode_is_refused(mode):
-    """ENV-P5: the one-lane view holds the key to the rule every env follows."""
     with pytest.raises(ValueError):
         SingleLaneEnv(_Meta({"autoreset_mode": mode}))
 

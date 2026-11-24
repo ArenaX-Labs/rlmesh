@@ -1,9 +1,7 @@
 """Sandbox source classification: gym id vs Docker image, and image probing.
 
-Pure, lifecycle-free helpers used by :mod:`rlmesh._sandbox.session` (build vs
-prebuilt routing) and :mod:`rlmesh._sandbox._model`. Kept separate from container
-lifecycle so the source/Docker heuristics can be tested and reasoned about on
-their own.
+Lifecycle-free helpers used by :mod:`rlmesh._sandbox.session` and
+:mod:`rlmesh._sandbox._model`.
 """
 
 from __future__ import annotations
@@ -19,13 +17,10 @@ from typing import Literal
 
 SourceKind = Literal["build", "prebuilt"]
 
-#: Ceiling for a quick Docker CLI call (inspect/port/logs/run/stop). Generous --
-#: these normally finish in well under a second -- but bounded, so a wedged
-#: Docker Desktop surfaces as an error instead of hanging the session forever.
+#: Upper bound for a quick Docker CLI call, so a wedged daemon errors instead of hanging.
 DOCKER_TIMEOUT_SECONDS = 60.0
 
-#: Ceiling for ``docker pull``: a multi-GB image over a slow link is legitimate,
-#: so the guard only catches a daemon that has stopped making progress entirely.
+#: Upper bound for ``docker pull``; a large image over a slow link is legitimate.
 DOCKER_PULL_TIMEOUT_SECONDS = 1800.0
 
 
@@ -40,9 +35,7 @@ def run_docker(
     ``env`` adds to the CLI's environment: a secret a ``-e NAME`` passes on
     without putting it in argv.
 
-    Every sandbox ``docker ...`` subprocess goes through here: a wedged Docker
-    daemon otherwise blocks a plain ``subprocess.run`` forever. A timeout is
-    converted into a directive ``RuntimeError`` naming the stalled command.
+    A timeout becomes a ``RuntimeError`` naming the stalled command.
     """
     try:
         return subprocess.run(
@@ -61,14 +54,9 @@ def run_docker(
         ) from exc
 
 
-#: Gymnasium's mandatory version suffix (``-v<int>``). A registered id ends with
-#: it, including the module-import form ``pkg:Env-v0`` and ``ALE/Pong-v5``.
 _GYM_VERSION_RE = re.compile(r"-v\d+$")
 
-#: A tagless name Docker accepts as an image reference: lowercase path
-#: components (``a-z0-9`` joined by ``.``, ``_``, ``__`` or dashes). Gymnasium
-#: ids are mostly CamelCase (``CartPole-v1``), which Docker refuses, and the
-#: ``module:Env-v0`` form names its module, so neither is probed as an image.
+#: Docker-valid tagless name. Gymnasium ids are CamelCase or ``module:Env-v0``, which Docker refuses.
 _COMPONENT = r"[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*"
 _DOCKER_NAME_RE = re.compile(rf"^{_COMPONENT}(?:/{_COMPONENT})*$")
 
@@ -91,8 +79,8 @@ def resolve_source_kind(
       prebuilt only when the image exists locally (``docker image inspect``, no
       auto-pull); otherwise an error naming both ``docker://`` and ``gym://``.
 
-    The resolved kind is always logged -- silent autodetect is the trap. Use an
-    explicit ``gym://`` / ``docker://`` scheme to override the bare-source guess.
+    The resolved kind is always logged. An explicit ``gym://`` / ``docker://``
+    scheme overrides the bare-source guess.
     """
     value = source.strip()
     if not value:
@@ -136,10 +124,8 @@ def resolve_source_kind(
 def _resolve_tagless(source: str, value: str) -> tuple[SourceKind, str]:
     """Classify a bare tagless name by probing local Docker images only.
 
-    A name with no scheme, no ``:tag``/digest, and no gym version suffix is
-    ambiguous. A local ``docker image inspect`` hit resolves it to prebuilt;
-    anything else (no hit, or no Docker CLI) is an error naming both explicit
-    spellings -- never an auto-pull.
+    A local ``docker image inspect`` hit resolves it to prebuilt; anything else
+    is an error naming both explicit spellings. Never auto-pulls.
     """
     if shutil.which("docker") is None:
         raise ValueError(
@@ -164,12 +150,9 @@ def _resolve_gym_shaped(
 ) -> tuple[SourceKind, str]:
     """Classify a bare id with Gymnasium's ``-v<int>`` suffix.
 
-    It builds from source, as it always has, unless it could also name a
-    tagless Docker image and a local image of that name exists (``docker image
-    inspect``, never a pull). Then the id may be either, so which one wins
-    is said out loud: an id a gym package installed here registers, or a
-    build asked for with build options, still builds and warns naming the
-    ``docker://`` spelling; any other id runs the image.
+    Builds from source unless a local image of the same tagless name exists.
+    Then a registered gym id, or a build requested via build options, still
+    builds and warns naming ``docker://``; any other id runs the image.
     """
     if (
         _DOCKER_NAME_RE.match(value) is None
@@ -225,10 +208,8 @@ def _is_image_shaped(value: str) -> bool:
     """Whether a bare source looks like a Docker image ref rather than a gym id.
 
     An image ref carries a ``:tag`` (a colon in the final path segment) or an
-    ``@sha256:`` digest; a gym id like ``CartPole-v1`` or ``ALE/Pong-v5`` has
-    neither, so it never triggers a Docker probe. The module-import gym id form
-    ``pkg:Env-v0`` *does* carry a colon, so the gym version suffix short-circuits
-    first -- otherwise it would be misrouted to the Docker path.
+    ``@sha256:`` digest. The gym id form ``pkg:Env-v0`` also carries a colon, so
+    the gym version suffix is checked first.
     """
     if looks_like_gym_id(value):
         return False
@@ -244,10 +225,8 @@ def docker_image_exists(image: str) -> bool:
 def docker_pull(image: str) -> tuple[bool, str]:
     """Attempt ``docker pull``; return ``(ok, stderr_tail)``.
 
-    Announces the pull on stderr first -- a multi-GB pull is otherwise invisible
-    behind the captured output -- and returns the pull's trailing stderr so a
-    failure (auth, missing tag, rate limit) can be surfaced verbatim instead of
-    collapsing into a generic "not found or pullable".
+    Announces the pull on stderr and returns its trailing stderr so a failure
+    can be surfaced verbatim.
     """
     print(f"rlmesh: pulling image {image!r}...", file=sys.stderr, flush=True)
     proc = run_docker(["docker", "pull", image], timeout=DOCKER_PULL_TIMEOUT_SECONDS)
@@ -256,7 +235,6 @@ def docker_pull(image: str) -> tuple[bool, str]:
 
 
 def _log_resolution(source: str, kind: SourceKind, detail: str) -> None:
-    # Autodetect must never be silent: always announce the resolved kind.
     print(
         f"rlmesh: resolved {source!r} -> {kind} ({detail})", file=sys.stderr, flush=True
     )

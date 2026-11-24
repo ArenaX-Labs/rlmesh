@@ -1,5 +1,5 @@
-//! A participant's link to the host: its sealed verbs and heartbeats, and
-//! the replies, echoes and signed broadcasts it opens.
+//! A participant's link to the host: its sealed verbs and heartbeats, and the replies,
+//! echoes and signed broadcasts it opens.
 
 use super::credential::Attached;
 use super::window::REQUEST_WINDOW;
@@ -28,40 +28,37 @@ pub enum LinkError {
     /// Sealing failed (an exhausted counter, a key expression too long).
     #[error(transparent)]
     Seal(#[from] SealError),
-    /// A message under `k_down` failed to open: forged, replayed or not
-    /// ours.
+    /// A message under `k_down` failed to open: forged, replayed or not ours.
     #[error(transparent)]
     Open(#[from] OpenError),
-    /// A broadcast failed to verify: unsigned, another instance, or not
-    /// newer than the last taken.
+    /// A broadcast failed to verify: unsigned, another instance, or not newer than the last
+    /// taken.
     #[error(transparent)]
     Signed(#[from] SignedError),
     /// It authenticated but did not decode.
     #[error(transparent)]
     Wire(#[from] WireError),
-    /// A delivered key's message: unknown key, out of scope, or none to
-    /// send under.
+    /// A delivered key's message: unknown key, out of scope, or none to send under.
     #[error(transparent)]
     Key(#[from] KeyError),
     /// A history page answering another query.
     #[error("a page for history query {0}, not this one")]
     OtherQuery(u64),
-    /// Request `0` is still unanswered, and a new id would put it below the
-    /// host's window.
+    /// Request `0` is still unanswered, and a new id would put it below the host's window.
     #[error("request {0} is still unanswered: {REQUEST_WINDOW} requests are outstanding")]
     Outstanding(u64),
 }
 
-/// What a reply on `ctl` was ([`Link::reply`], or [`Link::reply_view`]
-/// for a robot that takes its device view).
+/// What a reply on `ctl` was ([`Link::reply`], or [`Link::reply_view`] for a robot that
+/// takes its device view).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReplyOutcome<R = CtlReply> {
     /// The host's sealed answer to the request.
     Answer(Box<R>),
     /// The host's sealed answer to another request (an earlier attempt).
     Other(u64),
-    /// An unsealed `UNAUTHENTICATED` refusal: only a hint, since anyone can
-    /// answer `ctl`; worth reporting when no answer comes.
+    /// An unsealed `UNAUTHENTICATED` refusal: only a hint, since anyone can answer `ctl`; worth
+    /// reporting when no answer comes.
     Hint(CtlError),
 }
 
@@ -77,10 +74,9 @@ pub fn open_state(
     Ok(codec::decode_state(host.verify(keyexpr, msg)?.body)?)
 }
 
-/// Verifies a robot's `host/view/{robot}` broadcast received on `keyexpr`
-/// under `host`: signed by the host instance, newer than the last view taken,
-/// a device view (kind 22) and the key's robot's. Decoded without the
-/// authority state's decoder.
+/// Verifies a robot's `host/view/{robot}` broadcast received on `keyexpr` under `host`:
+/// signed by the host instance, newer than the last view taken, a device view (kind 22) and
+/// the key's robot's.
 ///
 /// # Errors
 /// [`LinkError`].
@@ -96,8 +92,6 @@ pub fn open_view(
     decode_view_of(keyexpr, verified.body)
 }
 
-/// A verified view's body. Its own function so the decoder's frame isn't
-/// underneath the signature check, a board's deepest call.
 #[inline(never)]
 fn decode_view_of(keyexpr: &str, body: &[u8]) -> Result<DeviceView, LinkError> {
     let view = codec::decode_view(body)?;
@@ -119,9 +113,8 @@ pub fn open_tick(
     Ok(codec::decode_tick(host.verify(keyexpr, msg)?.body)?)
 }
 
-/// Verifies the host's `host/health` broadcast received on `keyexpr` under
-/// `host`: signed by the host instance, newer than the last one taken, and a
-/// health message (kind 23).
+/// Verifies the host's `host/health` broadcast received on `keyexpr` under `host`: signed
+/// by the host instance, newer than the last one taken, and a health message (kind 23).
 ///
 /// # Errors
 /// [`LinkError`].
@@ -137,17 +130,11 @@ pub fn open_health(
     Ok(codec::decode_health(verified.body)?)
 }
 
-/// The unsealed `UNAUTHENTICATED` refusal `msg` is, if it is one: its
-/// status and message only ([`codec::decode_unauthenticated`]), since
-/// anyone can answer `ctl`. Its own function so its frame isn't under the
-/// real reply's decoder.
 #[inline(never)]
 fn unauthenticated_refusal(msg: &[u8]) -> Option<CtlError> {
     codec::decode_unauthenticated(msg)
 }
 
-/// A verified view's body decoded into `into`, its parts skipped: it must
-/// be the robot the key names.
 #[inline(never)]
 fn decode_view_into_of(keyexpr: &str, body: &[u8], into: &mut DeviceView) -> Result<(), LinkError> {
     codec::decode_view_into(body, into, false)?;
@@ -157,11 +144,9 @@ fn decode_view_into_of(keyexpr: &str, body: &[u8], into: &mut DeviceView) -> Res
     Ok(())
 }
 
-/// A participant generation's link to the host:
-/// `k_up` for its verbs and heartbeats, `k_down` for the replies and echoes
-/// it opens, its request ids, and the host's key, instance and last
-/// publication for the broadcasts it verifies. Sans-IO: key expressions
-/// come in, sealed bytes go out.
+/// A participant generation's link to the host: `k_up` for its verbs and heartbeats,
+/// `k_down` for the replies and echoes it opens, its request ids, and the host's key,
+/// instance and last publication for the broadcasts it verifies.
 #[derive(Debug)]
 pub struct Link {
     participant: ParticipantId,
@@ -170,8 +155,6 @@ pub struct Link {
     down: SealReceiver,
     host: SignedReceiver,
     last_request: u64,
-    /// Request ids sent and not yet answered: a caller that timed out
-    /// leaves its id here, to retry until answered.
     unanswered: alloc::collections::BTreeSet<u64>,
     last_history: u64,
     keyring: Keyring,
@@ -198,15 +181,14 @@ impl Link {
         &self.keyring
     }
 
-    /// The keys, for two-phase sealing and opening of large samples
-    /// ([`Keyring::begin_sample`], [`Keyring::begin_open_sample`]).
+    /// The keys, for two-phase sealing and opening of large samples ([`Keyring::begin_sample`],
+    /// [`Keyring::begin_open_sample`]).
     pub fn keyring_mut(&mut self) -> &mut Keyring {
         &mut self.keyring
     }
 
-    /// Opens a `KeyDelivery` on `keyexpr` (`p/{self}/keys`) in place and
-    /// applies it at `now_ns` (this participant's clock): the `KeysAck` to
-    /// send.
+    /// Opens a `KeyDelivery` on `keyexpr` (`p/{self}/keys`) in place and applies it at `now_ns`
+    /// (this participant's clock): the `KeysAck` to send.
     ///
     /// # Errors
     /// [`LinkError`]: it is dropped.
@@ -224,8 +206,8 @@ impl Link {
         Ok(self.keyring.apply(&delivery, now_ns))
     }
 
-    /// Takes a newer authority snapshot, at `now_ns`: lease keys whose
-    /// token ended go, and every key once a newer generation took over.
+    /// Takes a newer authority snapshot, at `now_ns`: lease keys whose token ended go, and
+    /// every key once a newer generation took over.
     pub fn observe(&mut self, snapshot: &impl AuthorityView, now_ns: i64) {
         self.keyring.observe(snapshot, now_ns);
     }
@@ -243,8 +225,8 @@ impl Link {
         Ok(self.keyring.seal_chunk(keyexpr, robot, chunk)?)
     }
 
-    /// Opens a chunk to this robot on `keyexpr`: under a `k_cmd` whose part,
-    /// token and sender match it.
+    /// Opens a chunk to this robot on `keyexpr`: under a `k_cmd` whose part, token and sender
+    /// match it.
     ///
     /// # Errors
     /// [`LinkError::Key`]: it is dropped.
@@ -252,8 +234,7 @@ impl Link {
         Ok(self.keyring.open_chunk(keyexpr, msg)?)
     }
 
-    /// Seals one of this robot's samples (an `_applied` entry when
-    /// `applied`) on `keyexpr`.
+    /// Seals one of this robot's samples (an `_applied` entry when `applied`) on `keyexpr`.
     ///
     /// # Errors
     /// [`LinkError::Key`] before the stream's key arrived.
@@ -280,8 +261,8 @@ impl Link {
         Ok(self.keyring.open_sample(keyexpr, msg, robot, applied)?)
     }
 
-    /// Seals a history query on `keyexpr` (`h/{robot}/{path}`) under
-    /// `k_up`, with a new request id: the id and the bytes.
+    /// Seals a history query on `keyexpr` (`h/{robot}/{path}`) under `k_up`, with a new request
+    /// id: the id and the bytes.
     ///
     /// # Errors
     /// [`LinkError::Seal`].
@@ -304,10 +285,9 @@ impl Link {
         Ok((request_id, sealed))
     }
 
-    /// Opens one reply to history query `request_id`, received on
-    /// `history_key`: the host's page under `k_down`, or an event stream's
-    /// last sample its robot sealed on `data_key` under the stream's key (a
-    /// page of one).
+    /// Opens one reply to history query `request_id`, received on `history_key`: the host's
+    /// page under `k_down`, or an event stream's last sample its robot sealed on `data_key`
+    /// under the stream's key (a page of one).
     ///
     /// # Errors
     /// [`LinkError`]: it is dropped.
@@ -350,8 +330,7 @@ impl Link {
         Ok(page)
     }
 
-    /// Seals a lockstep request to `robot` under token `token` on
-    /// `keyexpr` (`l/{robot}`).
+    /// Seals a lockstep request to `robot` under token `token` on `keyexpr` (`l/{robot}`).
     ///
     /// # Errors
     /// [`LinkError::Key`] without the lease's keys.
@@ -410,9 +389,8 @@ impl Link {
             .open_lockstep_response(keyexpr, msg, robot, token)?)
     }
 
-    /// Seals this participant's e-stop signal on `keyexpr`
-    /// (`…/estop/{participant}`) under its generation's `k_estop`:
-    /// kind 13, integrity only.
+    /// Seals this participant's e-stop signal on `keyexpr` (`…/estop/{participant}`) under its
+    /// generation's `k_estop`: kind 13, integrity only.
     ///
     /// # Errors
     /// [`LinkError::Key`] without it: this generation isn't attached (any
@@ -425,9 +403,8 @@ impl Link {
         Ok(self.keyring.seal_estop(keyexpr, signal)?)
     }
 
-    /// Opens an e-stop signal received on `keyexpr` (`…/estop/{by}`): who
-    /// sent it (from the key path, checked against its `k_estop`) and the
-    /// signal. An edge latches it with `ESTOP_SIGNAL`.
+    /// Opens an e-stop signal received on `keyexpr` (`…/estop/{by}`): who sent it (from the key
+    /// path, checked against its `k_estop`) and the signal.
     ///
     /// # Errors
     /// [`LinkError::Key`]: it is dropped (a non-member, a forgery, an ended
@@ -450,15 +427,14 @@ impl Link {
         &self.accept
     }
 
-    /// A verifier of the host's broadcasts with this link's floor, for a
-    /// second subscriber (each keeps its own last `seq`).
+    /// A verifier of the host's broadcasts with this link's floor, for a second subscriber
+    /// (each keeps its own last `seq`).
     pub fn host_verifier(&self) -> SignedReceiver {
         self.host.clone()
     }
 
-    /// Seals `command`, sent from `epoch`, as a new request on `keyexpr`
-    /// (the session's `ctl`): its id and the bytes. The id stays
-    /// unanswered until [`Self::reply`] takes its answer.
+    /// Seals `command`, sent from `epoch`, as a new request on `keyexpr` (the session's `ctl`):
+    /// its id and the bytes.
     ///
     /// # Errors
     /// [`LinkError::Seal`]; [`LinkError::Outstanding`] when an unanswered
@@ -486,8 +462,8 @@ impl Link {
         self.unanswered.contains(&request_id)
     }
 
-    /// Seals `command` again as request `request_id`, under a fresh `seq`:
-    /// a retry, which the host answers from its reply cache.
+    /// Seals `command` again as request `request_id`, under a fresh `seq`: a retry, which the
+    /// host answers from its reply cache.
     ///
     /// # Errors
     /// [`LinkError::Seal`].
@@ -509,9 +485,8 @@ impl Link {
             .seal(Kind::CtlRequest, keyexpr, &codec::encode_request(&request))?)
     }
 
-    /// Takes a reply on `keyexpr` to request `request_id`: opened under
-    /// `k_down` in place, or, failing that, an unsealed refusal as a hint.
-    /// An answer's keys are installed at `now_ns` (this participant's clock).
+    /// Takes a reply on `keyexpr` to request `request_id`: opened under `k_down` in place, or,
+    /// failing that, an unsealed refusal as a hint.
     ///
     /// # Errors
     /// [`LinkError`]: anything else, which is dropped.
@@ -549,11 +524,9 @@ impl Link {
         }
     }
 
-    /// [`Self::reply`] for a robot that asked for its device view: the host answers it
-    /// with its view and no authority
-    /// state, and this path never calls the state's decoder, so a board
-    /// that only takes views doesn't link it. The answer's keys are
-    /// installed and its view observed at `now_ns`.
+    /// [`Self::reply`] for a robot that asked for its device view: the host answers it with its
+    /// view and no authority state, and this path never calls the state's decoder, so a board
+    /// that only takes views doesn't link it.
     ///
     /// # Errors
     /// [`LinkError`]: anything else, which is dropped.
@@ -582,11 +555,9 @@ impl Link {
     }
 
     /// [`Self::reply_view`] with the reply's view decoded into `into`
-    /// ([`codec::decode_view_reply_into`], its parts only when `parts`):
-    /// the answer is the reply without it, and whether it carried one. The
-    /// answer's keys are installed; its view is the caller's to observe
-    /// ([`Self::observe`]), on a frame of its own: a board's deepest call
-    /// is the keyring's.
+    /// ([`codec::decode_view_reply_into`], its parts only when `parts`): the answer is the
+    /// reply without it, and whether it carried one. The answer's keys are installed; observing
+    /// the view ([`Self::observe`]) is the caller's to do.
     ///
     /// # Errors
     /// [`LinkError`]: anything else, which is dropped; `into` is then
@@ -634,9 +605,9 @@ impl Link {
         )?)
     }
 
-    /// Seals a probe of the host's datagram path on `keyexpr` (the
-    /// participant's `udp`): only it and the host hold `k_up`, so the host
-    /// sends its datagrams to wherever a probe that opened came from.
+    /// Seals a probe of the host's datagram path on `keyexpr` (the participant's `udp`): only
+    /// it and the host hold `k_up`, so the host sends its datagrams to wherever a probe that
+    /// opened came from.
     ///
     /// # Errors
     /// [`LinkError::Seal`].
@@ -644,8 +615,8 @@ impl Link {
         Ok(self.up.seal(Kind::DatagramProbe, keyexpr, &[])?)
     }
 
-    /// Seals an observer report on `keyexpr` (the participant's `report`)
-    /// for the host, which relays it in its signed health.
+    /// Seals an observer report on `keyexpr` (the participant's `report`) for the host, which
+    /// relays it in its signed health.
     ///
     /// # Errors
     /// [`LinkError::Seal`].
@@ -661,8 +632,7 @@ impl Link {
         )?)
     }
 
-    /// Opens a heartbeat echo on `keyexpr` (the participant's `hb/echo`) in
-    /// place.
+    /// Opens a heartbeat echo on `keyexpr` (the participant's `hb/echo`) in place.
     ///
     /// # Errors
     /// [`LinkError`].
@@ -678,8 +648,7 @@ impl Link {
         open_state(&mut self.host, keyexpr, msg)
     }
 
-    /// Verifies this robot's `host/view/{robot}` broadcast on `keyexpr`
-    /// ([`open_view`]).
+    /// Verifies this robot's `host/view/{robot}` broadcast on `keyexpr` ([`open_view`]).
     ///
     /// # Errors
     /// [`LinkError`].
@@ -687,15 +656,11 @@ impl Link {
         open_view(&mut self.host, keyexpr, msg)
     }
 
-    /// Opens this robot's device view sealed under `k_down` on `keyexpr`
-    /// (`p/{robot}/view`) in place: what a host listing
-    /// [`crate::wire::version::VIEW_DEVICE_SEALED`] sends a robot that asked.
-    /// Only the host and this generation hold `k_down`, so it is as
-    /// authentic as the signed view for this robot: the key expression (the
-    /// session and the robot) is in the tag, the key ends with the
-    /// generation, and a replayed seq is refused. The view must name this
-    /// robot at this generation; that it is newer than the one held is the
-    /// caller's to check, as for a signed view.
+    /// Opens this robot's device view sealed under `k_down` on `keyexpr` (`p/{robot}/view`) in
+    /// place: what a host listing [`crate::wire::version::VIEW_DEVICE_SEALED`] sends a robot
+    /// that asked. As authentic as the signed view: the key expression is in the tag, the key ends
+    /// with the generation, and a replayed seq is refused. The view must name this robot at this
+    /// generation; checking that it is newer than the one held is the caller's.
     ///
     /// # Errors
     /// [`LinkError`]: it is dropped.
@@ -713,9 +678,8 @@ impl Link {
         Ok(view)
     }
 
-    /// [`Self::open_sealed_view`] into `into`, its parts skipped
-    /// ([`codec::decode_view_into`]): nothing is allocated once `into` has
-    /// held a view of the same members.
+    /// [`Self::open_sealed_view`] into `into`, its parts skipped ([`codec::decode_view_into`]):
+    /// nothing is allocated once `into` has held a view of the same members.
     ///
     /// # Errors
     /// [`LinkError`]: it is dropped, and `into` is unspecified.
@@ -733,7 +697,6 @@ impl Link {
         self.own_view(into)
     }
 
-    /// A sealed view must name this robot at this generation.
     fn own_view(&self, view: &DeviceView) -> Result<(), LinkError> {
         if view.robot != self.participant || view.generation != self.accept.generation {
             return Err(WireError::unread(
@@ -745,8 +708,8 @@ impl Link {
         Ok(())
     }
 
-    /// A verifier of this link's broadcasts for another task
-    /// ([`SignedChecker`]): a board checks them off its control loop.
+    /// A verifier of this link's broadcasts for another task ([`SignedChecker`]): a board
+    /// checks them off its control loop.
     pub fn checker(&self) -> SignedChecker {
         self.host.checker()
     }
@@ -763,8 +726,8 @@ impl Link {
         decode_view_of(keyexpr, verified.body)
     }
 
-    /// [`Self::take_view`] into `into`, its parts skipped, as
-    /// [`Self::open_sealed_view_into`] does.
+    /// [`Self::take_view`] into `into`, its parts skipped, as [`Self::open_sealed_view_into`]
+    /// does.
     ///
     /// # Errors
     /// [`LinkError`]; `into` is then unspecified.
@@ -781,8 +744,8 @@ impl Link {
         decode_view_into_of(keyexpr, verified.body, into)
     }
 
-    /// [`Self::open_view`] into `into`, its parts skipped, as
-    /// [`Self::open_sealed_view_into`] does.
+    /// [`Self::open_view`] into `into`, its parts skipped, as [`Self::open_sealed_view_into`]
+    /// does.
     ///
     /// # Errors
     /// [`LinkError`]; `into` is then unspecified.
@@ -807,9 +770,8 @@ impl Link {
         open_tick(&mut self.host, keyexpr, msg)
     }
 
-    /// Verifies a `host/tick` broadcast on `keyexpr`, keeping the host's
-    /// sequence floor, without decoding it: for a robot that runs no
-    /// lockstep.
+    /// Verifies a `host/tick` broadcast on `keyexpr`, keeping the host's sequence floor,
+    /// without decoding it: for a robot that runs no lockstep.
     ///
     /// # Errors
     /// [`LinkError`].

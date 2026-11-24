@@ -152,7 +152,6 @@ pub(super) fn write_build_table(
     Ok(())
 }
 
-/// Left-aligned columns under a bold header.
 fn write_columns(
     stdout: &mut impl Write,
     style: Style,
@@ -199,8 +198,6 @@ mod tests {
     use crate::publish::validate::check_variants;
     use serde_json::{Value, json};
 
-    /// The `three_variants` sources named, plus an undeclared-requires CUDA
-    /// child (`v3-cu`) and an arm64 one (`v3-arm`), checked.
     fn variants(sources: &[&str]) -> Vec<VariantImage> {
         let mut registry = three_variants();
         registry.add(
@@ -238,8 +235,6 @@ mod tests {
             "reg.example/ns/pi0:v3-rocm6",
             "reg.example/ns/pi0:v3-cu",
         ]);
-        // The default row is the first linux/amd64 child's default profile;
-        // an excluded child comes first but cannot be it.
         assert_eq!(
             table(Style::for_terminal(false), &variants),
             concat!(

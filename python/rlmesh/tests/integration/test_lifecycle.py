@@ -47,8 +47,6 @@ class TinySpecEnv(TinyEnv):
 
 
 class SlowStepEnv(TinyEnv):
-    """Env whose step() blocks long enough to trip a short client timeout."""
-
     def __init__(self, step_delay: float) -> None:
         super().__init__()
         self._step_delay = step_delay
@@ -59,8 +57,6 @@ class SlowStepEnv(TinyEnv):
 
 
 class FailingStepEnv(TinyEnv):
-    """Env whose step() raises the queued exception, if any, else continues."""
-
     def __init__(self) -> None:
         super().__init__()
         self.fail_with: BaseException | None = None
@@ -74,8 +70,6 @@ class FailingStepEnv(TinyEnv):
 
 
 class BlockingStepEnv(TinyEnv):
-    """Env whose step() signals that it started, then blocks until released."""
-
     def __init__(self) -> None:
         super().__init__()
         self.entered = threading.Event()
@@ -88,8 +82,6 @@ class BlockingStepEnv(TinyEnv):
 
 
 class InfoKeyEnv(TinyEnv):
-    """Env that emits its own episode_ids/completed_episodes info keys."""
-
     def reset(
         self, *, seed: int | None = None, options: dict[str, object] | None = None
     ):
@@ -109,8 +101,6 @@ class InfoKeyEnv(TinyEnv):
 
 
 class RenderingEnv(TinyEnv):
-    """Env that renders a fixed-shape rgb_array frame."""
-
     def __init__(self, channels: int) -> None:
         super().__init__()
         self.render_mode = "rgb_array"
@@ -310,7 +300,6 @@ def assert_connect_rejected_with_value_error(address: str, pattern: str) -> None
         try:
             with pytest.raises(ValueError, match=pattern) as raised:
                 rlmesh.RemoteEnv(address)
-            # An invite's key is a credential: no error repeats it.
             _, _, key = address.partition("#")
             if key:
                 assert key.split("/")[0] not in str(raised.value)
@@ -335,8 +324,6 @@ def env_server(env: object, options: ServeOptions | None = None) -> EnvServer:
 
 
 def test_env_server_auto_detects_vector_env_shape() -> None:
-    # EnvServer auto-detects the vectorized shape (num_envs >= 2) and serves it via
-    # the native vector server -- no rejection, no separate VectorEnvServer class.
     server = env_server(TinyVectorEnv())
     server.shutdown()
 
@@ -445,7 +432,6 @@ def test_env_server_exposes_env_contract_before_and_after_lifecycle() -> None:
 
 @pytest.mark.parametrize("spec_id", [None, 123, object()])
 def test_env_contract_id_falls_back_for_non_string_spec_id(spec_id: object) -> None:
-    """Non-string spec.id falls back to "UnknownEnv-v1"."""
     env = TinyEnv()
     env.spec = SimpleNamespace(id=spec_id)  # type: ignore[attr-defined]
     server = env_server(env)
@@ -487,7 +473,6 @@ def test_env_server_wait_timeout_returns_false_while_running() -> None:
 def test_remote_render_preserves_source_channel_count(
     channels: int, expected_shape: tuple[int, ...]
 ) -> None:
-    """remote render() preserves the source frame shape."""
     import numpy as np
     import rlmesh
 
@@ -510,7 +495,6 @@ def test_remote_render_preserves_source_channel_count(
 
 
 def test_client_preserves_env_provided_info_keys() -> None:
-    """Client telemetry does not overwrite env-provided info keys."""
     from rlmesh._rlmesh import PyEnvClient
 
     env = InfoKeyEnv()
@@ -534,7 +518,6 @@ def test_client_preserves_env_provided_info_keys() -> None:
 def test_client_logs_a_shadowed_runtime_info_key_once(
     capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """An env key shadowing a runtime-reserved one is kept but logged, once."""
     from rlmesh._rlmesh import PyEnvClient
 
     env = InfoKeyEnv()
@@ -557,15 +540,12 @@ def test_client_logs_a_shadowed_runtime_info_key_once(
 
 
 class _TwoStepEnv(TinyEnv):
-    """Env whose episodes end on the second step."""
-
     def step(self, action: object):
         self.step_count += 1
         return 1, 1.0, self.step_count >= 2, False, {}
 
 
 def test_scalar_client_reports_completed_episodes_on_every_step() -> None:
-    """`completed_episodes` is present mid-episode (0) as on the vector client."""
     from rlmesh._rlmesh import PyEnvClient
 
     env = _TwoStepEnv()
@@ -588,7 +568,6 @@ def test_scalar_client_reports_completed_episodes_on_every_step() -> None:
 
 
 def test_client_injects_episode_ids_when_env_omits_them() -> None:
-    """When the env omits the key, rlmesh still injects its telemetry."""
     from rlmesh._rlmesh import PyEnvClient
 
     env = TinyEnv()
@@ -606,15 +585,12 @@ def test_client_injects_episode_ids_when_env_omits_them() -> None:
 
 
 def test_client_constructor_default_timeout_applies() -> None:
-    """A client-wide request_timeout_seconds bounds calls without a per-call arg."""
     from rlmesh._rlmesh import PyEnvClient
 
     env = SlowStepEnv(step_delay=3.0)
     server = env_server(env)
     server.start()
     try:
-        # Short against the 3 s step, long enough for the reset's round trip
-        # on a loaded machine.
         client = PyEnvClient(server.address, request_timeout_seconds=0.9)
         try:
             client.reset()
@@ -629,8 +605,6 @@ def test_client_constructor_default_timeout_applies() -> None:
 
 
 def test_recoverable_env_error_keeps_the_session() -> None:
-    """A recoverable env error fails one step and keeps the session; a fatal
-    one fails as a non-recoverable error."""
     import rlmesh
 
     env = FailingStepEnv()
@@ -647,10 +621,8 @@ def test_recoverable_env_error_keeps_the_session() -> None:
             remote.step(0)
         assert recoverable.value.is_recoverable is True
         assert recoverable.value.code == "INTERNAL"
-        # The client reads `{op} failed: {message}` with the code added once
-        # and no type name (ENV-35, ENV-P6).
         assert str(recoverable.value) == "[INTERNAL] step failed: solver hiccup"
-        remote.step(0)  # same session, no reset
+        remote.step(0)
 
         env.fail_with = RuntimeError("solver diverged")
         with pytest.raises(
@@ -669,8 +641,6 @@ def test_recoverable_env_error_keeps_the_session() -> None:
 
 
 def test_model_exception_raised_in_an_env_is_not_recoverable() -> None:
-    """Only an EnvironmentException's own flag makes an env failure recoverable;
-    a ModelException(is_recoverable=True) raised in an env ends the session (P-9)."""
     import rlmesh
 
     env = FailingStepEnv()
@@ -692,7 +662,6 @@ def test_model_exception_raised_in_an_env_is_not_recoverable() -> None:
 
 
 def test_close_is_best_effort_when_the_peer_is_already_gone() -> None:
-    """A dead peer must not turn close() into the error a `with` block reports."""
     import rlmesh
 
     server = env_server(TinyEnv())
@@ -711,11 +680,10 @@ def test_close_is_best_effort_when_the_peer_is_already_gone() -> None:
     else:
         pytest.fail("the client never noticed the shut-down server")
 
-    remote.close()  # best-effort: detaches locally instead of raising
+    remote.close()
 
 
 def test_concurrent_client_calls_name_the_single_caller_rule() -> None:
-    """A second caller gets a named error, not pyo3's raw "Already borrowed"."""
     import rlmesh
 
     env = BlockingStepEnv()
@@ -752,7 +720,6 @@ def test_client_rejects_invalid_timeout() -> None:
 
 
 def test_background_server_survives_unrelated_sigint() -> None:
-    """Background start() leaves process signal handlers alone."""
     import os
     import signal as signal_module
 
@@ -765,8 +732,6 @@ def test_background_server_survives_unrelated_sigint() -> None:
     server = env_server(env)
 
     previous_handler = signal_module.getsignal(signal_module.SIGINT)
-    # Swallow SIGINT in the test process so the raised KeyboardInterrupt (chained
-    # from Python's own handler) does not abort the test runner.
     signal_module.signal(signal_module.SIGINT, lambda *_: None)
     try:
         server.start()
@@ -777,7 +742,6 @@ def test_background_server_survives_unrelated_sigint() -> None:
             os.kill(os.getpid(), signal_module.SIGINT)
             time.sleep(0.5)
 
-            # Server should still be serving: a fresh client connects and steps.
             survivor = connect_with_retry(rlmesh.RemoteEnv, server.address)
             try:
                 observation, _ = survivor.reset(seed=7)
@@ -855,8 +819,6 @@ def test_remote_vector_close_detaches_without_stopping_endpoint() -> None:
 
 
 def test_env_server_serves_one_env_vector_shape_as_scalar() -> None:
-    # A num_envs==1 vector-shaped env is served as the scalar env it is: one
-    # lane, unbatched spaces, and actions re-batched on the way in.
     import rlmesh
     from rlmesh.numpy import RemoteEnv
 
@@ -877,9 +839,6 @@ def test_env_server_serves_one_env_vector_shape_as_scalar() -> None:
 def test_env_server_asserts_the_expected_contract_branch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The caller pins the branch it resolved the pairing against; join()
-    # reconciles widths and dim laws but never role names, so this is the check
-    # that catches an image serving the wrong contract.
     import rlmesh
     from rlmesh.adapters import ENV_BRANCH_METADATA_KEY
 
@@ -894,13 +853,10 @@ def test_env_server_asserts_the_expected_contract_branch(
     with pytest.raises(ValueError, match="different contracts"):
         rlmesh.EnvServer(env, ":0/env")
 
-    # An env that publishes no branch at all fails the same way (the two-phase
-    # push order: a model image pinning a branch the env image cannot answer).
     plain = TinyEnv()
     with pytest.raises(ValueError, match="published null"):
         rlmesh.EnvServer(plain, ":0/env")
 
-    # Unset asserts nothing: the local and unmanaged paths are unchanged.
     monkeypatch.delenv("RLMESH_EXPECTED_ENV_BRANCH")
     rlmesh.EnvServer(plain, ":0/env").shutdown()
 
@@ -1068,7 +1024,7 @@ def test_model_lifecycle_callbacks_are_zero_argument() -> None:
             on_close=on_close,
         )
         model.run(server.address, episodes=1)
-        assert calls == ["episode_end"]  # the model is borrowed: not closed
+        assert calls == ["episode_end"]
         model.close()
     finally:
         server.shutdown()
@@ -1077,11 +1033,6 @@ def test_model_lifecycle_callbacks_are_zero_argument() -> None:
 
 
 def test_a_binding_fires_episode_end_between_episodes() -> None:
-    """A stateful model driven BY HAND (reset/step, not run()) still gets its
-    per-episode reset between episodes: on_episode_end fires once per episode,
-    so a stateful local policy clears its state the same as on the run()/served
-    paths.
-    """
     import rlmesh
 
     env = TinyEnv()
@@ -1104,7 +1055,6 @@ def test_a_binding_fires_episode_end_between_episodes() -> None:
 
 
 def test_server_client_lifecycle_process_exits_promptly() -> None:
-    """Server shutdown returns with an open client connection."""
     import subprocess
     import sys
     import textwrap
@@ -1210,21 +1160,12 @@ print("DROVE", flush=True)
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs SIGSTOP (POSIX)")
 @pytest.mark.parametrize(
     ("own_server", "stall_seconds"),
-    # The env's session host frozen with its driver, for longer than any
-    # lease or presence grace; and a driver alone, for longer than a
-    # real-time lease's deadman while its host keeps running.
     [(True, 1.5), (False, 0.6)],
     ids=["host_and_driver", "driver_alone"],
 )
 def test_a_driver_keeps_its_env_through_a_process_stall(
     own_server: bool, stall_seconds: float
 ) -> None:
-    """A connected RemoteEnv still drives its env after its process stalls.
-
-    A loaded machine deschedules a process for a moment. That must not end
-    the driver's lease: the env would re-arm into a new epoch and refuse
-    every later request of a client that did nothing wrong.
-    """
     import signal
     import subprocess
     import sys
@@ -1268,14 +1209,6 @@ def test_a_driver_keeps_its_env_through_a_process_stall(
 
 @pytest.mark.skipif(not os.path.isdir("/dev/fd"), reason="needs /dev/fd (POSIX)")
 def test_repeated_evals_do_not_accumulate_fds_or_runtimes() -> None:
-    """Server+session lifecycles return their fds: repeated evals must run at a
-    steady state well under the stock macOS 256-fd soft limit.
-
-    Regression pin for the leak where every ``Model(...)`` construction built a
-    dedicated native runtime (a worker-thread pool plus kqueue/pipe fds) that an
-    uncollectable reference cycle then held for the process lifetime, exhausting
-    the default fd limit across a long test session.
-    """
     import rlmesh
 
     def one_eval() -> None:
@@ -1286,7 +1219,7 @@ def test_repeated_evals_do_not_accumulate_fds_or_runtimes() -> None:
         finally:
             server.shutdown()
 
-    one_eval()  # warm-up: initializes the process-wide shared runtimes
+    one_eval()
     baseline = len(os.listdir("/dev/fd"))
     for _ in range(5):
         one_eval()
@@ -1295,7 +1228,6 @@ def test_repeated_evals_do_not_accumulate_fds_or_runtimes() -> None:
 
 
 def test_a_closed_client_is_misuse_and_lanes_are_checked_before_any_request() -> None:
-    """RMT-P2 / RMT-P11: closed-handle I/O is RuntimeError; a lane past u32 is ValueError."""
     import rlmesh
 
     env = TinyEnv()

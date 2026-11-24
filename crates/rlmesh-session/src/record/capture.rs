@@ -23,10 +23,8 @@ use bytes::Bytes;
 use rlmesh_session_core::crypto::sealed::unverified_body;
 use tracing::{debug, warn};
 
-/// One recorded topic, as the writer opens it.
 #[derive(Debug)]
 pub(super) struct Topic {
-    /// The session channel id, or `None` for a `_session` topic.
     pub(super) key: TopicKey,
     pub(super) name: String,
     pub(super) schema: &'static str,
@@ -67,7 +65,6 @@ pub(super) enum Entry {
 /// host's memory without bound.
 pub const QUEUE_BYTES: usize = 256 << 20;
 
-/// The writer's queue (see [`QUEUE_BYTES`]).
 #[derive(Clone)]
 pub(super) struct Tx {
     tx: mpsc::Sender<Entry>,
@@ -94,7 +91,6 @@ impl Tx {
     }
 }
 
-/// Stamps recorder-side receipt times (session time).
 #[derive(Clone)]
 struct Stamp {
     participant: Arc<Participant>,
@@ -105,8 +101,6 @@ impl Stamp {
         self.participant.session_now_ns()
     }
 
-    /// `t_ns` on `participant`'s clock in session time (unchanged when the
-    /// host has no mapping for it yet).
     fn to_session(&self, participant: &ParticipantId, t_ns: i64) -> i64 {
         let offset = self
             .participant
@@ -117,8 +111,6 @@ impl Stamp {
     }
 }
 
-/// What a new authority snapshot shows that is worth keeping, against the
-/// one before it.
 fn incident(previous: &AuthoritySnapshot, now: &AuthoritySnapshot) -> Option<&'static str> {
     if (now.estop_latched && !previous.estop_latched)
         || (now.mode == Mode::Estop && previous.mode != Mode::Estop)
@@ -138,12 +130,9 @@ fn incident(previous: &AuthoritySnapshot, now: &AuthoritySnapshot) -> Option<&'s
     preempted.then_some("preempted")
 }
 
-/// Missed edge deadlines within [`MISS_WINDOW`] that make an incident.
 const MISS_BURST: usize = 5;
-/// See [`MISS_BURST`].
 const MISS_WINDOW: Duration = Duration::from_secs(10);
 
-/// One `_applied` stream's missed deadlines.
 #[derive(Default)]
 struct Misses {
     /// The previous tick's seq and capture time.
@@ -166,10 +155,8 @@ pub struct Recorder {
     robots: Arc<Mutex<Metadata>>,
 }
 
-/// MCAP metadata records, by name.
 pub(super) type Metadata = BTreeMap<String, BTreeMap<String, String>>;
 
-/// Everything the watcher subscribed to; dropped to stop recording.
 #[derive(Default)]
 struct Subscriptions {
     streams: Vec<SampleSubscriber>,
@@ -188,13 +175,13 @@ impl Recorder {
         Self::start_with(participant, Sink::File(Box::new(segment))).await
     }
 
-    /// Starts always-on recording of the session `participant` is attached
-    /// to (an observer): segments of [`Rolling::segment`] under
+    /// Starts always-on recording of the session `participant` is attached to
+    /// (an observer): segments of [`Rolling::segment`] under
     /// `{dir}/rolling/{session}/`, each opening with the newest authority
-    /// snapshot so it replays on its own; the oldest segments of every
-    /// session go when the budgets are exceeded. Below the free-space floor
-    /// it stops writing (counted in [`RecordStats::paused_drops`]), reports
-    /// itself degraded in its heartbeats and retries every segment period.
+    /// snapshot so it replays on its own. The oldest segments of every session go
+    /// when the budgets are exceeded. Below the free-space floor it stops writing
+    /// (counted in [`RecordStats::paused_drops`]), reports itself degraded in its
+    /// heartbeats and retries every segment period.
     pub async fn start_rolling(
         participant: Arc<Participant>,
         rolling: Rolling,
@@ -240,7 +227,6 @@ impl Recorder {
             participant: participant.clone(),
         };
 
-        // Authority: every published snapshot, as published.
         let robots: Arc<Mutex<Metadata>> = Arc::default();
         let authority = {
             let robots = robots.clone();
@@ -259,8 +245,6 @@ impl Recorder {
             let seen: Mutex<BTreeMap<ParticipantId, (Fingerprint, u32)>> =
                 Mutex::new(BTreeMap::new());
             let previous: Mutex<Option<AuthoritySnapshot>> = Mutex::new(None);
-            // Records one snapshot: a repeat of the last (the seed below
-            // and the update it raced) is skipped.
             let record = {
                 let tx = tx.clone();
                 Arc::new(
@@ -310,7 +294,6 @@ impl Recorder {
                     },
                 )
             };
-            // Only what the host signed is recorded, as its plain snapshot.
             let verifier = Mutex::new(
                 participant
                     .host_verifier()
@@ -346,16 +329,12 @@ impl Recorder {
                     .await
                     .map_err(SessionError::from)?
             };
-            // The snapshot this participant already holds (from its attach),
-            // so a recording opens with the authority even when it starts
-            // mid-session and nothing changes for a while.
             if let Some(state) = participant.authority() {
                 let data = codec::encode_state(&state);
                 record(state, data, stamp.now());
             }
             subscriber
         };
-        // Health: what the host relays of every link and edge, verified.
         let health = {
             let topic = Arc::new(Topic {
                 key: TopicKey::Health,
@@ -450,7 +429,6 @@ pub struct SampleTee {
     topics: Arc<Mutex<LaneTopics>>,
 }
 
-/// The teed topics, by channel and lane.
 type LaneTopics = BTreeMap<(ChannelId, u32), Arc<Topic>>;
 
 impl SampleTee {
@@ -507,8 +485,6 @@ impl Drop for Recorder {
     }
 }
 
-/// Subscribes to every stream and chunk key as parts appear, until
-/// cancelled; returns the subscriptions so the caller drops them.
 async fn watch_parts(
     participant: Arc<Participant>,
     tx: Tx,
@@ -558,14 +534,7 @@ async fn watch_parts(
                         .declare_subscriber(key)
                         .callback(move |sample| {
                             let log_time = stamp.now();
-                            // The recorder holds no command key: it records
-                            // a signed chunk's body as sent, unverified, and
-                            // can't read a sealed one. Read permission
-                            // doesn't change that: `k_cmd` goes only to the
-                            // robot and the host.
                             // TODO: record verified chunks when the host
-                            // relays what its edges accepted (the heartbeat
-                            // relay above would carry it).
                             let data = payload_bytes(sample.payload());
                             if let Some(body) = unverified_body(&data) {
                                 on_chunk(&tx, &stamp, &topic, log_time, data.slice(body));
@@ -631,8 +600,6 @@ async fn subscribe_stream(
         metadata.insert("kind".into(), part.kind.clone());
         metadata.insert("hz".into(), part.hz.to_string());
     }
-    // An `_applied` stream's consecutive ticks more than two control
-    // periods apart are missed deadlines (as the cockpit counts them).
     let deadline = part
         .filter(|p| p.applied_channel == Some(stream.channel))
         .map(|p| 2 * i64::try_from(p.control_period().as_nanos()).unwrap_or(i64::MAX));
@@ -713,8 +680,6 @@ fn session_metadata(snapshot: Option<&AuthoritySnapshot>) -> Metadata {
     )])
 }
 
-/// One `rlmesh.robot.{robot}` record per declared robot: its declaration
-/// fingerprint and its parts (`path:kind:channel`).
 fn robot_metadata(snapshot: &AuthoritySnapshot) -> Metadata {
     snapshot
         .contract

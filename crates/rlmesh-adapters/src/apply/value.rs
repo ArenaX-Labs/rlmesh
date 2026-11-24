@@ -1,13 +1,9 @@
 //! The host value model a binding's plans are run on.
 //!
-//! Dense arrays are [`rlmesh_spaces::Tensor`], the repo-wide tensor type;
-//! the free functions here give typed (`f32`/`f64`) views and `astype`-style
-//! casts, all through the shared [`scalar`](rlmesh_spaces::scalar) byte codec.
-//!
-//! [`Value`] is a thin model-IO *payload* envelope around a `Tensor`. It is
-//! deliberately NOT [`rlmesh_spaces::SpaceValue`]: a model input can be a
-//! list of scalars (not a tensor) or a bare number — distinctions a
-//! space-typed value does not carry.
+//! Dense arrays are [`rlmesh_spaces::Tensor`]; the free functions here give typed
+//! (`f32`/`f64`) views and `astype`-style casts through the shared
+//! [`scalar`](rlmesh_spaces::scalar) byte codec. [`Value`] is a model-IO payload, not a
+//! [`rlmesh_spaces::SpaceValue`]: a model input can be a list of scalars or a bare number.
 
 use std::collections::BTreeMap;
 
@@ -48,13 +44,8 @@ pub fn to_f64_vec(tensor: &Tensor) -> Vec<f64> {
 
 /// Flat `f32` view of a tensor (NumPy `astype(float32).reshape(-1)`).
 ///
-/// The state/action kernels compute in `f32` to match the reference; integer
-/// magnitudes beyond `f32`'s exact range therefore lose precision here. That
-/// is a deliberate engine-wide choice, not a per-call rounding bug.
+/// Integer magnitudes beyond `f32`'s exact range lose precision.
 pub fn to_f32_vec(tensor: &Tensor) -> Vec<f32> {
-    // Decode each scalar through the same dtype-aware `f64` view as `to_f64_vec`
-    // (the intermediate `f64` is the deliberate reference-matching precision
-    // choice), then narrow to `f32` in one pass without a second full buffer.
     let dtype = tensor.dtype();
     let bytes = tensor.to_contiguous_bytes();
     decode_scalars(&bytes, dtype)
@@ -70,7 +61,6 @@ pub fn tensor_from_f32(shape: Vec<i64>, data: &[f32]) -> Tensor {
     Tensor::from_vec(bytes, shape, DType::Float32).expect("f32 byte length matches shape")
 }
 
-/// Whether `dtype` is an integer family.
 fn is_integer(dtype: DType) -> bool {
     matches!(
         dtype,
@@ -86,9 +76,7 @@ fn is_integer(dtype: DType) -> bool {
     )
 }
 
-/// Cast a tensor to `target` (NumPy `astype` for floats). Integer targets
-/// reject non-integral or out-of-range values rather than silently
-/// truncating or wrapping them.
+/// Cast a tensor to `target` (NumPy `astype` for floats).
 pub fn cast(tensor: &Tensor, target: DType) -> Result<Tensor, ApplyError> {
     if tensor.dtype() == target {
         return Ok(tensor.clone());
@@ -98,9 +86,7 @@ pub fn cast(tensor: &Tensor, target: DType) -> Result<Tensor, ApplyError> {
 
 /// Encode already-decoded `f64` values into a tensor of `target`, applying the
 /// same NumPy-`astype` semantics as [`cast`]: integer targets reject
-/// non-integral or out-of-range values rather than truncating or wrapping. This
-/// is the shared encode tail so a fused decode/scale step can hand its `f64`
-/// results straight to the target dtype without a Float32 round-trip tensor.
+/// non-integral or out-of-range values rather than truncating or wrapping.
 pub fn encode_f64_to(
     values: Vec<f64>,
     shape: Vec<i64>,

@@ -1,5 +1,3 @@
-//! Action layout types shared by env and model declarations.
-
 use std::collections::BTreeMap;
 
 use super::conventions::Polarity;
@@ -13,32 +11,19 @@ use super::custom_encoding::ActionEncoding;
 pub struct Actuator {
     /// A role-less actuator is *opaque*: it occupies `dim` dims of the action
     /// vector with the constant `fill`, matched by no model role -- the
-    /// action-side mirror of a role-less `Field`. An absent role on the wire is
-    /// the opaque case; a present role is the normal model-mapped case.
+    /// action-side mirror of a role-less `Field`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
-    // `dim` is required (no `default`): an absent `dim` is a missing-field error
-    // at the codec boundary, not a silent 0 that surfaces later as a confusing
-    // width-sum mismatch. Mirrors StateFieldWire, which also omits `default`.
     #[serde(deserialize_with = "crate::spec::num::de_count")]
     pub dim: u32,
     /// A single native encoding (bare string) or a custom-encoding object
-    /// (`{base, ...}`) that shadows to its `base`. No accept-set list: the
-    /// action side is rigid (see `no_action_accept_set_contract`).
+    /// (`{base, ...}`) that shadows to its `base`.
     #[serde(default)]
     pub encoding: Option<ActionEncoding>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_range")]
     pub range: Option<(f64, f64)>,
     #[serde(default)]
     pub binary: bool,
-    // scale/invert/threshold are additive env-side corrections; they are
-    // omitted from serialization when unset so layouts that do not use them are
-    // byte-identical to before (matching the Python serializer). scale/threshold
-    // route through de_opt_number so a wrong-typed value reads in domain language
-    // (`expected a number`) instead of leaking the Rust wire type `f64`.
-    // `invert` is sugar: it negates, so it is exactly `scale = -scale` (a lone
-    // `invert` == `scale = -1`). Kept as an explicit gripper-sign knob; do not
-    // add further sign knobs.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -46,7 +31,7 @@ pub struct Actuator {
     )]
     pub scale: Option<f64>,
     /// Added after `scale` and before `invert`: `value * scale + offset`, the
-    /// stand pose a joint target is expressed around. Omitted when unset.
+    /// stand pose a joint target is expressed around.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -54,8 +39,7 @@ pub struct Actuator {
     )]
     pub offset: Option<f64>,
     /// The per-axis forms of `scale`/`offset`, one value per axis in this
-    /// actuator's own label order (its `dim` otherwise). A quantity is scalar
-    /// or per-axis, never both. Omitted when unset.
+    /// actuator's own label order (its `dim` otherwise).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -78,57 +62,46 @@ pub struct Actuator {
     pub threshold: Option<f64>,
     /// Env-side per-actuator safety clamp: clamp this component's mapped value to
     /// its declared `range` (the global `Action.clip` cannot, since it applies one
-    /// bound to a whole mixed-range vector). Resolve enforces that `clip` implies
-    /// `range`. Omitted when unset for byte-parity with layouts that do not use it.
+    /// bound to a whole mixed-range vector).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub clip: bool,
     /// Constant emitted for each dim of a role-less (opaque) actuator -- the env
-    /// requires these dims but no model produces them. Inert on a roled actuator
-    /// (must stay 0.0; `reject` enforces this). Omitted when 0.0.
+    /// requires these dims but no model produces them.
     #[serde(default, skip_serializing_if = "is_default_fill")]
     pub fill: f64,
-    /// On a *roled* actuator: the role is optional. If no model output declares
-    /// it, the resolver fills the actuator's `dim` dims with `fill` instead of
-    /// failing resolution -- the action-side mirror of a model input's `optional`
-    /// zero-fill. A model that *does* output the role drives it normally. This is
-    /// what lets `fill` be non-zero on a roled actuator (the fallback constant).
-    /// Meaningless on a role-less actuator (already always filled); `reject`
-    /// enforces that. Omitted when false.
+    /// On a *roled* actuator: the role is optional. If no model output declares it,
+    /// resolution fills the actuator's `dim` dims with `fill` instead of failing; a
+    /// model that outputs the role drives it normally. Rejected on a role-less
+    /// actuator.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
-    /// The coordinate frame a Cartesian command's axes are expressed in.
-    /// Required of an absolute pose (`action/eef_*`) under the require-frames
-    /// tier; a delta (`action/delta_eef_*`) may declare it too, and when both
-    /// sides do they must agree. `reference` is the separate question of what
-    /// a delta is added to.
+    /// The coordinate frame a Cartesian command's axes are expressed in. Required
+    /// of an absolute pose (`action/eef_*`) under the require-frames tier; a delta
+    /// may declare it too, and when both sides do they must agree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<FrameRef>,
     /// What a *delta* command is integrated against (`action/delta_eef_*`): the
     /// env declares what its controller adds the delta to, a model declares what
-    /// it was trained against, and a disagreement is a hard resolve error. Both
-    /// are omitted when unset, so every pre-geometry layout is byte-identical.
+    /// it was trained against, and a disagreement is a hard resolve error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<FrameRef>,
     /// The body part this actuator drives, when the role repeats across a
     /// body (`left_arm`, `right_arm`, ...): an identity key, matched never
-    /// checked. Omitted when unset. An opaque actuator may not carry one.
+    /// checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
     /// The axis names this actuator drives, `dim` of them in this side's own
     /// order. When both sides carry them they must name the same set, and the
-    /// model's output is permuted onto the env's axes by name. Omitted when unset; an opaque actuator may not
-    /// carry them.
+    /// model's output is permuted onto the env's axes by name. An opaque actuator
+    /// may not carry them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     /// Which way a gripper moves as this command rises (`action/gripper`):
-    /// see `Polarity`. Both sides declaring different ones is refused unless
-    /// the model allows `flip_gripper`. Omitted when unset.
+    /// see `Polarity`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polarity: Option<Polarity>,
     /// The SI size (metres, or radians for a rotation) of one unit of this
-    /// delta command (`action/delta_eef_*`). Both sides declaring different
-    /// ones is refused unless the model allows `convert_units`. Omitted when
-    /// unset.
+    /// delta command (`action/delta_eef_*`).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -136,25 +109,19 @@ pub struct Actuator {
     )]
     pub unit: Option<f64>,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
-    /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
+    /// publish-door `reject_unknowns` guard.
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_json::Value>,
 }
 
-/// A fill of 0.0 is the default (a roled actuator's inert value), omitted on the
-/// wire so layouts that do not use an opaque actuator are byte-identical.
 fn is_default_fill(fill: &f64) -> bool {
     *fill == 0.0
 }
 
 /// Ordered action components plus optional clipping bounds.
 ///
-/// Deserialization goes through `ActionWire` so a duplicate component
-/// `(role, part)` is rejected by the authoritative codec — matching Rust `resolve`
-/// (`plan_action`), which rejects a repeated action role (it would build the
-/// action by repetition instead of a real mapping). Without this the
-/// normalize/publish door would bless a layout resolve cannot consume. One
-/// role may repeat across parts (a joint command per arm), never within one.
+/// Deserialization rejects a duplicate component `(role, part)`: one role may repeat
+/// across parts, never within one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "ActionWire")]
 pub struct Action {
@@ -163,7 +130,6 @@ pub struct Action {
     pub clip: Option<(f64, f64)>,
 }
 
-/// Wire form of [`Action`]; see its docs for the duplicate-role rule.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ActionWire {
@@ -183,9 +149,6 @@ impl TryFrom<ActionWire> for Action {
             }
             let locus = format!("actuator {:?}", component.role);
             crate::spec::conventions::check_unit(component.unit, &locus)?;
-            // A sink encoding is observation-only: a controller takes a
-            // rotation, and a direction does not determine one (the direction
-            // law). Rigid on the action side, so this is a parse error.
             if let Some(encoding) = component.encoding.as_ref().map(|encoding| encoding.base())
                 && encoding.is_sink()
             {
@@ -238,10 +201,6 @@ impl TryFrom<ActionWire> for Action {
                             }
                         });
                     }
-                    // fill is the opaque constant; a roled actuator normally takes
-                    // its values from the model. The exception is an `optional`
-                    // role: a model that omits it falls back to `fill`, so a
-                    // non-zero fill is meaningful there.
                     if component.fill != 0.0 && !component.optional {
                         return Err(format!(
                             "actuator {role:?}: fill applies only to a role-less (opaque) \
@@ -250,9 +209,6 @@ impl TryFrom<ActionWire> for Action {
                         ));
                     }
                 }
-                // A role-less (opaque) actuator emits a constant, so the
-                // model-mapping fields are meaningless -- it carries only dim and
-                // fill (the action-side mirror of a role-less Field's skip rule).
                 None => {
                     if component.encoding.is_some()
                         || component.range.is_some()
@@ -289,15 +245,6 @@ impl TryFrom<ActionWire> for Action {
 mod finiteness_contract {
     use super::Action;
 
-    // The v1 wire contract: range/clip/scale/threshold bounds are finite; an
-    // unbounded bound is omitted, never +/-Infinity. serde_json enforces this
-    // on the *consume* side for free -- it rejects the non-RFC-8259
-    // `Infinity`/`NaN` tokens AND float literals that overflow to infinity
-    // (`1e400`), and `serde_json::Number` cannot even hold a non-finite value.
-    // These tests PIN that behavior so a future serde_json that started
-    // silently importing an infinity fails loudly here. The *produce* side is
-    // guarded in Python (finiteness checks at spec construction + allow_nan=False).
-
     #[test]
     fn rejects_infinity_token() {
         assert!(
@@ -333,27 +280,18 @@ mod tolerant_field_contract {
 
     #[test]
     fn actuator_captures_unknown_field_for_round_trip() {
-        // Tolerant reader: a typo'd (or future-additive) Actuator field is no
-        // longer rejected at the serde layer — it is captured verbatim in
-        // `unknown` and re-emitted, so a newer peer's field survives an older
-        // core. The strict-v1 gate (`reject_unknowns`) catches it at the publish
-        // door instead; see `spec::strict`.
         let actuator: Actuator =
             serde_json::from_str(r#"{"role": "x", "dim": 1, "rnge": [0.0, 1.0]}"#).unwrap();
         assert_eq!(
             actuator.unknown.get("rnge"),
             Some(&serde_json::json!([0.0, 1.0]))
         );
-        // Round-trips verbatim.
         let json = serde_json::to_string(&actuator).unwrap();
         assert!(json.contains("rnge"), "unknown field dropped: {json}");
     }
 
     #[test]
     fn action_envelope_stays_strict() {
-        // The Action/ActionWire envelope keeps deny_unknown_fields (it has a
-        // cross-field TryFrom validator and is not a growable leaf), so a typo on
-        // the envelope is still a hard parse error.
         let err =
             serde_json::from_str::<Action>(r#"{"components": [], "clipp": null}"#).unwrap_err();
         assert!(err.to_string().contains("unknown field"), "got: {err}");
@@ -366,19 +304,16 @@ mod opaque_actuator_contract {
 
     #[test]
     fn role_less_actuator_carries_only_dim_and_fill() {
-        // A role-less (opaque) actuator: only dim + fill. Absent role => opaque.
         let ok: Action =
             serde_json::from_str(r#"{"components": [{"dim": 2, "fill": 0.25}]}"#).unwrap();
         assert_eq!(ok.components[0].role, None);
         assert_eq!(ok.components[0].fill, 0.25);
 
-        // A model-mapping field on a role-less actuator is rejected.
         let err =
             serde_json::from_str::<Action>(r#"{"components": [{"dim": 2, "range": [-1.0, 1.0]}]}"#)
                 .unwrap_err();
         assert!(err.to_string().contains("role-less"), "{err}");
 
-        // The geometry attributes join the same ban.
         for doc in [
             r#"{"components": [{"dim": 2, "frame": "world"}]}"#,
             r#"{"components": [{"dim": 2, "reference": "current"}]}"#,
@@ -390,8 +325,6 @@ mod opaque_actuator_contract {
 
     #[test]
     fn fill_on_a_roled_actuator_is_rejected() {
-        // fill is the opaque constant; a roled actuator takes its values from the
-        // model, so a non-zero fill there is a contradiction.
         let err = serde_json::from_str::<Action>(
             r#"{"components": [{"role": "g", "dim": 1, "fill": 0.5}]}"#,
         )
@@ -401,8 +334,6 @@ mod opaque_actuator_contract {
 
     #[test]
     fn fill_on_an_optional_roled_actuator_is_accepted() {
-        // An `optional` role is the exception to the roled-fill rule: a model that
-        // omits the role falls back to `fill`, so a non-zero fill is meaningful.
         let ok: Action = serde_json::from_str(
             r#"{"components": [{"role": "g", "dim": 1, "optional": true, "fill": 0.5}]}"#,
         )
@@ -414,8 +345,6 @@ mod opaque_actuator_contract {
 
     #[test]
     fn optional_on_a_role_less_actuator_is_rejected() {
-        // A role-less actuator is already always filled, so `optional` is
-        // meaningless there and rejected (mirrors the other opaque-only guards).
         let err =
             serde_json::from_str::<Action>(r#"{"components": [{"dim": 1, "optional": true}]}"#)
                 .unwrap_err();
@@ -429,7 +358,6 @@ mod opaque_actuator_contract {
                 .unwrap_err();
         assert!(err.to_string().contains("role-less"), "{err}");
 
-        // One role per arm is a real layout; the same arm twice is not.
         let ok: Action = serde_json::from_str(
             r#"{"components": [{"role": "action/joint_pos", "dim": 7, "part": "left_arm"},
                                {"role": "action/joint_pos", "dim": 7, "part": "right_arm"}]}"#,
@@ -448,7 +376,6 @@ mod opaque_actuator_contract {
                 .contains(r#"under part "left_arm" more than once"#),
             "{err}"
         );
-        // Unset stays off the wire.
         let bare: Action =
             serde_json::from_str(r#"{"components": [{"role": "g", "dim": 1}]}"#).unwrap();
         assert!(!serde_json::to_string(&bare).unwrap().contains("part"));
@@ -523,19 +450,12 @@ mod opaque_actuator_contract {
 
     #[test]
     fn role_less_actuators_do_not_collide_on_the_dup_check() {
-        // Two opaque actuators are fine (no role to repeat), mirroring role-less
-        // Fields in a Split.
         let ok: Action =
             serde_json::from_str(r#"{"components": [{"dim": 1}, {"dim": 2}]}"#).unwrap();
         assert_eq!(ok.components.len(), 2);
     }
 }
 
-/// Actions have NO accept-set. An actuator's
-/// `encoding` is a single `RotationEncoding` (both action producers and
-/// consumers are rigid; flexibility is env-producer-only, so the obs-side
-/// `AcceptSet` list form must never parse here). These tests pin the rejection
-/// itself, not just the current type shape.
 #[cfg(test)]
 mod no_action_accept_set_contract {
     use super::Action;
@@ -547,9 +467,6 @@ mod no_action_accept_set_contract {
 
     #[test]
     fn the_gravity_sink_is_refused_on_any_actuator() {
-        // Observation-only: a direction does not determine the rotation a
-        // controller takes, so the rigid action side refuses it at parse,
-        // native or as a custom encoding's base.
         for doc in [
             r#"{"components": [{"role": "action/rot", "dim": 3, "encoding": "gravity_xyz"}]}"#,
             r#"{"components": [{"role": "action/rot", "dim": 3, "encoding": {"base": "gravity_xyz", "to_base": "m:g"}}]}"#,
@@ -574,9 +491,6 @@ mod no_action_accept_set_contract {
             ))
         );
 
-        // A custom-encoding *object* is accepted on the action side (it is a
-        // single encoding, not an accept-set list); only the list form is
-        // rejected above.
         let custom: Action = serde_json::from_str(
             r#"{"components": [{"role": "action/rot", "dim": 3, "encoding": {"base": "euler_xyz", "to_base": "m:g"}}]}"#,
         )
@@ -619,9 +533,6 @@ mod dup_role_contract {
 
     #[test]
     fn rejects_duplicate_component_role() {
-        // Parity with Rust resolve (plan_action): two components sharing a role
-        // are rejected at the codec, so the publish door never blesses a layout
-        // resolve cannot consume. An empty layout stays valid (no action mapping).
         let err = serde_json::from_str::<Action>(
             r#"{"components": [{"role": "g", "dim": 1}, {"role": "g", "dim": 1}]}"#,
         )

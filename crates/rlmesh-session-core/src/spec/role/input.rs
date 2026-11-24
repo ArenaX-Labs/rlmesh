@@ -1,14 +1,11 @@
-//! What the Gym door binds: a model's leaves and actuators, and an env's
-//! tagged features, lowered from their v1 declarations (`ModelSpec`,
-//! `EnvTags` joined against the Gym spaces) by `rlmesh-adapters`.
+//! What the Gym door binds: a model's leaves and actuators and an env's tagged features, lowered
+//! from their v1 declarations (`ModelSpec`, `EnvTags` joined against the Gym spaces) by
+//! `rlmesh-adapters`.
 //!
-//! Lowering resolves defaults and vocabularies (names become [`Rotation`],
-//! [`Resample`], [`Fit`], [`DType`]) and validates what a declaration alone
-//! can get wrong; everything that depends on the other side is the binder's.
-//! A declaration's conversions stay consent-by-declaration: a declared
-//! target size is the consent to resize, a declared encoding the consent to
-//! re-encode. The only conversions that need explicit consent are the named
-//! [`Projection`]s in [`Spec::allow`].
+//! Lowering resolves defaults and vocabularies (names become [`Rotation`], [`Resample`], [`Fit`],
+//! [`DType`]) and validates what a declaration alone can get wrong. A declared target size or
+//! encoding is the consent to convert into it; only the named [`Projection`]s in [`Spec::allow`]
+//! need explicit consent.
 
 #[allow(unused_imports)]
 use crate::prelude::*;

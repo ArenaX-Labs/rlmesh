@@ -36,7 +36,6 @@ fn dry_run_prints_the_summary_and_the_index_without_pushing() {
             "reg.example/ns/pi0:latest",
             "--annotation",
             r#"index:dev.rlmesh.package={"checkpoints":[{"default":true,"name":"base","uri":"hf://org/pi0"}],"schemaVersion":1}"#,
-            // Indexes stay whole (attestations ride along); bare manifests as is.
             &format!("reg.example/ns/pi0@{}", digest('1')),
             &format!("reg.example/ns/pi0@{}", digest('2')),
             &format!("reg.example/ns/pi0@{}", digest('j')),
@@ -59,7 +58,6 @@ fn dry_run_prints_the_summary_and_the_index_without_pushing() {
         "10",
         "accel=cuda, framework=torch",
         "accel.cuda>=12.4",
-        // The version's default row: the first linux/amd64 child.
         "torch-cuda12*",
     ] {
         assert!(row.contains(cell), "{cell:?} not in {row:?}");
@@ -72,7 +70,6 @@ fn dry_run_prints_the_summary_and_the_index_without_pushing() {
     assert!(row.contains("accel.gfx in [gfx942,gfx90a]"), "{row}");
     assert!(row.contains("accel=rocm"), "inferred facet: {row}");
     let row = out.lines().find(|l| l.starts_with("jax")).unwrap();
-    // No requires declared and no markers: a CPU image, rows per profile.
     assert!(row.contains("accel=cpu, framework=jax"), "{row}");
     assert!(row.contains("jax-osmesa, jax-egl"), "{row}");
     assert!(out.contains("* the version's default row"), "{out}");
@@ -90,7 +87,6 @@ fn publish_pushes_and_reports_the_index_digest() {
     let (result, out) = run(&registry, &args("reg.example/ns/pi0:v3", SOURCES));
     assert_eq!(result.unwrap(), 0, "{out}");
     let created = registry.created.borrow();
-    // The index is assembled first (to check it), then pushed.
     assert_eq!(created.len(), 2);
     assert!(created[0].contains(&"--dry-run".to_owned()));
     assert!(!created[1].contains(&"--dry-run".to_owned()));
@@ -144,8 +140,6 @@ fn a_lone_index_source_passes_its_annotation_through_checked() {
     );
     assert!(registry.created.borrow().is_empty());
 
-    // Valid, but carrying child-level blocks and a stale name: warned
-    // about exactly as --index-package would be.
     annotate(
         &registry,
         json!({"schemaVersion": 1, "name": "old", "variant": {"key": "a"}, "profiles": []}),
@@ -160,14 +154,12 @@ fn a_lone_index_source_passes_its_annotation_through_checked() {
     ] {
         assert!(out.contains(needle), "{needle:?} not in:\n{out}");
     }
-    // Docker keeps it; it is not passed again.
     assert!(
         !registry.created.borrow()[0].contains(&"--annotation".to_owned()),
         "{:?}",
         registry.created.borrow()
     );
 
-    // With a second source, docker assembles a new index without it.
     registry.add("r/x:b", None, 'b', keyed("b"));
     publish.sources.push("r/x:b".to_owned());
     let (result, out) = run(&registry, &publish);
@@ -196,7 +188,6 @@ fn a_failed_check_after_the_push_moves_only_target_and_says_how_to_recover() {
     publish.channel = Some("latest".to_owned());
     publish.index_package = Some(version_json(&dir, r#"{"checkpoints":[]}"#));
 
-    // The registry loses the annotation on the way in.
     registry.mangle.set(Some(|index| {
         index.as_object_mut().unwrap().remove("annotations");
     }));
@@ -220,8 +211,6 @@ fn a_failed_check_after_the_push_moves_only_target_and_says_how_to_recover() {
         assert!(registry.manifest(tag).is_err(), "{tag} did not move");
     }
 
-    // A retry without --force is refused at TARGET, as the error said;
-    // with it, the version is published and every tag is its digest.
     registry.mangle.set(None);
     let error = format!("{:#}", run(&registry, &publish).0.unwrap_err());
     assert!(
@@ -240,8 +229,6 @@ fn a_failed_check_after_the_push_moves_only_target_and_says_how_to_recover() {
     let pushed: Value = serde_json::from_str(&registry.raw(target).unwrap()).unwrap();
     assert!(pushed["annotations"][PACKAGE_LABEL].is_string(), "{pushed}");
 
-    // Forcing over a published version: the error names the digest it
-    // held and how to put it back, and the channel stays on it.
     registry.mangle.set(Some(|index| {
         index["manifests"].as_array_mut().unwrap().reverse();
     }));
@@ -279,8 +266,6 @@ accel.cuda = ">=12.4"
 dockerfile = "Dockerfile.cpu"
 "#;
 
-/// A directory holding `MANIFEST`, and a registry and builder whose
-/// builds of it land as `c` (cuda12) and `p` (cpu).
 fn manifest_setup() -> (tempfile::TempDir, FakeRegistry, FakeBuilder, PublishArgs) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("rlmesh.toml");
@@ -348,8 +333,6 @@ fn a_manifest_builds_each_variant_then_publishes_them_as_one_version() {
     assert_eq!(first.last().unwrap(), &dir.path().display().to_string());
     assert!(builds[1].contains(&dir.path().join("Dockerfile.cpu").display().to_string()));
 
-    // Assembled from the builds, in the manifest's order, with its
-    // version-level keys as the index annotation.
     let pushed = registry.created.borrow();
     let create = pushed
         .iter()
@@ -460,8 +443,6 @@ fn a_version_tag_in_use_is_refused_before_anything_is_built() {
     assert_eq!(builder.builds.borrow().len(), 2);
 }
 
-/// Put each build `manifest_setup` seeds under its build tag
-/// (`TARGET-KEY`), as pushing the builds of `target` does.
 fn land_builds(registry: &FakeRegistry, target: &str) {
     for key in ["cuda12", "cpu"] {
         let view = registry.manifest(&format!("reg.example/ns/pi0:built-{key}"));
@@ -498,8 +479,6 @@ fn a_manifest_publish_stopped_after_target_finishes_on_a_rerun_without_rebuildin
     }
     assert_eq!(builder.builds.borrow().len(), 2);
 
-    // The rerun the error names: TARGET is not rebuilt or pushed again;
-    // only the remaining tags are pointed at it.
     registry.failing.borrow_mut().clear();
     let pushes = registry.pushes();
     let (result, out) = run_with(&registry, &builder, &publish);
@@ -517,7 +496,6 @@ fn a_manifest_publish_stopped_after_target_finishes_on_a_rerun_without_rebuildin
         assert_eq!(registry.digest_of(tag), version, "{tag}");
     }
 
-    // Finished, it is already published; a dry run says so too.
     let (result, out) = run_with(&registry, &builder, &publish);
     assert_eq!(result.unwrap(), 0, "{out}");
     assert!(out.contains("Already published"), "{out}");
@@ -527,7 +505,6 @@ fn a_manifest_publish_stopped_after_target_finishes_on_a_rerun_without_rebuildin
     assert!(out.contains("would finish it from them"), "{out}");
     publish.dry_run = false;
 
-    // --force still rebuilds.
     publish.force = true;
     let (result, out) = run_with(&registry, &builder, &publish);
     assert_eq!(result.unwrap(), 0, "{out}");
@@ -542,8 +519,6 @@ fn builds_whose_labels_no_longer_match_the_file_do_not_finish_a_publish() {
     assert_eq!(result.unwrap(), 0, "{out}");
     land_builds(&registry, target);
 
-    // The file changed since: its cpu build is not the one at v3-cpu,
-    // so TARGET is a version in use, and v3-cpu another image.
     let path = publish.config.clone().unwrap();
     std::fs::write(
         &path,
@@ -600,7 +575,6 @@ fn a_manifest_dry_run_fails_on_a_version_tag_the_real_run_refuses() {
 #[test]
 fn a_build_tag_holding_another_image_is_refused_before_anything_is_built() {
     let (_dir, mut registry, builder, mut publish) = manifest_setup();
-    // A separately published v3-cpu, labelled for another variant.
     registry.add("reg.example/ns/pi0:v3-cpu", None, 'o', keyed("other"));
     registry.insert_raw(
         "reg.example/ns/pi0:v3-cuda12",
@@ -626,15 +600,12 @@ fn a_build_tag_holding_another_image_is_refused_before_anything_is_built() {
         assert!(builder.builds.borrow().is_empty());
     }
 
-    // An earlier build of the same variant (a build that failed later,
-    // say) is rebuilt over without --force.
     land_builds(&registry, "reg.example/ns/pi0:v3");
     publish.dry_run = false;
     let (result, out) = run_with(&registry, &builder, &publish);
     assert_eq!(result.unwrap(), 0, "{out}");
     assert_eq!(builder.builds.borrow().len(), 2);
 
-    // --force overwrites another image.
     let (_dir, mut registry, builder, mut publish) = manifest_setup();
     registry.add("reg.example/ns/pi0:v3-cpu", None, 'o', keyed("other"));
     publish.force = true;

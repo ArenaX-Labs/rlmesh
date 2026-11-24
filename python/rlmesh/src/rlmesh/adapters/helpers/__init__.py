@@ -11,16 +11,10 @@ def render_placement(segments: tuple[str | int, ...]) -> str:
 
     Mirrors ``rlmesh_adapters::path::NodePath`` ``Display``: dot-joined keys,
     ``[i]`` for tuple indices, and ``<root>`` for the empty path (a bare leaf).
-    The single source of truth for the ``NodePath::to_string()`` format both the
-    resolver (error/wire spec) and the adapter (served-route customs map key)
-    agree on.
-
-    Dict keys are deliberately not escaped (the native ``Display`` does not
-    escape either, and dotted keys like GR00T's ``"state.x"`` are first-class),
-    so a key containing ``'.'`` or ``'['`` renders identically to the nested
-    path it spells. That is harmless for error text; the one consumer that uses
-    the rendered string as a lookup key (``Adapter.serve_route``'s customs map)
-    guards against an actual collision and raises there.
+    Dict keys are not escaped (neither is the native ``Display``), so a key
+    containing ``'.'`` or ``'['`` renders identically to the nested path it
+    spells; ``Adapter.serve_route`` guards against that collision where the
+    string is a lookup key.
     """
     if not segments:
         return "<root>"

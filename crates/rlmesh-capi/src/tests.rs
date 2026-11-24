@@ -1,5 +1,3 @@
-//! Cross-surface ABI audit; behavior is covered by each facade module and the
-//! C/C++ consumers run by test:cxx.
 #[test]
 fn old_wrapper_exports_are_removed() {
     let c = include_str!("../include/rlmesh.h");

@@ -1,11 +1,3 @@
-"""``Model(address).run(local_env)`` with the model served by another process.
-
-The model's process serves on loopback, or in a network namespace of its own
-with its port published on this machine's loopback under another number (as
-a container's is), where it can dial neither this machine's loopback nor
-the address its driver dials.
-"""
-
 from __future__ import annotations
 
 import os
@@ -20,8 +12,6 @@ from pathlib import Path
 
 import pytest
 
-# Serves a model as `model` in the session at argv[1] until stdin closes; with argv[2], first relays
-# the Unix socket `session` in that directory to the host's port.
 _MODEL_SERVER = textwrap.dedent(
     """
     import socket, sys, threading
@@ -106,8 +96,6 @@ def _model_process(argv: list[str], **env: str) -> Iterator[None]:
             process.wait(timeout=10)
 
 
-# Run outside this process: a native call holding the GIL while it waits on
-# the link must not stall the forwarding it waits on.
 _PUBLISH = textwrap.dedent(
     """
     import socket, sys, threading
@@ -154,8 +142,6 @@ _PUBLISH = textwrap.dedent(
 
 @contextmanager
 def _published(port: int, relay: Path) -> Iterator[None]:
-    """Forward loopback ``port`` to the Unix socket ``session`` in ``relay``,
-    as a container's published port."""
     script = relay / "publish.py"
     script.write_text(_PUBLISH)
     process = subprocess.Popen(
@@ -212,7 +198,6 @@ def test_a_model_that_cannot_reach_its_driver_drives_a_local_env(
     script.write_text(_MODEL_SERVER)
     from rlmesh.launch import launch_identity
 
-    # The launcher's identity, through the environment as a sandbox passes it.
     identity, key = launch_identity()
     model = _model_process(
         [
@@ -232,8 +217,6 @@ def test_a_model_that_cannot_reach_its_driver_drives_a_local_env(
         address = f"127.0.0.1:{session_port}#{key}/model"
         result = rlmesh.Model(address).run(ThreeStepEnv(), episodes=2)
         assert result.total_steps == 6
-        # An env given by address is the model's to reach: it can't,
-        # and says so well before the 30 s connect timeout.
         server = rlmesh.EnvServer(ThreeStepEnv(), "127.0.0.1:0/elsewhere/env")
         server.start()
         started = time.monotonic()

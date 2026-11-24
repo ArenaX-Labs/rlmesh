@@ -5,14 +5,12 @@ namespace tether {
 
 namespace {
 
-// A read position across a chain of pieces.
 struct Cursor {
   const Bytes* pieces;
   uint8_t count;
   uint8_t piece;
   uint16_t at;
 
-  // Steps over finished pieces; true while a byte remains.
   bool more() {
     while (piece < count && at >= pieces[piece].len) {
       ++piece;
@@ -21,7 +19,6 @@ struct Cursor {
     return piece < count;
   }
 
-  // The current byte (after `more()`).
   uint8_t peek() const { return pieces[piece].at(at); }
 };
 
@@ -30,7 +27,6 @@ struct Cursor {
 void cobsEncode(const Bytes* pieces, uint8_t count, Sink out) {
   Cursor c = {pieces, count, 0, 0};
   for (;;) {
-    // Look ahead in place for this block's length.
     Cursor ahead = c;
     uint8_t run = 0;
     while (run < 254 && ahead.more() && ahead.peek() != 0) {
@@ -44,7 +40,6 @@ void cobsEncode(const Bytes* pieces, uint8_t count, Sink out) {
       ++c.at;
     }
     if (!c.more()) break;
-    // A zero ends this block: the code byte stands for it.
     if (run < 254) ++c.at;
   }
 }
@@ -84,7 +79,6 @@ CobsResult CobsDecoder::push(uint8_t byte) {
   if (overflow_) return CobsResult::None;
   started_ = true;
   if (left_ == 0) {
-    // A code byte: emit the zero the previous block stood for.
     if (zero_ && !put(0)) return CobsResult::None;
     left_ = static_cast<uint8_t>(byte - 1);
     zero_ = byte != 0xFF;

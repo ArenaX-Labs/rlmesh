@@ -61,7 +61,6 @@ def stage_native(require_all=False):
             with tarfile.open(archive) as tar:
                 path = f"rlmesh-{version()}-{triple}/{member}"
                 item = tar.getmember(path)
-                # Linux's unversioned .so is a symlink within the same root.
                 if item.issym():
                     item = tar.getmember(
                         str(pathlib.PurePosixPath(path).parent / item.linkname)
@@ -195,7 +194,6 @@ def upm(require_all=False):
         (ROOT / "LICENSE-APACHE", "LICENSE-APACHE"),
     ):
         shutil.copyfile(source, stage / destination)
-    # Folder and ordinary asset metas avoid regenerated GUIDs on every import.
     for path in sorted(stage.rglob("*")):
         if path.suffix == ".meta" or path.with_name(path.name + ".meta").exists():
             continue

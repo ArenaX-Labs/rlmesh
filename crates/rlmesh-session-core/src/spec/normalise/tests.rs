@@ -1,5 +1,3 @@
-//! The normaliser's kinds, custom fields, refusals and fingerprints.
-
 use super::*;
 use crate::spec::canonical;
 use crate::spec::units::NORMALIZED;
@@ -142,8 +140,6 @@ fn custom_kinds_keep_their_declared_field_order() {
         (go2[1].priority, go2[1].send.as_str()),
         (ChannelPriority::Bulk, "latest(hz=10)")
     );
-    // The canonical form keeps the order in an array, so swapping the
-    // two fields changes the fingerprint.
     let swapped = parts(
         r#"{"feet/force": {"kind": "unitree/foot_force", "hz": 500,
                 "fields": {"contact": ["bool", [4]], "force": ["int16", [4]]}, "units": {"force": "raw"}},
@@ -172,7 +168,6 @@ fn the_fingerprint_is_of_the_normalised_form() {
     assert_ne!(fingerprint(&a), fingerprint(&c));
     let text = canonical::to_string(&canonical(&a));
     assert!(text.starts_with(r#"[{"attrs":{},"command":null,"control_hz":0,"encoding":"raw","event":false,"fields":[{"dtype":"float32","name":"pos""#), "{text}");
-    // Command durations are carried in milliseconds.
     let commanded = parts(
         r#"{"arm": {"kind": "joints", "count": 1, "hz": 50, "command": "position", "safe": "hold",
                 "hold_max_ms": 250, "max_action_age_ms": 400, "max_clock_error_ms": 12.5}}"#,

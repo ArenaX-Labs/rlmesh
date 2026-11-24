@@ -31,8 +31,6 @@ void copy8(uint8_t* to, const uint8_t* from) {
 
 bool reserved(uint8_t flags, uint8_t all) { return (flags & ~all) != 0; }
 
-// The payload is `head` fixed bytes followed by exactly the part's dense
-// value, and the part is known.
 Error headAnd(const Frame& f, uint16_t head, uint8_t part, DenseLen lens) {
   const int16_t len = lens.lookup(lens.ctx, part);
   if (len < 0) return Error::UnknownPart;
@@ -43,7 +41,6 @@ Bytes tailOf(const Frame& f, uint16_t from) {
   return Bytes::ram(f.payload + from, static_cast<uint16_t>(f.len - from));
 }
 
-// Writes `head[..n] | tail` as one frame, or refuses a payload over a frame.
 Error finish(uint8_t type, uint8_t seq, const uint8_t* head, uint8_t n, const Bytes& tail,
              Sink out) {
   if (tail.len > kMaxPayload - n) return Error::Length;
@@ -68,20 +65,20 @@ bool validUtf8(const Bytes& s) {
       need = 1;
     } else if (b == 0xE0) {
       need = 2;
-      lo = 0xA0;  // no overlong forms
+      lo = 0xA0;
     } else if (b == 0xED) {
       need = 2;
-      hi = 0x9F;  // no surrogates
+      hi = 0x9F;
     } else if (b >= 0xE1 && b <= 0xEF) {
       need = 2;
     } else if (b == 0xF0) {
       need = 3;
-      lo = 0x90;  // no overlong forms
+      lo = 0x90;
     } else if (b >= 0xF1 && b <= 0xF3) {
       need = 3;
     } else if (b == 0xF4) {
       need = 3;
-      hi = 0x8F;  // nothing past U+10FFFF
+      hi = 0x8F;
     } else {
       return false;
     }
@@ -231,8 +228,6 @@ Error decode(const Frame& frame, Receiver receiver, DenseLen lens, Msg& out) {
 }
 
 Error writeHello(const Hello& m, uint8_t seq, Sink out) {
-  // Decode's order after the name length (which frames the payload, so
-  // decode checks it first): reserved bits, ranges, UTF-8.
   if (reserved(m.flags, hello_flags::kAll)) return Error::Reserved;
   if (m.name.len > kMaxName || m.watchdogMs < kWatchdogMsMin || m.watchdogMs > kWatchdogMsMax ||
       m.rxMax < kRxMaxMin || m.rxMax > kRxMaxMax) {

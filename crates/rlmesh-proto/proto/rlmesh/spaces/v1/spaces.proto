@@ -4,9 +4,6 @@ package rlmesh.spaces.v1;
 
 import "rlmesh/spaces/v1/types.proto";
 
-// ================================== //
-// ======= Fundamental Spaces ======= //
-// ================================== //
 message BoxSpec {
   oneof bounds {
     bool unbounded = 1;
@@ -42,9 +39,6 @@ message TextSpec {
   string charset = 3;
 }
 
-// ================================== //
-// ======== Composite Spaces ======== //
-// ================================== //
 message DictSpec {
   repeated string keys = 1;
   repeated SpaceSpec spaces = 2;
@@ -54,21 +48,17 @@ message TupleSpec {
   repeated SpaceSpec spaces = 1;
 }
 
-// ================================== //
-
 message SpaceSpec {
   repeated int64 shape = 1;
   DataType dtype = 2;
 
   oneof spec {
-    // === Fundamental Spaces === //
     BoxSpec box = 10;
     DiscreteSpec discrete = 11;
     MultiBinarySpec multi_binary = 12;
     MultiDiscreteSpec multi_discrete = 13;
     TextSpec text = 14;
 
-    // === Composite Spaces === //
     DictSpec dict = 20;
     TupleSpec tuple = 21;
   }

@@ -1,21 +1,12 @@
-//! Node-API bindings for real-time sessions (protocol v2): an
-//! embedded session host, a robot ([`rlmesh_session::edge::Robot`]), a bound policy
-//! on its robot's clock ([`rlmesh::realtime`]: the session's
-//! [`rlmesh_session::Controller`], or a lockstep robot's exchange) and an MCAP recorder
-//! ([`rlmesh_session::record::Recorder`]), the Node and Electron twin of the PyO3
-//! binding. The `rlmesh` npm package wraps them (`src/native.ts`);
-//! every rule (packing, binding, the edge, leases, the run loop) stays in
-//! the Rust crates.
+//! Node-API bindings for real-time sessions (protocol v2): an embedded session host, a robot, a bound
+//! policy on its robot's clock and an MCAP recorder. The `rlmesh` npm package wraps them (`src/native.ts`).
 //!
-//! Nothing here blocks the JS thread on the network: verbs that wait are
-//! `async` and run on the session runtime; `publish`, `due`, `observe` and
-//! `send` never wait. The run loop has a blocking thread of its own and
-//! hands each start to JS through a threadsafe function; JS answers with
-//! [`NativePolicy::reply`].
+//! Nothing here blocks the JS thread on the network: verbs that wait are `async` and run on the session
+//! runtime; `publish`, `due`, `observe` and `send` never wait. The run loop has a blocking thread of its own
+//! and hands each start to JS through a threadsafe function; JS answers with [`NativePolicy::reply`].
 //!
 //! An error's message starts with a line naming its kind as JSON
-//! (`rlmesh:{"kind":"SessionRefused","status":"LEASE_BUSY"}`); the wrapper
-//! turns it into one of its error classes.
+//! (`rlmesh:{"kind":"SessionRefused","status":"LEASE_BUSY"}`); the wrapper turns it into one of its error classes.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -43,11 +34,8 @@ use rlmesh_session::{
     SystemMonotonicClock,
 };
 
-/// The first line of an error's message, naming its kind for the wrapper.
 const KIND_PREFIX: &str = "rlmesh:";
 
-/// `kind` plus any fields the wrapper copies onto its error, as the
-/// message's first line.
 fn error(kind: &str, extra: &[(&str, String)], message: impl Into<String>) -> Error {
     let mut text = format!("{KIND_PREFIX}{{\"kind\":{kind:?}");
     for (name, value) in extra {
@@ -58,7 +46,6 @@ fn error(kind: &str, extra: &[(&str, String)], message: impl Into<String>) -> Er
     Error::new(Status::GenericFailure, text)
 }
 
-/// An error's message without its kind line.
 fn message_of(err: &Error) -> String {
     match err.reason.split_once('\n') {
         Some((kind, message)) if kind.starts_with(KIND_PREFIX) => message.to_string(),
@@ -139,8 +126,6 @@ fn controller_err(err: ControllerError) -> Error {
     }
 }
 
-/// A lockstep robot's failure: the binder's refusal of its parts is a
-/// `BindingRefused`.
 fn lockstep_bind_err(err: GymError) -> Error {
     match err {
         GymError::Map(why) => binding_refused(why),
@@ -200,11 +185,9 @@ fn observe_err(err: ObserveError) -> Error {
     }
 }
 
-/// The session a session address (`[host/][session]`) names, placed by the
-/// hosting rule as Python's participants place it: joined, or hosted in this
-/// process when no host answers (`""`: the local host on the well-known
-/// port; a loopback `:port`: that port). Joining it puts capture times on
-/// `CLOCK_MONOTONIC`, `process.hrtime.bigint()`'s clock.
+/// The session a session address (`[host/][session]`) names: joined, or hosted in this process when no host
+/// answers (`""`: the local host on the well-known port; a loopback `:port`: that port). Joining it puts capture
+/// times on `CLOCK_MONOTONIC`, `process.hrtime.bigint()`'s clock.
 async fn place(text: &str) -> Result<EmbeddedHost> {
     let address = Address::session(text).map_err(|e| invalid(e.to_string()))?;
     EmbeddedHost::start(&address, LEASE_GRACE)
@@ -228,7 +211,6 @@ fn priority(name: &str) -> Result<PriorityClass> {
     sdk::priority(name).map_err(invalid)
 }
 
-/// A `bigint` from JS as nanoseconds.
 fn ns(value: &BigInt, what: &str) -> Result<i64> {
     match value.get_i64() {
         (ns, true) => Ok(ns),
@@ -236,14 +218,11 @@ fn ns(value: &BigInt, what: &str) -> Result<i64> {
     }
 }
 
-/// A session host in this process, on a local TCP port.
 #[napi]
 pub struct NativeHost {
     host: EmbeddedHost,
 }
 
-/// Places the session `address` names by the hosting rule (`":0"`:
-/// hosted here on an OS-assigned port).
 #[napi]
 pub async fn open_host(address: String, lease_grace_ms: u32) -> Result<NativeHost> {
     let address = Address::session(&address).map_err(|e| invalid(e.to_string()))?;
@@ -263,14 +242,12 @@ impl NativeHost {
         self.host.address().invite()
     }
 
-    /// Stops the host (participants see it leave).
     #[napi]
     pub async fn close(&self) -> Result<()> {
         self.host.close().await.map_err(session_err)
     }
 }
 
-/// One field of a part: its name, dtype and shape.
 #[napi(object)]
 pub struct FieldInfo {
     pub name: String,
@@ -289,7 +266,6 @@ fn fields_info(fields: &[rlmesh_session::wire::FieldSpec]) -> Vec<FieldInfo> {
         .collect()
 }
 
-/// A commandable part's command.
 #[napi(object)]
 pub struct CommandInfo {
     pub mode: String,
@@ -299,7 +275,6 @@ pub struct CommandInfo {
     pub control_hz: f64,
 }
 
-/// A part as the host normalised it.
 #[napi(object)]
 pub struct PartInfo {
     pub path: String,
@@ -329,10 +304,8 @@ fn part_info(part: &PartSpec) -> PartInfo {
     }
 }
 
-/// An array: its dtype and shape, and its bytes (native-endian, packed).
 #[napi(object)]
 pub struct TensorData {
-    /// The field's name, inside a dict value or a command.
     pub name: Option<String>,
     pub dtype: String,
     pub shape: Vec<u32>,
@@ -358,8 +331,6 @@ fn tensor_in(entry: &str, tensor: &TensorData) -> Result<Tensor> {
     .map_err(invalid)
 }
 
-/// One input or action entry's value: an array, several named arrays, or
-/// text.
 #[napi(object)]
 pub struct EntryValue {
     pub entry: String,
@@ -418,7 +389,6 @@ fn values_in(values: &[EntryValue]) -> Result<Vec<(String, Value)>> {
         .collect()
 }
 
-/// The inputs a chunk was computed from, by the robot's path.
 #[napi(object)]
 pub struct InputSeqs {
     pub path: String,
@@ -426,7 +396,6 @@ pub struct InputSeqs {
     pub seq_last: i64,
 }
 
-/// A command-group handover starting this tick.
 #[napi(object)]
 pub struct Handover {
     pub group: String,
@@ -434,13 +403,10 @@ pub struct Handover {
     pub to: String,
 }
 
-/// What the robot does this control tick.
 #[napi(object)]
 pub struct DueTick {
     pub path: String,
-    /// `driving`, `hold`, `safe`, `estop` or `idle`.
     pub mode: String,
-    /// The command fields (validated and clamped), or none.
     pub fields: Option<Vec<TensorData>>,
     pub safe: Option<String>,
     pub handover: Option<Handover>,
@@ -500,7 +466,6 @@ fn due_tick(robot: &Robot, due: Due) -> Result<DueTick> {
     })
 }
 
-/// Ticks spent in an edge mode, and how often it was entered.
 #[napi(object)]
 pub struct ModeCount {
     pub mode: String,
@@ -508,14 +473,12 @@ pub struct ModeCount {
     pub entries: i64,
 }
 
-/// Chunks an edge rejected for one reason (`too_old`, `no_clock_mapping`).
 #[napi(object)]
 pub struct RejectionCount {
     pub reason: String,
     pub count: i64,
 }
 
-/// An edge refusing a participant's chunks for its clock's error.
 #[napi(object)]
 pub struct EdgeClockRefusal {
     pub part: String,
@@ -525,32 +488,25 @@ pub struct EdgeClockRefusal {
     pub message: String,
 }
 
-/// The counters of one edge.
 #[napi(object)]
 pub struct EdgeStats {
     pub accepted: i64,
     pub rejected: i64,
-    /// The rejections by reason, those that occurred.
     pub rejected_by: Vec<RejectionCount>,
-    /// Set while the newest clock judgement refused a chunk.
     pub clock_refused: Option<EdgeClockRefusal>,
     pub clamped: i64,
     pub handovers: i64,
     pub safe_reports: i64,
     pub modes: Vec<ModeCount>,
-    /// Chunks of this part that reached the edge, whatever became of them.
     pub received: i64,
-    /// Gaps in the seqs of accepted chunks under one lease token.
     pub lost: i64,
     /// Accepted chunks by lateness against their first slot: `[0, 1)` ms,
     /// then `[2^(i-1), 2^i)` ms, the last from 64 ms up.
     pub late_ms: Vec<u32>,
     pub late_max_ms: f64,
-    /// The longest time between two accepted chunks under one lease token.
     pub gap_max_ms: f64,
 }
 
-/// A part whose edge refuses chunks for a clock error.
 #[napi(object)]
 pub struct HealthClockRefusal {
     pub part: String,
@@ -559,7 +515,6 @@ pub struct HealthClockRefusal {
     pub bound_ms: f64,
 }
 
-/// One stream a participant publishes.
 #[napi(object)]
 pub struct HealthPublished {
     pub part: String,
@@ -567,14 +522,12 @@ pub struct HealthPublished {
     pub coalesced: i64,
 }
 
-/// The newest seq a participant received of one part.
 #[napi(object)]
 pub struct HealthSeen {
     pub part: String,
     pub seq: i64,
 }
 
-/// A bound policy's counters from its latest report.
 #[napi(object)]
 pub struct HealthRun {
     pub starts: i64,
@@ -587,7 +540,6 @@ pub struct HealthRun {
     pub drifting: bool,
 }
 
-/// One participant's link as the host measures it (durations in ms).
 #[napi(object)]
 pub struct HealthLink {
     pub participant: String,
@@ -609,17 +561,13 @@ pub struct HealthLink {
     pub last_seq_seen: Vec<HealthSeen>,
 }
 
-/// The host's health message as a participant read it.
 #[napi(object)]
 pub struct SessionHealth {
     pub epoch: i64,
-    /// The host's clock when it published.
     pub host_ns: i64,
     pub links: Vec<HealthLink>,
 }
 
-/// The host's health as `participant` reads it: the newest, or with `wait`
-/// the next.
 async fn read_health(
     participant: &rlmesh_session::Participant,
     wait: bool,
@@ -705,36 +653,25 @@ async fn read_health(
     })
 }
 
-/// A robot: its map declared, a publisher per part and an edge per command
-/// group.
 #[napi]
 pub struct NativeRobot {
     name: String,
-    /// The robot now: a rejoin swaps it ([`sdk::keep_joined`]).
     robot: sdk::RobotSlot,
-    /// Joins it again when the host drops it.
     keeper: Mutex<Option<tokio::task::JoinHandle<()>>>,
     encoder: Mutex<Option<Encoder>>,
-    /// The session, hosted here when no host answered.
     session: EmbeddedHost,
 }
 
-/// A frame for the encoder thread: the part, its capture time, its pixels.
 type Frame = (String, i64, Vec<u8>);
 
-/// The robot's JPEG encoder thread. A JPEG part's `offer` encodes on the
-/// caller's thread (2 ms for 640x480, 6 ms for 1280x720), which in Node is
-/// the JS thread every loop shares; Python's camera thread pays it with the
-/// GIL released. Here frames queue to one thread instead, in order.
+/// The robot's JPEG encoder thread. A JPEG part's `offer` encodes on the caller's thread (2 ms for 640x480,
+/// 6 ms for 1280x720), which in Node is the JS thread every loop shares; frames queue to one thread instead, in order.
 struct Encoder {
     frames: SyncSender<Frame>,
     thread: std::thread::JoinHandle<()>,
 }
 
 impl Encoder {
-    /// Frames waiting behind the one being encoded; one more is dropped, as
-    /// the image publisher drops a frame that arrives before its slot is
-    /// sent.
     const QUEUE: usize = 2;
 
     fn start(slot: sdk::RobotSlot) -> std::io::Result<Self> {
@@ -743,11 +680,9 @@ impl Encoder {
             .name("rlmesh-encoder".into())
             .spawn(move || {
                 for (path, capture, pixels) in queued {
-                    // The robot now: a rejoin may have swapped it.
                     let Some(robot) = slot.lock().ok().and_then(|r| r.clone()) else {
                         break;
                     };
-                    // Its outcome is in the publisher's own counters.
                     let _ = robot.publish(&path, capture, &[pixels.as_slice()]);
                 }
             })?;
@@ -827,7 +762,6 @@ impl NativeRobot {
 
 #[napi]
 impl NativeRobot {
-    /// The robot's participant id.
     #[napi(getter)]
     pub fn name(&self) -> String {
         self.name.clone()
@@ -840,7 +774,6 @@ impl NativeRobot {
         self.session.address().participant_invite(&self.name)
     }
 
-    /// The parts as the host normalised them, in authored order.
     #[napi]
     pub fn parts(&self) -> Result<Vec<PartInfo>> {
         Ok(self.robot()?.parts().iter().map(part_info).collect())
@@ -893,7 +826,6 @@ impl NativeRobot {
                     Some(Encoder::start(self.robot.clone()).map_err(|e| exception(e.to_string()))?);
             }
             if let Some(encoder) = encoder.as_ref() {
-                // A full queue drops this frame: the encoder is behind.
                 let _ = encoder.frames.try_send(frame);
             }
             return Ok(None);
@@ -940,7 +872,6 @@ impl NativeRobot {
         self.robot()?.handover_done(&path).map_err(session_err)
     }
 
-    /// DISARMED or SAFE to ARMED, in a fresh epoch.
     #[napi]
     pub async fn arm(&self) -> Result<()> {
         let robot = self.robot()?;
@@ -948,7 +879,6 @@ impl NativeRobot {
         Ok(())
     }
 
-    /// Back to DISARMED.
     #[napi]
     pub async fn disarm(&self) -> Result<()> {
         let robot = self.robot()?;
@@ -1006,8 +936,6 @@ impl NativeRobot {
         Ok(())
     }
 
-    /// The session mode this robot sees (`disarmed`, `armed`, `active`,
-    /// `safe`, `estop`).
     #[napi(getter)]
     pub fn mode(&self) -> Result<String> {
         Ok(self
@@ -1017,8 +945,6 @@ impl NativeRobot {
             .map_or_else(|| "disarmed".into(), |v| v.mode.to_string().to_lowercase()))
     }
 
-    /// Why the session mode is what it is (`robot_lost`, `estop_local`, ...;
-    /// `unspecified` before any change).
     #[napi(getter)]
     pub fn mode_reason(&self) -> Result<String> {
         Ok(sdk::reason_name(
@@ -1029,13 +955,11 @@ impl NativeRobot {
         ))
     }
 
-    /// Now on this robot's clock (`process.hrtime.bigint()`).
     #[napi]
     pub fn now_ns(&self) -> Result<BigInt> {
         Ok(BigInt::from(self.robot()?.participant().clock().now_ns()))
     }
 
-    /// The counters of the edge serving `path`.
     #[napi]
     pub fn edge_stats(&self, path: String) -> Result<EdgeStats> {
         let robot = self.robot()?;
@@ -1051,7 +975,6 @@ impl NativeRobot {
                 message: r.explain(robot.participant().id(), part),
             }
         });
-        // How this part's chunks arrived, on whichever path they rode.
         let timing = robot
             .part(&path)
             .and_then(|part| stats.timing(part.channel).copied())
@@ -1126,7 +1049,6 @@ impl NativeRobot {
     }
 }
 
-/// A refusal: its status and message.
 #[napi(object)]
 pub struct RefusalInfo {
     pub status: String,
@@ -1134,7 +1056,6 @@ pub struct RefusalInfo {
 }
 
 #[cfg(feature = "fleet")]
-/// One member of a run.
 #[napi(object)]
 pub struct MemberInfo {
     pub name: String,
@@ -1143,7 +1064,6 @@ pub struct MemberInfo {
 }
 
 #[cfg(feature = "fleet")]
-/// A run's state.
 #[napi(object)]
 pub struct RunInfo {
     pub run: String,
@@ -1183,7 +1103,6 @@ fn run_info(state: &rlmesh_session::wire::RunState) -> RunInfo {
 }
 
 #[cfg(feature = "fleet")]
-/// A scene run started from this process on the home daemon's lobby.
 #[napi]
 pub struct NativeScene {
     run: String,
@@ -1229,25 +1148,21 @@ impl NativeScene {
 #[cfg(feature = "fleet")]
 #[napi]
 impl NativeScene {
-    /// The run's id.
     #[napi(getter)]
     pub fn run(&self) -> String {
         self.run.clone()
     }
 
-    /// Where the run's members join, once its host is up.
     #[napi]
     pub async fn address(&self) -> Result<Option<String>> {
         self.with(async |s| s.address().await).await
     }
 
-    /// The run's state now.
     #[napi]
     pub async fn status(&self) -> Result<RunInfo> {
         Ok(run_info(&self.with(async |s| s.status().await).await?))
     }
 
-    /// Waits up to `timeout_s` for the run to be at `stage` (`running`).
     #[napi]
     pub async fn wait_until(&self, stage: String, timeout_s: f64) -> Result<RunInfo> {
         let stage = sdk::run_stage(&stage).map_err(invalid)?;
@@ -1259,13 +1174,11 @@ impl NativeScene {
         ))
     }
 
-    /// Arms the run (`manual`, or after a lost member rejoined).
     #[napi]
     pub async fn arm(&self) -> Result<RunInfo> {
         Ok(run_info(&self.with(async |s| s.arm().await).await?))
     }
 
-    /// Stops the run and waits up to `timeout_s` for it to end.
     #[napi]
     pub async fn stop(&self, timeout_s: f64) -> Result<RunInfo> {
         let wait = timeout(timeout_s)?;
@@ -1274,7 +1187,6 @@ impl NativeScene {
         ))
     }
 
-    /// Stops the run unless it ended, and leaves the lobby. Idempotent.
     #[napi]
     pub async fn close(&self, timeout_s: f64) -> Result<()> {
         let wait = timeout(timeout_s)?;
@@ -1286,22 +1198,18 @@ impl NativeScene {
     }
 }
 
-/// An input's age at the snapshot, in ns (`null`: blank, or no clock
-/// mapping).
 #[napi(object)]
 pub struct InputAge {
     pub entry: String,
     pub age_ns: Option<BigInt>,
 }
 
-/// An input's window slots padded by `allow: warmup`.
 #[napi(object)]
 pub struct InputPadding {
     pub entry: String,
     pub slots: u32,
 }
 
-/// An input's seq range delivered, by entry.
 #[napi(object)]
 pub struct EntrySeqs {
     pub entry: String,
@@ -1309,7 +1217,6 @@ pub struct EntrySeqs {
     pub seq_last: i64,
 }
 
-/// Per stream, the seq range a start used.
 #[napi(object)]
 pub struct StreamSeqs {
     pub stream: u32,
@@ -1317,7 +1224,6 @@ pub struct StreamSeqs {
     pub seq_last: i64,
 }
 
-/// A policy start: each input as `predict` receives it, and its snapshot.
 #[napi]
 pub struct NativeObservation {
     values: Mutex<Vec<EntryValue>>,
@@ -1353,13 +1259,11 @@ impl NativeObservation {
             .unwrap_or_default()
     }
 
-    /// The session time the snapshot was taken at.
     #[napi(getter)]
     pub fn time_ns(&self) -> BigInt {
         BigInt::from(self.time_ns)
     }
 
-    /// Each input's conservative age.
     #[napi(getter)]
     pub fn ages(&self) -> Vec<InputAge> {
         self.meta
@@ -1372,7 +1276,6 @@ impl NativeObservation {
             .collect()
     }
 
-    /// Inputs delivered stale under `allow: hold`.
     #[napi(getter)]
     pub fn stale(&self) -> Vec<String> {
         self.meta
@@ -1383,7 +1286,6 @@ impl NativeObservation {
             .collect()
     }
 
-    /// Window slots padded by `allow: warmup`.
     #[napi(getter)]
     pub fn padded(&self) -> Vec<InputPadding> {
         self.meta
@@ -1397,7 +1299,6 @@ impl NativeObservation {
             .collect()
     }
 
-    /// Inputs bound to a constant (`allow: blank`).
     #[napi(getter)]
     pub fn blank(&self) -> Vec<String> {
         self.meta
@@ -1408,13 +1309,11 @@ impl NativeObservation {
             .collect()
     }
 
-    /// The newest capture minus the oldest, across inputs.
     #[napi(getter)]
     pub fn skew_ns(&self) -> BigInt {
         BigInt::from(self.meta.skew_ns)
     }
 
-    /// Each input's seq range delivered, by entry (none for a blank one).
     #[napi(getter)]
     pub fn seqs(&self) -> Vec<EntrySeqs> {
         self.meta
@@ -1430,7 +1329,6 @@ impl NativeObservation {
             .collect()
     }
 
-    /// Per stream, the seq range used.
     #[napi(getter)]
     pub fn based_on(&self) -> Vec<StreamSeqs> {
         self.meta
@@ -1445,7 +1343,6 @@ impl NativeObservation {
     }
 }
 
-/// The run-time options of a binding.
 #[napi(object)]
 pub struct BindOptions {
     pub priority: Option<String>,
@@ -1455,8 +1352,6 @@ pub struct BindOptions {
     pub allow: Option<Vec<String>>,
     pub captures: Option<HashMap<String, String>>,
     pub timeout_s: Option<f64>,
-    /// Parts of the policy's own to publish annotations on (an authored
-    /// map, none commandable).
     pub publishes_json: Option<String>,
 }
 
@@ -1480,8 +1375,6 @@ fn run_options(
     .run_options()
 }
 
-/// A bound action: its entry, the part it drives (none when dropped) and its
-/// chunk length.
 #[napi(object)]
 pub struct ActionInfo {
     pub entry: String,
@@ -1489,92 +1382,66 @@ pub struct ActionInfo {
     pub chunk: u32,
 }
 
-/// An action entry's chunk seq, or none without the lease (or dropped).
 #[napi(object)]
 pub struct SentChunk {
     pub entry: String,
     pub seq: Option<i64>,
 }
 
-/// A lease the policy holds: the part and its token.
 #[napi(object)]
 pub struct HeldLease {
     pub path: String,
     pub token: BigInt,
 }
 
-/// Starts skipped by reason.
 #[napi(object)]
 pub struct SkipCount {
     pub reason: String,
     pub count: i64,
 }
 
-/// The start, skip and completion counters, and the input the
-/// starts are phased after: a wall-clock run's.
 #[napi(object)]
 pub struct RunStats {
-    /// `wall`.
     pub clock: String,
-    /// The input whose publication the starts are phased just after.
     pub aligned_to: Option<String>,
-    /// How far after it, in ms.
     pub phase_offset_ms: f64,
     pub starts: i64,
     pub completions: i64,
     pub skipped: Vec<SkipCount>,
     pub chunks_sent: i64,
-    /// Starts a shadow run predicted without a lease.
     pub shadow_predictions: i64,
     pub send_errors: i64,
     pub latency_p50_ms: Option<f64>,
     pub latency_p99_ms: Option<f64>,
     pub latency_max_ms: Option<f64>,
     pub drifting: bool,
-    /// Per leased part refusing this policy's chunks for its clock, why.
     pub clock_refused: Vec<String>,
-    /// What the policy waits for before it can command, else none.
     pub waiting: Option<String>,
-    /// The parts a higher class took, `robot:path`, kept from the policy
-    /// until `resume()`.
     pub parked: Vec<String>,
-    /// Each input bound to a part, in policy order.
     pub inputs: Vec<InputStats>,
 }
 
-/// One input bound to a part: the samples its subscription received and
-/// lost (seq gaps).
 #[napi(object)]
 pub struct InputStats {
     pub entry: String,
-    /// `robot:path`.
     pub part: String,
     pub received: i64,
     pub lost: i64,
 }
 
-/// One episode of a lockstep run.
 #[napi(object)]
 pub struct EpisodeStats {
-    /// Its return: every step's reward, summed.
     pub reward: f64,
-    /// Lockstep steps taken.
     pub steps: i64,
     pub terminated: bool,
     pub truncated: bool,
 }
 
-/// A lockstep run's counters.
 #[napi(object)]
 pub struct LockstepStats {
-    /// `lockstep`.
     pub clock: String,
-    /// Calls of `predict`.
     pub starts: i64,
-    /// Chunks played, one per start.
     pub chunks_sent: i64,
-    /// Every episode, in order; the last is unfinished when the run was
-    /// stopped.
     pub episodes: Vec<EpisodeStats>,
 }
 
@@ -1596,13 +1463,10 @@ fn lockstep_stats(stats: &realtime::LockstepStats) -> LockstepStats {
     }
 }
 
-/// A run's counters, on its robot's clock.
 type AnyStats = Either<RunStats, LockstepStats>;
 
-/// An event the run loop reported.
 #[napi(object)]
 pub struct RunEventInfo {
-    /// `rate_drift` or `inference_pending`.
     pub kind: String,
     pub message: String,
     pub measured_hz: Option<f64>,
@@ -1610,9 +1474,7 @@ pub struct RunEventInfo {
     pub cause: Option<String>,
     pub drifting: Option<bool>,
     pub pending_s: Option<f64>,
-    /// `parked`: the part, `robot:path`.
     pub part: Option<String>,
-    /// `parked`: who took it.
     pub by: Option<String>,
 }
 
@@ -1659,17 +1521,12 @@ fn run_stats(controller: &Controller) -> RunStats {
     }
 }
 
-/// What JS answered for one start.
 type Reply = std::result::Result<Vec<(String, Value)>, String>;
 
-/// The start handed to JS: `predict` is called with it.
 type PredictFn = ThreadsafeFunction<NativeObservation, (), NativeObservation, Status, false>;
 
-/// A completed start handed to JS: `onStep` is called with it.
 type StepFn = ThreadsafeFunction<NativeStep, (), NativeStep, Status, false>;
 
-/// A completed start: whether it was a shadow one, and each action entry's
-/// chunk as the edge receives it.
 #[napi]
 pub struct NativeStep {
     shadow: bool,
@@ -1677,15 +1534,11 @@ pub struct NativeStep {
     actions: Mutex<Vec<StepEntry>>,
 }
 
-/// One action entry of a completed start.
 #[napi(object)]
 pub struct StepEntry {
     pub entry: String,
-    /// The part it commands, `robot:path` (none: dropped).
     pub part: Option<String>,
-    /// Its chunk seq when sent.
     pub seq: Option<i64>,
-    /// One `[chunk, ...]` array per command field (none: dropped).
     pub actions: Option<EntryValue>,
 }
 
@@ -1711,13 +1564,11 @@ impl NativeStep {
 
 #[napi]
 impl NativeStep {
-    /// A shadow start: its actions were checked and not sent.
     #[napi(getter)]
     pub fn shadow(&self) -> bool {
         self.shadow
     }
 
-    /// The session time of the start's snapshot.
     #[napi(getter)]
     pub fn time_ns(&self) -> BigInt {
         BigInt::from(self.time_ns)
@@ -1734,7 +1585,6 @@ impl NativeStep {
     }
 }
 
-/// How a run on either clock ended.
 enum Ran {
     Wall(std::result::Result<RunStats, RunError<String>>),
     Lockstep(std::result::Result<LockstepStats, LockstepRunError<String>>),
@@ -1788,16 +1638,12 @@ impl Predictor for JsPredictor {
     }
 }
 
-/// What a policy is bound through: the controller of wall-clock robots,
-/// or one lockstep robot's exchange.
 #[derive(Clone)]
 enum Driving {
     Wall(Arc<Controller>),
     Lockstep(Arc<LockstepPolicy>),
 }
 
-/// A policy bound to a robot: inputs, leases, chunks and the run loop, on
-/// the robot's clock.
 #[napi]
 pub struct NativePolicy {
     name: String,
@@ -1805,7 +1651,6 @@ pub struct NativePolicy {
     published: Option<Arc<rlmesh_session::edge::Published>>,
     replies: Mutex<Option<SyncSender<Reply>>>,
     closing: Arc<AtomicBool>,
-    /// The session, hosted here when no host answered.
     session: EmbeddedHost,
 }
 
@@ -1904,14 +1749,11 @@ impl NativePolicy {
 
 #[napi]
 impl NativePolicy {
-    /// The policy's participant id.
     #[napi(getter)]
     pub fn name(&self) -> String {
         self.name.clone()
     }
 
-    /// The bound robot's clock: `wall`, or `lockstep` (one robot that
-    /// declared it).
     #[napi(getter)]
     pub fn clock(&self) -> Result<String> {
         Ok(match self.bound()? {
@@ -1921,8 +1763,6 @@ impl NativePolicy {
         .into())
     }
 
-    /// The parts this policy publishes, as the host normalised them, in
-    /// authored order (none without `publishesJson`).
     #[napi]
     pub fn published_parts(&self) -> Vec<PartInfo> {
         self.published
@@ -1964,37 +1804,31 @@ impl NativePolicy {
         Ok(sent.map(seq))
     }
 
-    /// The binding table, as the cockpit shows it.
     #[napi(getter)]
     pub fn table(&self) -> Result<String> {
         Ok(self.binding()?.table())
     }
 
-    /// The binding table as canonical JSON (what the fingerprint is over).
     #[napi(getter)]
     pub fn table_json(&self) -> Result<String> {
         Ok(self.binding()?.table_text())
     }
 
-    /// The binding fingerprint, 16 hex digits.
     #[napi(getter)]
     pub fn fingerprint(&self) -> Result<String> {
         Ok(self.binding()?.fingerprint.to_string())
     }
 
-    /// Warnings the binder accepted the binding with.
     #[napi(getter)]
     pub fn warnings(&self) -> Result<Vec<String>> {
         Ok(self.binding()?.warnings.clone())
     }
 
-    /// The replan rate R.
     #[napi(getter)]
     pub fn replan_hz(&self) -> Result<f64> {
         Ok(self.binding()?.replan_hz)
     }
 
-    /// Each bound action.
     #[napi]
     pub fn actions(&self) -> Result<Vec<ActionInfo>> {
         Ok(self
@@ -2017,8 +1851,6 @@ impl NativePolicy {
         Ok(NativeObservation::new(observation, at))
     }
 
-    /// Sends one chunk per action entry, computed from `observation`, each
-    /// `[chunk, ...]`.
     #[napi]
     pub fn send(
         &self,
@@ -2042,8 +1874,6 @@ impl NativePolicy {
             .collect())
     }
 
-    /// Takes the binding's leases now, preempting a lower class; from then
-    /// on they are kept.
     #[napi]
     pub async fn acquire(&self) -> Result<Vec<HeldLease>> {
         let controller = self.controller()?;
@@ -2060,8 +1890,6 @@ impl NativePolicy {
             .collect())
     }
 
-    /// Gives the leases back; they are not re-requested until `acquire` or
-    /// `run`.
     #[napi]
     pub async fn release(&self) -> Result<()> {
         let controller = self.controller()?;
@@ -2211,7 +2039,6 @@ impl NativePolicy {
             .map_err(|_| exception("a reply with no start waiting for it"))
     }
 
-    /// Asks a `run` in progress to return.
     #[napi]
     pub fn stop(&self) -> Result<()> {
         match self.bound()? {
@@ -2221,8 +2048,6 @@ impl NativePolicy {
         Ok(())
     }
 
-    /// Hands the parts a higher class took back to this policy; returns
-    /// them, `robot:path`.
     #[napi]
     pub fn resume(&self) -> Result<Vec<String>> {
         Ok(self.controller()?.resume())
@@ -2237,8 +2062,6 @@ impl NativePolicy {
         read_health(controller.participant(), wait, timeout_s).await
     }
 
-    /// The latest run's counters, with its `clock`. Wall: starts, skips
-    /// and completions. Lockstep: starts, chunks and one entry per episode.
     #[napi]
     pub fn stats(&self) -> Result<AnyStats> {
         Ok(match self.bound()? {
@@ -2310,7 +2133,6 @@ impl NativePolicy {
             .collect())
     }
 
-    /// Gives the leases back and detaches; a session hosted here stops.
     #[napi]
     pub async fn close(&self) -> Result<()> {
         let taken = self.controller.lock().map(|mut c| c.take()).unwrap_or(None);
@@ -2352,8 +2174,6 @@ impl NativeRate {
         })
     }
 
-    /// Waits until the next period starts; resolves to how late this call
-    /// was for it, in ns.
     #[napi]
     pub async fn sleep(&self) -> Result<i64> {
         let clock = SystemMonotonicClock;
@@ -2364,7 +2184,6 @@ impl NativeRate {
         Ok(late)
     }
 
-    /// Periods skipped because a call came more than a period late.
     #[napi(getter)]
     pub fn missed(&self) -> i64 {
         seq(self.rate.missed())
@@ -2378,7 +2197,6 @@ fn record_err(err: RecordError) -> Error {
     }
 }
 
-/// A finished recording's counters.
 #[napi(object)]
 pub struct RecordStats {
     pub path: String,
@@ -2388,12 +2206,10 @@ pub struct RecordStats {
     pub log_time_clamped: i64,
 }
 
-/// An MCAP recording of a session, as an observer participant.
 #[napi]
 pub struct NativeRecorder {
     path: String,
     recorder: Mutex<Option<Recorder>>,
-    /// The session, hosted here when no host answered.
     session: EmbeddedHost,
 }
 
@@ -2421,7 +2237,6 @@ pub async fn start_recorder(
 
 #[napi]
 impl NativeRecorder {
-    /// The MCAP file.
     #[napi(getter)]
     pub fn path(&self) -> String {
         self.path.clone()
@@ -2450,7 +2265,6 @@ impl NativeRecorder {
     }
 }
 
-/// One topic of a recording.
 #[napi(object)]
 pub struct TopicSummary {
     pub topic: String,
@@ -2464,7 +2278,6 @@ pub struct TopicSummary {
     pub undecodable: i64,
 }
 
-/// One lease change of a recording.
 #[napi(object)]
 pub struct LeaseChange {
     pub log_ns: BigInt,
@@ -2474,7 +2287,6 @@ pub struct LeaseChange {
     pub token: Option<BigInt>,
 }
 
-/// A recording read back.
 #[napi(object)]
 pub struct RecordingSummary {
     pub messages: i64,

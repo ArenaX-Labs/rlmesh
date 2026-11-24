@@ -1,24 +1,8 @@
-//! `rlmesh pair`: on a laptop, `rlmesh pair HOST` runs
-//! the pairing exchange with the robot's rlmeshd, shows the 6-digit code,
-//! and once the owner approves on the robot keeps the host's key, id and
-//! addresses with this machine's new device key in
-//! `~/.config/rlmesh/hosts/{host id}.toml` ([`HostFile`]); joining that
-//! host attaches with them from then on. On the robot, `rlmesh pair
-//! approve [CODE]` approves the machine showing the code, which rlmeshd
-//! enrolls in `devices.toml` as a `machine` (default cap `operator`).
-//!
-//! `rlmesh pair HOST --browser` pairs a browser token the same way, on the machine
-//! whose gateway will serve the browser (a
-//! laptop's own): rlmeshd enrolls a `browser` (default cap `model`), and
-//! this machine keeps the token's hash and its device key in
-//! `~/.config/rlmesh/browsers.toml` ([`BrowserToken`]) and prints the
-//! token once, in the page URL's fragment.
-//!
-//! **The local channel.** `pair approve` and `devices provision` reach the
-//! running rlmeshd over a Unix socket in its state directory
-//! ([`SOCKET`], 0600 in a 0700 directory, so only the daemon's user, on
-//! the robot, gets in): one JSON request and one JSON reply per
-//! connection.
+//! `rlmesh pair`: on a laptop, `rlmesh pair HOST` runs the pairing exchange
+//! with the robot's rlmeshd, shows the 6-digit code, and once the owner
+//! approves on the robot keeps the host's key, id and addresses with this
+//! machine's new device key in `~/.config/rlmesh/hosts/{host id}.toml`
+//! ([`HostFile`]); joining that host attaches with them from then on.
 
 use std::io::Write;
 use std::path::Path;
@@ -31,34 +15,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::cli::{PairArgs, PairCommand};
 
-/// How long a pairing lasts before the machine pairs again.
 const PAIRED_DAYS: i64 = 180;
 
 /// The local channel's socket in rlmeshd's state directory.
 pub const SOCKET: &str = "pair.sock";
-/// The default cap of a device of `kind`:
-/// `operator` for a machine approved on the robot, `model` for a browser.
 fn default_cap(kind: &str) -> &'static str {
     if kind == BROWSER { "model" } else { "operator" }
 }
 
-/// The port `rlmesh-gateway` serves on by default.
 const GATEWAY_PORT: u16 = 18080;
 
-/// A request on the local channel.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum Ask {
     /// The machines waiting for approval.
     Pending,
-    /// Approve the machine showing `code`, at `max` (its kind's default
-    /// when absent).
+    /// Approve the machine showing `code`, at `max` (its kind's default when
+    /// absent).
     Approve { code: u32, max: Option<String> },
     /// The host's key, id and addresses, for a board.
     Host,
 }
 
-/// Its reply.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Answer {
@@ -219,8 +197,7 @@ fn approve(
     }
 }
 
-/// The host's details a board is provisioned with, from the running
-/// rlmeshd.
+/// The host's details a board is provisioned with, from the running rlmeshd.
 pub fn host_details(dir: &Path) -> Result<crate::provision::Home> {
     let Answer::Host {
         host_key,
@@ -238,7 +215,6 @@ pub fn host_details(dir: &Path) -> Result<crate::provision::Home> {
     })
 }
 
-/// One request to the rlmeshd whose state is in `dir`.
 #[cfg(unix)]
 fn call(dir: &Path, ask: &Ask) -> Result<Answer> {
     use std::io::Read;
@@ -263,7 +239,6 @@ fn call(dir: &Path, ask: &Ask) -> Result<Answer> {
 }
 
 // TODO: the local channel is a Unix socket; give rlmeshd a named pipe when
-// it runs on Windows.
 #[cfg(not(unix))]
 fn call(_: &Path, _: &Ask) -> Result<Answer> {
     bail!("rlmeshd's local channel (pair approve, devices provision) needs Unix")
@@ -278,13 +253,12 @@ pub struct Local {
     pub service: std::sync::Arc<pairing::PairService>,
     /// The host's static key, id and addresses.
     pub host: rlmesh_session::wire::PairInfo,
-    /// Asks the daemon to apply `devices.toml` now, and answers once it
-    /// has.
+    /// Asks the daemon to apply `devices.toml` now, and answers once it has.
     pub apply: tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<()>>,
 }
 
-/// Serves the local channel until the returned task is aborted (on drop of
-/// the daemon), the socket left behind removed at the next start.
+/// Serves the local channel until the returned task is aborted (on drop of the
+/// daemon), the socket left behind removed at the next start.
 #[cfg(unix)]
 pub fn serve_local(local: Local) -> Result<tokio::task::JoinHandle<()>> {
     use std::os::unix::fs::PermissionsExt;
@@ -310,7 +284,6 @@ async fn answer_local(stream: tokio::net::UnixStream, local: std::sync::Arc<Loca
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     let (read, mut write) = stream.into_split();
     let mut line = String::new();
-    // One short request.
     if BufReader::new(read.take(4096))
         .read_line(&mut line)
         .await
@@ -347,9 +320,6 @@ async fn answer_local(stream: tokio::net::UnixStream, local: std::sync::Arc<Loca
     }
 }
 
-/// Approves the machine showing `code` at `max` (its kind's default when
-/// `None`): enrolls it, applies the table, and sends the machine its
-/// result.
 #[cfg(unix)]
 async fn approve_local(local: &Local, code: u32, max: Option<&str>) -> Answer {
     use rlmesh_session::wire::{CtlError, CtlStatus, PairInfo};
@@ -377,7 +347,6 @@ async fn approve_local(local: &Local, code: u32, max: Option<&str>) -> Answer {
             parts: None,
             verbs: None,
             roles: None,
-            // A paired machine or browser pairs again within half a year.
             expires: Some(crate::devices::date_in(PAIRED_DAYS)),
         };
         table.devices.insert(id.clone(), entry);
@@ -396,7 +365,6 @@ async fn approve_local(local: &Local, code: u32, max: Option<&str>) -> Answer {
             return error(format!("{err:#}"));
         }
     };
-    // Admitted before the machine hears, so it can attach at once.
     let (done, applied) = tokio::sync::oneshot::channel();
     if local.apply.send(done).await.is_ok() {
         let _ = applied.await;
@@ -406,7 +374,6 @@ async fn approve_local(local: &Local, code: u32, max: Option<&str>) -> Answer {
         ..local.host.clone()
     };
     if !local.service.decide(approved.exchange, Ok(info)) {
-        // Admitted for a moment: its id goes like a revoked one's.
         let _ = edit(&local.dir, |table| table.revoke(&device));
         return error("the machine's pairing expired before the approval".into());
     }

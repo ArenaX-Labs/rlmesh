@@ -78,7 +78,6 @@ class FrankaReachEnv(gym.vector.VectorEnv):
             reset_xform_op_properties=True,
         )
         self.target.apply_visual_materials(red)
-        # Level with each workspace, looking down -X at its robot.
         self.cameras = [
             CameraSensor(
                 RtxCamera(
@@ -110,7 +109,6 @@ class FrankaReachEnv(gym.vector.VectorEnv):
                 :, self.hand_row, :3, :7
             ]
             joints = self.robot.get_dof_positions().numpy()[:, ARM]
-            # Damped least-squares IK for the hand delta, batched over lanes.
             dq = np.linalg.solve(
                 jacobian @ jacobian.transpose(0, 2, 1) + 0.05**2 * np.eye(3),
                 delta[..., None],
@@ -125,7 +123,6 @@ class FrankaReachEnv(gym.vector.VectorEnv):
         self.steps[resetting] = 0
         terminated = distance < 0.03
         truncated = ~terminated & (self.steps >= self.max_steps)
-        # A lane reset this step reports a fresh start, not a transition.
         reward = -distance
         reward[resetting] = 0.0
         terminated[resetting] = truncated[resetting] = False

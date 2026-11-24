@@ -1,16 +1,3 @@
-//! A peer that stops reading must not delay anyone else, nor keep the host
-//! from shutting down: a board that goes radio-deaf, a frozen or
-//! debugger-stopped client, or one whose task stopped reading while its TCP
-//! stack still acknowledges, with the session's keys subscribed, while
-//! healthy participants keep working.
-//!
-//! The deaf peer is a real Zenoh client configured as a board's zenoh-pico is
-//! (no QoS, a 10 s lease), behind a relay that opens its links with a small
-//! receive window and segment size, so the host's send buffer fills in
-//! milliseconds as it would over Wi-Fi. Once deaf, the relay never reads from
-//! the host again but keeps every link open, acknowledging (its kernel does)
-//! and sending keep-alives: nothing but the host itself ends such a link.
-
 #![cfg(target_os = "linux")]
 
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
@@ -32,43 +19,21 @@ use socket2::{Domain, Protocol, Socket, Type};
 use zenoh::Wait;
 use zenoh::qos::CongestionControl;
 
-/// A healthy participant's query must come back within this, every time,
-/// and the host must hear its heartbeats at least this often, while a peer
-/// stops reading: less than the host takes to tell that peer is dead, so
-/// nothing healthy ever waits on it.
 const BOUND: Duration = Duration::from_secs(2);
-/// The host must cut a link it can no longer drain within this of the link
-/// filling up: its 2.5 s stall rule, a scan, and slack for a busy machine.
 const EVICTED: Duration = Duration::from_secs(4);
-/// The host must be gone within this of being told to stop: its transport
-/// closes within 3 s whatever its peers do.
 const SHUTDOWN: Duration = Duration::from_secs(4);
-/// How long the long run watches healthy participants with the deaf peer
-/// there; the default runs watch until the host cut the peer.
 const WATCH: Duration = Duration::from_secs(30);
-/// How long the test waits for something that must happen before it calls
-/// it a hang.
 const HANG: Duration = Duration::from_secs(60);
-/// Unread bytes on a relay link from which the host's side is full.
 const FULL: i32 = 2048;
 
-/// A Zenoh transport frame on a stream link: a length, and one `KeepAlive`.
 const KEEP_ALIVE: [u8; 3] = [1, 0, 0x04];
 
-/// One relayed link of the board's.
 struct RelayLink {
-    /// The relay's end of the link to the host.
     host: TcpStream,
-    /// When the host's side of it filled up, once deaf.
     full: OnceLock<Instant>,
-    /// When the host reset it.
     evicted: OnceLock<Instant>,
 }
 
-/// A relay in front of the host's port. Once deaf, it stops reading from
-/// the host but keeps its lease alive with keep-alives: the host's only way
-/// to learn the link is useless is that nothing drains. It never closes a
-/// link itself, not even when dropped.
 struct Relay {
     base: SocketAddr,
     deaf: Arc<OnceLock<Instant>>,
@@ -85,7 +50,6 @@ impl Relay {
             let (deaf, links) = (deaf.clone(), links.clone());
             std::thread::spawn(move || {
                 for client in listener.incoming().map_while(Result::ok) {
-                    // A deaf board dials nowhere: a frozen process does not.
                     if deaf.get().is_some() {
                         continue;
                     }
@@ -102,7 +66,6 @@ impl Relay {
                 }
             });
         }
-        // Notes when each deaf link's host side fills up.
         {
             let (deaf, links) = (deaf.clone(), links.clone());
             std::thread::spawn(move || {
@@ -126,8 +89,6 @@ impl Relay {
         tracing::warn!("the board stops reading");
     }
 
-    /// Waits until the host can queue nothing more on some link to the
-    /// deaf board: its send queue holds bytes and stopped changing.
     fn wait_stuck(&self) {
         let started = Instant::now();
         let mut last: Vec<(u64, u32)> = Vec::new();
@@ -161,8 +122,6 @@ impl Relay {
         self.links.lock().expect("links").clone()
     }
 
-    /// For each link that filled up: how long after filling the host reset
-    /// it, if it did.
     fn evictions(&self) -> Vec<Option<Duration>> {
         self.links()
             .iter()
@@ -178,11 +137,6 @@ impl Relay {
     }
 }
 
-/// Clears the `TCP_USER_TIMEOUT` the host's listener on `base` gives the
-/// links they accept, as a platform without it would have them: what
-/// remains is the host's own rule. (This kernel resets a link whose zero
-/// window's probes go unanswered for that long, and one that never reads
-/// is such a link.)
 #[allow(unsafe_code)]
 fn without_kernel_timeout(base: SocketAddr) {
     let mut cleared = 0;
@@ -207,8 +161,6 @@ fn without_kernel_timeout(base: SocketAddr) {
     assert_eq!(cleared, 1, "the host's listener");
 }
 
-/// Bytes the host's end of `link` holds unacknowledged or unsent, as the
-/// kernel lists them (in whichever process the host runs).
 fn host_queue(link: &TcpStream) -> Option<u64> {
     let (relay, host) = (link.local_addr().ok()?, link.peer_addr().ok()?);
     let hex = |addr: SocketAddr| match addr {
@@ -229,7 +181,6 @@ fn host_queue(link: &TcpStream) -> Option<u64> {
     })
 }
 
-/// Bytes the relay has not read from `link`.
 #[allow(unsafe_code)]
 fn unread(link: &TcpStream) -> i32 {
     let mut n: libc::c_int = 0;
@@ -238,7 +189,6 @@ fn unread(link: &TcpStream) -> i32 {
     if ok { n } else { 0 }
 }
 
-/// A connection whose receive window closes after a few kilobytes.
 fn narrow_link(to: SocketAddr) -> Option<TcpStream> {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).expect("socket");
     socket.set_recv_buffer_size(4096).expect("rcvbuf");
@@ -253,8 +203,6 @@ fn relay(client: TcpStream, host: TcpStream, deaf: Arc<OnceLock<Instant>>, link:
         host.try_clone().expect("clone"),
     );
     let deaf_up = deaf.clone();
-    // Client to host, whole frames at a time, so keep-alives start on a
-    // frame boundary.
     std::thread::spawn(move || {
         from_client
             .set_read_timeout(Some(Duration::from_millis(20)))
@@ -288,7 +236,6 @@ fn relay(client: TcpStream, host: TcpStream, deaf: Arc<OnceLock<Instant>>, link:
             }
         }
     });
-    // Host to client, until deaf; the link's `host` end stays open.
     let (mut from_host, mut to_client) = (host, client);
     std::thread::spawn(move || {
         from_host
@@ -310,7 +257,6 @@ fn relay(client: TcpStream, host: TcpStream, deaf: Arc<OnceLock<Instant>>, link:
     });
 }
 
-/// `read_exact` over a socket with a read timeout.
 fn read_patiently(from: &mut TcpStream, mut into: &mut [u8]) -> std::io::Result<()> {
     while !into.is_empty() {
         match from.read(into) {
@@ -331,8 +277,6 @@ fn client_tuning(lease: Duration) -> TransportTuning {
     }
 }
 
-/// Opens a board's four links through `relay`, subscribed to `key`; `heard`
-/// is set once a sample reaches it.
 async fn deaf_board(relay: &Relay, key: &str, heard: &Arc<AtomicBool>) -> Vec<zenoh::Session> {
     let mut sessions = Vec::new();
     for _class in 0..4 {
@@ -358,8 +302,6 @@ async fn deaf_board(relay: &Relay, key: &str, heard: &Arc<AtomicBool>) -> Vec<ze
     sessions
 }
 
-/// Traffic the host routes to the board: 4 KiB samples it may drop, and
-/// small ones it must not (as a participant's control publications are).
 struct Filler {
     running: Arc<AtomicBool>,
     threads: Vec<std::thread::JoinHandle<()>>,
@@ -396,8 +338,6 @@ impl Filler {
     }
 }
 
-/// Logs as `RUST_LOG` says (by default warnings, and what the test
-/// measured): the host says when it cuts a link.
 fn log() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -408,11 +348,6 @@ fn log() {
         .try_init();
 }
 
-/// A plain Zenoh client of the host's port, with a board's 10 s
-/// lease: it publishes what the board subscribed to. Until the host cuts the
-/// board, its BLOCK samples wait on the board's full queue on the host's
-/// thread reading this link, which is why it is not a participant: the host
-/// would let a participant's 1 s link lease lapse meanwhile.
 async fn feeder(base: SocketAddr) -> zenoh::Session {
     zenoh::open(
         zenoh_config(
@@ -428,7 +363,6 @@ async fn feeder(base: SocketAddr) -> zenoh::Session {
     .expect("feeder")
 }
 
-/// Waits until the board heard what the host routes to it.
 async fn wait_heard(heard: &AtomicBool) {
     let started = Instant::now();
     while !heard.load(Ordering::Relaxed) {
@@ -446,8 +380,6 @@ struct World {
 }
 
 impl World {
-    /// A host on free local ports; with `kernel`, its links keep the
-    /// kernel's timeout.
     async fn start(kernel: bool) -> Self {
         log();
         let (transport, base) = open_listener("127.0.0.1:0".parse().expect("addr"), None)
@@ -461,7 +393,6 @@ impl World {
         let mut config = HostConfig::new(tenant.clone(), session);
         config.clock = SystemMonotonicClock.shared();
         config.lease_grace = Duration::from_millis(500);
-        // Past [`BOUND`], which the test checks itself.
         config.presence_grace = BOUND + Duration::from_secs(1);
         config.health_log = None;
         let host = SessionHost::start(transport.clone(), config)
@@ -498,7 +429,6 @@ impl World {
         );
         config.clock = SystemMonotonicClock.shared();
         config.heartbeat_period = Duration::from_millis(50);
-        // Long enough to measure a stalled host rather than give up on it.
         config.ctl_timeout = HANG;
         config.credential = Some(self.host.credential());
         Participant::attach(transport, config)
@@ -506,9 +436,6 @@ impl World {
             .expect("attach")
     }
 
-    /// Stops the host and closes its links, from a thread of its own so a
-    /// close that never returns fails the test instead of hanging it: how
-    /// long the host and its transport took.
     fn shut_down(self) -> (Duration, Duration) {
         let (done, finished) = std::sync::mpsc::channel();
         let Self {
@@ -541,14 +468,11 @@ impl World {
     }
 }
 
-/// What a healthy observer saw while the deaf peer was there.
 #[derive(Debug, Default)]
 struct Watched {
     queries: Vec<Duration>,
     failed: usize,
-    /// The longest a participant took to join and leave.
     churn: Duration,
-    /// The longest the host went without a healthy participant's heartbeat.
     unheard: Duration,
 }
 
@@ -563,11 +487,6 @@ impl Watched {
     }
 }
 
-/// Queries the host from `observer` every 50 ms, and has a participant
-/// join and leave every two seconds (a join tells every link, the deaf one
-/// too), checking that the host keeps hearing `healthy`: for `watch` at
-/// least, and until every link to the deaf board that filled up was cut and
-/// a participant joined and left meanwhile.
 async fn watch_healthy(
     world: &World,
     relay: &Relay,
@@ -633,9 +552,6 @@ async fn watch_healthy(
     watched
 }
 
-/// A robot, an observer, and a board that stops reading once the host
-/// routes it what the robot publishes: what the observer saw for `watch`,
-/// and how the host shut down after, with the board still linked.
 async fn deaf_board_among_healthy(kernel: bool, watch: Duration) {
     let world = World::start(kernel).await;
     let robot = world.join("robot", Role::Embodiment).await;
@@ -653,7 +569,6 @@ async fn deaf_board_among_healthy(kernel: bool, watch: Duration) {
     let board = deaf_board(&relay, &format!("{}/**", world.prefix()), &heard).await;
     let feeder = feeder(world.base).await;
     let filler = Filler::start(&feeder, &world.prefix());
-    // Deaf once the host routes the filler to the board, not before.
     wait_heard(&heard).await;
     relay.go_deaf();
 
@@ -667,7 +582,6 @@ async fn deaf_board_among_healthy(kernel: bool, watch: Duration) {
     .await;
     let evictions = relay.evictions();
     filler.stop();
-    // Closing them would wait on links nothing reads.
     std::mem::forget(board);
     drop((feeder, robot, observer));
     let (host, transport) = world.shut_down();
@@ -712,22 +626,17 @@ async fn deaf_board_among_healthy(kernel: bool, watch: Duration) {
     );
 }
 
-/// The host's own rule, alone: what a host without the kernel's timeout
-/// (macOS, Windows, an older Linux) relies on, until it cut the peer.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_peer_that_stops_reading_delays_no_one_else() {
     deaf_board_among_healthy(false, Duration::ZERO).await;
 }
 
-/// The same for [`WATCH`]: past the deaf board's own Zenoh lease, with
-/// participants joining and leaving all along.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "slow: 30 s of watching; mise run test:rust:slow"]
 async fn a_peer_that_stops_reading_delays_no_one_else_for_long() {
     deaf_board_among_healthy(false, WATCH).await;
 }
 
-/// With the kernel's timeout, as a Linux host runs.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_kernel_resets_a_peer_that_stops_reading() {
     deaf_board_among_healthy(true, Duration::ZERO).await;
@@ -744,8 +653,6 @@ async fn the_host_shuts_down_past_a_peer_that_stops_reading() {
     let filler = Filler::start(&feeder, &world.prefix());
     wait_heard(&heard).await;
     relay.go_deaf();
-    // Stopped as soon as a link to the board is stuck, before the host
-    // could have evicted it.
     tokio::task::block_in_place(|| relay.wait_stuck());
     filler.stop();
     std::mem::forget(board);
@@ -761,13 +668,8 @@ async fn the_host_shuts_down_past_a_peer_that_stops_reading() {
     );
 }
 
-/// Set for the child process
-/// [`a_host_process_exits_on_sigterm_past_a_peer_that_stops_reading`]
-/// starts.
 const CHILD: &str = "RLMESH_SLOW_PEER_HOST";
 
-/// In the child only: a host as `rlmesh host` runs one, until SIGTERM,
-/// without the kernel's timeout on its links.
 #[test]
 fn host_process() {
     if std::env::var_os(CHILD).is_none() {
@@ -792,8 +694,6 @@ fn host_process() {
             .await
             .expect("server");
         without_kernel_timeout(base);
-        // On a line of its own: the harness has begun one with the test's
-        // name.
         let mut stdout = std::io::stdout();
         writeln!(stdout, "\nSLOW_PEER_BASE {base}").expect("base");
         stdout.flush().expect("flush");
@@ -813,7 +713,6 @@ async fn a_host_process_exits_on_sigterm_past_a_peer_that_stops_reading() {
         .spawn()
         .expect("child");
     let pid = child.id();
-    // Killed whatever the outcome, by its PID.
     struct Reap(u32);
     impl Drop for Reap {
         #[allow(unsafe_code)]
@@ -831,7 +730,6 @@ async fn a_host_process_exits_on_sigterm_past_a_peer_that_stops_reading() {
             .by_ref()
             .find_map(|line| line.strip_prefix("SLOW_PEER_BASE ").map(str::to_string));
         let _ = found.send(line);
-        // Read to the end: the harness fails a child that can't write.
         lines.for_each(drop);
     });
     let base: SocketAddr = base
@@ -849,8 +747,6 @@ async fn a_host_process_exits_on_sigterm_past_a_peer_that_stops_reading() {
     wait_heard(&heard).await;
     relay.go_deaf();
     tokio::task::block_in_place(|| relay.wait_stuck());
-    // Stopped while the host still reads it: a BLOCK put to a host that is
-    // gone waits out the feeder's link lease.
     filler.stop();
 
     let started = Instant::now();

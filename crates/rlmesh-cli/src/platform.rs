@@ -11,15 +11,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const WAIT_POLL: Duration = Duration::from_secs(10);
 const TERMINAL: [&str; 3] = ["completed", "failed", "cancelled"];
 
-/// The platform client for `--profile` (or `RLMESH_API_KEY`), on its own copy
-/// of the store: the session it refreshes is written back to the same store.
 async fn connect(profiles: &ProfileStore, args: &ProfileArgs) -> Result<Client> {
     Ok(store::connect(profiles.clone(), args.profile.as_deref()).await?)
 }
 
 async fn dashboard_url(platform: &Client) -> Option<String> {
-    // Discovery is unauthenticated; never send the bearer where the
-    // contract does not ask for it.
+    // Discovery is unauthenticated: never send the bearer here.
     let info: Value = get_json(
         &http_client().ok()?,
         &format!("{}/v1/info", platform.url()),
@@ -234,7 +231,6 @@ async fn wait_for(
     }
 }
 
-/// RFC 3339 in UTC with second precision, e.g. `2026-09-22T14:03:00Z`.
 fn rfc3339_utc(time: SystemTime) -> String {
     let secs = time
         .duration_since(UNIX_EPOCH)
@@ -242,7 +238,6 @@ fn rfc3339_utc(time: SystemTime) -> String {
     let (days, rem) = (secs / 86_400, secs % 86_400);
     let (hour, minute, second) = (rem / 3_600, rem % 3_600 / 60, rem % 60);
 
-    // Civil date from days since the epoch (proleptic Gregorian).
     let z = i64::try_from(days).unwrap_or(i64::MAX / 2) + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);

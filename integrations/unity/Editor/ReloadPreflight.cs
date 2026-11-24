@@ -101,7 +101,7 @@ namespace RLMesh.Unity.Editor
 
         private static void Update()
         {
-            UnityEnvHost.Pump(); // Editor pumps during compilation and while Play Mode is stopped.
+            UnityEnvHost.Pump();
             State.Poll();
             if (!State.Completed) return;
             if (requestReload) { requestReload = false; EditorUtility.RequestScriptReload(); }
@@ -109,8 +109,6 @@ namespace RLMesh.Unity.Editor
 
         private static void BeforeReload()
         {
-            // Notifications cannot veto an unload. They are diagnostics only;
-            // all authorization to unlock comes from the earlier preflight.
             State.DiagnoseUnload();
             if (State.NeedsUnloadPreflight)
                 QuitPreflight.TryShutdown(TimeSpan.FromSeconds(1), UnityEnvHost.Shutdown, UnityEnvHost.Pending, Debug.LogError);

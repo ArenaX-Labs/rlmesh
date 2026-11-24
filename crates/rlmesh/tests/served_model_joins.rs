@@ -1,7 +1,3 @@
-//! Several drivers of one served model in one process, on the thread that
-//! blocks on the program's future, as an embedding runner drives one model
-//! per route from its main future.
-
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -21,11 +17,8 @@ use rlmesh_session::wire::{ModelEpisode, ModelGroup};
 use rlmesh_spaces::leaves::encode_leaf_slab;
 use rlmesh_spaces::{AutoresetMode, DType, EnvContract, SpaceValue, Tensor};
 
-/// Set in the child process that serves the model.
 const CHILD: &str = "RLMESH_TEST_SERVED_MODEL_CHILD";
 
-/// Answers each predict with its observation, after a pause when told to
-/// (`RLMESH_TEST_SERVED_MODEL_PAUSE`, milliseconds).
 struct Echo(Duration);
 
 #[rlmesh::binding::async_trait]
@@ -36,9 +29,6 @@ impl ModelHandler for Echo {
     }
 }
 
-/// The child half of these tests: serves the model in a session it hosts
-/// under the launch identity its parent passed, as a model's container
-/// does, and prints only its port.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn served_model_child() {
     if std::env::var_os(CHILD).is_none() {
@@ -64,7 +54,6 @@ async fn served_model_child() {
         .unwrap();
 }
 
-/// A model served by a child process, killed when dropped.
 struct Model {
     child: std::process::Child,
     port: String,
@@ -72,11 +61,9 @@ struct Model {
 }
 
 impl Model {
-    /// Starts the child, its predicts paused `pause`.
     fn start(pause: Duration) -> Self {
         use std::io::BufRead;
         let (identity, key) = rlmesh_session::address::launch_identity().unwrap();
-        // The identity reaches the child through its environment, never argv.
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "served_model_child", "--nocapture"])
             .env(CHILD, "1")
@@ -105,7 +92,6 @@ impl Model {
         }
     }
 
-    /// The model's keyed address.
     fn address(&self) -> String {
         format!("127.0.0.1:{}#{}/model", self.port, self.key)
     }
@@ -180,11 +166,6 @@ async fn resolve(model: ServedModel, route: &str) -> ServedModel {
     model
 }
 
-/// One round on the calling thread: `b`'s predict in flight and its reply
-/// in, then, in the same poll, `a` dropped, as a runner drops a finished
-/// route's model while another route waits on its own. Polled first, `b`
-/// is not polled again in that poll: only its reply's wakeup polls it
-/// again.
 async fn round(address: &str) {
     let a = resolved(address, "a").await;
     let mut b = resolved(address, "b").await;
@@ -195,7 +176,6 @@ async fn round(address: &str) {
         if polled.is_pending()
             && let Some(a) = a.take()
         {
-            // The reply arrives meanwhile: its wakeup is pending here.
             std::thread::sleep(Duration::from_millis(50));
             drop(a);
             return Poll::Pending;
@@ -217,8 +197,6 @@ fn dropping_a_driver_never_takes_the_reply_of_another_on_the_same_thread() {
         .enable_all()
         .build()
         .unwrap();
-    // Each round on a thread of its own, which blocks on it as a program's
-    // main thread does: one whose wakeup was taken never finishes.
     const ROUNDS: usize = 5;
     for n in 0..ROUNDS {
         let (done, finished) = std::sync::mpsc::channel();
@@ -238,8 +216,6 @@ fn dropping_a_driver_never_takes_the_reply_of_another_on_the_same_thread() {
 async fn a_predict_waits_its_own_deadline_and_fails_at_once_when_the_model_is_gone() {
     use rlmesh::ext::ErrorExt;
 
-    // Its predicts take far longer than the test: only a deadline or the
-    // model going away ends one.
     let mut model = Model::start(Duration::from_secs(600));
     let silent = ServedModel::new(model.address(), Duration::from_secs(20))
         .with_request_timeout(Duration::from_secs(1));
@@ -254,8 +230,6 @@ async fn a_predict_waits_its_own_deadline_and_fails_at_once_when_the_model_is_go
     assert!(matches!(err, rlmesh::Error::Timeout(_)), "{err}");
     assert!(err.is_transient(), "{err}");
 
-    // A model its host does not have yet may still be loading: a retry may
-    // find it, so a caller that retries does not stop for good.
     let address = model.address();
     let (host, _) = address.rsplit_once('/').unwrap();
     let absent = ServedModel::new(format!("{host}/absent"), Duration::from_secs(2));
@@ -307,9 +281,6 @@ fn a_wrong_key_refuses_every_driver_on_the_thread_at_once_and_for_good() {
         .enable_all()
         .build()
         .unwrap();
-    // Three routes' joins in one future on this thread, as a runner joins
-    // one model per route from its main future, with a join timeout far
-    // longer than the test.
     let started = std::time::Instant::now();
     let refused = runtime.block_on(async {
         let joins = (0..3).map(|route| -> Pin<Box<dyn Future<Output = _>>> {
@@ -329,7 +300,6 @@ fn a_wrong_key_refuses_every_driver_on_the_thread_at_once_and_for_good() {
     });
     let took = started.elapsed();
     assert!(took < Duration::from_secs(5), "refused in {took:?}");
-    // A predict that joins first is refused as finally as a resolve.
     let predicted = runtime.block_on(async {
         let mut model = ServedModel::new(address.clone(), Duration::from_secs(600));
         model.predict(observation("0")).await.map(|_| ())
@@ -343,7 +313,6 @@ fn a_wrong_key_refuses_every_driver_on_the_thread_at_once_and_for_good() {
     }
 }
 
-/// Every future's outcome, all polled by the one future the caller awaits.
 async fn futures_join<T>(futures: Vec<Pin<Box<dyn Future<Output = T> + '_>>>) -> Vec<T> {
     let mut futures: Vec<_> = futures.into_iter().map(Some).collect();
     let mut out: Vec<Option<T>> = futures.iter().map(|_| None).collect();

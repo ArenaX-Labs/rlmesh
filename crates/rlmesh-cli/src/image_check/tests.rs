@@ -3,7 +3,6 @@
 use super::*;
 use rlmesh_proto::CURRENT_WORKFLOW_EDITION;
 
-/// What a 0.2 image exposes: its session's one port.
 const PORTS: &[&str] = &["7447/tcp"];
 
 fn image(entrypoint: &[&str], cmd: &[&str], env: &[&str], ports: &[&str]) -> ImageConfig {
@@ -162,7 +161,6 @@ fn the_port_check_follows_the_session_address() {
     assert!(warning.contains("HOST:7447#KEY/NAME"), "{warning}");
     assert!(!warning.contains("50051"), "{warning}");
     assert_eq!(SERVE_PORT, 7447);
-    // An image built for the four-port layout still serves on its base.
     let older = ["7447/tcp", "7448/tcp", "7449/tcp", "7450/tcp"];
     let report = check_serve_command(&image(&command, &[], &[], &older), None);
     assert!(report.warnings.is_empty(), "{report:?}");
@@ -170,7 +168,6 @@ fn the_port_check_follows_the_session_address() {
 
 #[test]
 fn exec_form_keeps_docker_argument_boundaries() {
-    // A JSON value with spaces is one word; the first bare word is the target.
     let config = image(
         &["python", "-m", "rlmesh.serve"],
         &["pkg:Policy", "--kwargs-json", "{\"a\": 1}"],
@@ -181,7 +178,6 @@ fn exec_form_keeps_docker_argument_boundaries() {
     assert_eq!(command.serve, Some(2));
     assert_eq!(command.target.as_deref(), Some("pkg:Policy"));
     assert_eq!(command.argv.len(), 6);
-    // A whitespace-bearing exec-form element is NOT a shell script: it stays one word.
     let config = image(&["python -m rlmesh.serve pkg:Policy"], &[], &[], &[]);
     assert_eq!(parse_serve_command(&config).serve, None);
 }
@@ -204,7 +200,6 @@ fn shell_form_splits_the_script_and_appends_the_rest() {
     assert_eq!(command.target.as_deref(), Some("pkg:Env"));
     assert_eq!(command.kind(), Some(Kind::Env));
     assert_eq!(command.address, None);
-    // `bash -c 'exec python "$@"' --` hands Cmd through unchanged.
     let config = image(
         &[
             "bash",
@@ -278,7 +273,6 @@ fn docker_inspect_parses_nulls_and_ports() {
 
 #[test]
 fn oci_config_parses_like_docker_inspect() {
-    // What `docker buildx imagetools inspect REF --format '{{json .Image}}'` prints.
     let json = r#"{"architecture":"amd64","os":"linux","config":{"ExposedPorts":
         {"7447/tcp":{}},"Env":["CUDA_VERSION=12.4.1"],"Cmd":["python","-m",
         "rlmesh.serve","pkg:Policy"],"Labels":{"dev.rlmesh.package":"{}"}},
@@ -332,7 +326,6 @@ fn check_image_validates_the_variant_blocks() {
             .any(|m| m.contains("admits drivers older than the image's CUDA 12.4")),
         "{report:#?}"
     );
-    // An image without a variant block reports what inference supplies.
     config.labels.clear();
     let report = check_image(&config, None);
     assert!(
@@ -422,7 +415,6 @@ fn edition_table() {
             preferred_workflow_edition: preferred.map(str::to_owned),
             ..RuntimeOffer::default()
         };
-    // Sealed base in common: a newer or older prerelease still meets the platform.
     let report = check_editions(
         &offer(
             Some(PROTOCOL_GENERATION),
@@ -434,7 +426,6 @@ fn edition_table() {
     );
     assert!(report.ok(), "{report:?}");
     assert!(report.passed.iter().any(|m| m.contains("run at 2026.06")));
-    // Nothing in common: refused, naming both sides.
     let report = check_editions(
         &offer(Some(PROTOCOL_GENERATION), &["2031.01"], None),
         Some(Kind::Env),
@@ -448,7 +439,6 @@ fn edition_table() {
          would be refused: rebuild the image with an rlmesh that offers one of the target \
          platform's editions"
     );
-    // Wrong generation is a failure even when editions agree.
     let report = check_editions(
         &offer(Some("rlmesh-wire-v2"), &["2026.06"], None),
         None,
@@ -467,8 +457,6 @@ fn edition_table() {
         legacy.failed.iter().any(|m| m.contains("0.1 runner")),
         "{legacy:?}"
     );
-    // The session wire revision: this build's passes, another fails by
-    // name, and none (an earlier 0.2 pre-release) is a warning.
     let on = |revision| RuntimeOffer {
         session_wire_revision: revision,
         ..offer(Some(PROTOCOL_GENERATION), &["2026.06"], None)
@@ -492,11 +480,9 @@ fn edition_table() {
             .any(|m| m.contains("no session_wire_revision")),
         "{report:?}"
     );
-    // No fields at all: not checked, twice (generation and editions).
     let report = check_editions(&offer(None, &[], None), None, &platform);
     assert!(report.ok());
     assert_eq!(report.not_checked.len(), 2, "{report:?}");
-    // A declaration the image's own rlmesh refused: fails without Python.
     let mut impossible = offer(Some(PROTOCOL_GENERATION), &["2026.06"], Some("2026.06"));
     impossible.workflow_edition_error = Some("cannot drive 1999.01".to_owned());
     let report = check_editions(&impossible, None, &platform);
@@ -510,12 +496,8 @@ fn edition_table() {
 fn platform_offer_for_version_knows_only_this_build() {
     let own = platform_offer_for_version(env!("CARGO_PKG_VERSION")).unwrap();
     assert_eq!(own.editions, supported_workflow_editions());
-    // PyPI's spelling of the same build.
     let pep440 = env!("CARGO_PKG_VERSION").replace("-rc.", "rc");
     assert_eq!(platform_offer_for_version(&pep440), Some(own));
-    // Another release's retained list is not this build's to guess: rc.12
-    // offered only its cohort, so adding this build's sealed base would
-    // pass an image the real handshake refuses.
     assert_eq!(platform_offer_for_version("0.1.0-rc.12"), None);
     assert_eq!(platform_offer_for_version("0.0.1"), None);
     assert_eq!(platform_offer_for_version("99.0.0"), None);
@@ -558,12 +540,10 @@ fn host_baked_label_is_refused() {
             .warnings
             .is_empty()
     );
-    // An older envelope without the fields is not judged.
     assert_eq!(
         check_label_runtime(&RuntimeOffer::default()),
         CheckReport::default()
     );
-    // And it is wired into check_image off the label's runtime block.
     let mut config = image(
         &["python", "-m", "rlmesh.serve", "pkg:Policy"],
         &[],
@@ -611,8 +591,6 @@ fn image_declared_edition_overrides_the_label() {
         ),
     );
     let platform = EditionTarget::platform(platform_offer(&["2026.06".to_owned()]));
-    // The flag is a ceiling below the one edition both can drive: refused,
-    // even though the label alone would have passed.
     assert_eq!(
         declared_workflow_edition(&config),
         Some(Some("2020.01".to_owned()))
@@ -625,8 +603,6 @@ fn image_declared_edition_overrides_the_label() {
             .any(|m| m.contains("no edition satisfies both")),
         "{report:?}"
     );
-    // An empty ENV declares none: the peer floats to its newest, and a
-    // sealed base in common lets the session run.
     config.env.push(format!("{WORKFLOW_EDITION_ENV}="));
     assert_eq!(declared_workflow_edition(&config), Some(None));
     let report = check_image(&config, Some(&platform));
@@ -638,7 +614,6 @@ fn image_declared_edition_overrides_the_label() {
             .any(|m| m.contains("floating to its newest")),
         "{report:?}"
     );
-    // A non-empty ENV wins over the flag.
     config.env.pop();
     config.env.push(format!("{WORKFLOW_EDITION_ENV}=2026.06"));
     assert_eq!(
@@ -704,7 +679,6 @@ fn an_undeclared_image_is_told_where_to_pin_its_edition() {
             .any(|m| m.contains("no workflow edition declared") && m.contains("Pin it"))
     };
     assert!(floats(&config));
-    // The image's own declaration, or a deliberate float, settles it.
     config.env.push(format!("{WORKFLOW_EDITION_ENV}="));
     assert!(!floats(&config));
     config.env.pop();
@@ -716,8 +690,6 @@ fn an_undeclared_image_is_told_where_to_pin_its_edition() {
 
 #[test]
 fn a_local_check_names_this_build_and_no_platform() {
-    // An image built by another dev build of rlmesh, checked with no
-    // platform in play: the report compares it with this build, by name.
     let mut config = image(
         &["python", "-m", "rlmesh.serve", "pkg:Policy"],
         &[],
@@ -771,8 +743,6 @@ fn a_local_check_names_this_build_and_no_platform() {
         assert!(!message.contains("the platform"), "{message}");
         assert!(!message.contains("managed platform"), "{message}");
     }
-    // Without a describe label, or with one carrying no editions, the
-    // handshake is what checks them.
     config.labels.clear();
     let report = check_image(&config, Some(&this_build));
     assert!(

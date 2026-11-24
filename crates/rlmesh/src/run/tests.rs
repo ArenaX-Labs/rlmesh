@@ -1,5 +1,3 @@
-//! Runs, bindings and hooks driven end to end against local and served envs.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -16,16 +14,13 @@ mod bindings;
 mod envs;
 mod runs;
 
-/// One recorded `reset(seed, options)`.
 type Reset = (Option<i64>, Option<InfoDict>);
 
-/// A three-step env: observations count steps, reward is the action.
 struct Steps {
     step: i64,
     closes: Arc<AtomicUsize>,
     resets: Arc<Mutex<Vec<Reset>>>,
     metadata: Option<Metadata>,
-    /// Fail the step that reaches this count, as an env whose container died.
     fail_at: Option<i64>,
 }
 
@@ -95,7 +90,6 @@ fn quick() -> EnvServerOptions {
     }
 }
 
-/// Records every hook call, in order.
 #[derive(Default)]
 struct Log {
     calls: Vec<String>,
@@ -163,7 +157,6 @@ fn expected_two_episodes() -> Vec<String> {
     calls
 }
 
-/// A factory whose made envs report their closes.
 struct Factory {
     closes: Arc<AtomicUsize>,
     made: usize,

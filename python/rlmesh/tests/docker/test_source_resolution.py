@@ -1,6 +1,3 @@
-"""A gym-shaped sandbox source that also names a local Docker image, against
-a real Docker daemon (``mise run test:sandbox:docker``)."""
-
 from __future__ import annotations
 
 import os
@@ -18,7 +15,6 @@ def test_a_local_image_named_like_a_gym_id_runs_as_the_image(
     if missing := docker_missing():
         pytest.skip(f"needs a Docker daemon: {missing}")
     run = f"{run_id()}-sources"
-    # Gym's -v<N> suffix and no tag: before, this always built from source.
     image = f"{run}-v1"
     assert _sources.looks_like_gym_id(image)
     assert _sources.resolve_source_kind(image) == ("build", image)

@@ -1,16 +1,7 @@
 //! Checks a board running `integrations/arduino/examples/Eyes` over its
 //! serial port, for the board protocol, until the bridge
 //! lands: `mise run test:tether:board [port] [--clear-estop]`.
-//!
-//! It reads the `HELLO`s and the map, attaches, drives the eyes, and checks
-//! that the board trips back to `HELLO` when the link goes quiet, refuses a
-//! stale `gen`, and detaches. Press the board's reset button between runs
-//! to see `boot` change and the reset cause.
-//!
-//! Linux and macOS: the port is set up with `stty`.
 
-// A host tool, not the sans-IO crate: it reads the clock, spawns a reader
-// and prints its report.
 #![allow(clippy::disallowed_methods, clippy::print_stdout, clippy::print_stderr)]
 
 use std::fs::{File, OpenOptions};
@@ -28,13 +19,10 @@ use rlmesh_tether::msg::{
     status_flags,
 };
 
-/// The Eyes example's one part: `pos` for pan and tilt, two `f32`s, as both
-/// command and sample.
 const EYES: u8 = 0;
 const EYES_LEN: usize = 8;
 const BAUD: &str = "115200";
 
-/// One frame from the board, as received.
 struct Rx {
     at: Instant,
     ty: u8,
@@ -55,7 +43,6 @@ impl Rx {
     }
 }
 
-/// A `HELLO`'s fields, owned.
 #[derive(Clone, Debug)]
 struct Board {
     arch: u8,
@@ -106,8 +93,6 @@ impl Link {
         } else {
             "-F"
         };
-        // Raw bytes; -hupcl keeps DTR up on close, so an Uno isn't reset by
-        // the next run's open.
         let ok = Command::new("stty")
             .args([flag, path, BAUD, "raw", "-echo", "-hupcl", "clocal"])
             .status()
@@ -169,7 +154,6 @@ impl Link {
         self.sent = Instant::now();
     }
 
-    /// The next frame, by `deadline`.
     fn next(&mut self, deadline: Instant) -> Option<Rx> {
         let left = deadline.saturating_duration_since(Instant::now());
         match self.rx.recv_timeout(left) {
@@ -179,7 +163,6 @@ impl Link {
         }
     }
 
-    /// Frames until one decodes to what `want` picks, by `deadline`.
     fn wait<T>(
         &mut self,
         deadline: Instant,
@@ -215,7 +198,6 @@ impl Link {
         })
     }
 
-    /// `ATTACH`, retried as the bridge does, until a `STATUS` confirms it.
     fn attach(&mut self, board: &Board, gen_: u8, flags: u8, tries: u32) -> Option<Status> {
         let every = Duration::from_millis(u64::from((board.watchdog_ms / 3).min(100)));
         for _ in 0..tries {
@@ -278,7 +260,6 @@ fn reset(r: u8) -> &'static str {
     }
 }
 
-/// The next `gen` after `last`, skipping 0 and `avoid`.
 fn next_gen(last: u8, avoid: u8) -> u8 {
     let mut g = last;
     loop {
@@ -294,7 +275,6 @@ fn read_map(link: &mut Link, board: &Board) -> Option<Vec<u8>> {
     while map.len() < usize::from(board.map_len) {
         let offset = u16::try_from(map.len()).ok()?;
         let mut slice = None;
-        // Retried every 200 ms, up to 5 times.
         for _ in 0..6 {
             link.send(&Msg::GetMap {
                 boot: board.boot,
@@ -338,7 +318,6 @@ fn run(path: &str, clear_estop: bool) -> Result<Report, String> {
     println!("{path} at {BAUD} baud");
 
     println!("discovery");
-    // An Uno resets when the port opens: its bootloader takes a second.
     let Some((board, first)) = link.hello(Duration::from_secs(3)) else {
         r.check(
             false,
@@ -421,7 +400,6 @@ fn run(path: &str, clear_estop: bool) -> Result<Report, String> {
     }
 
     println!("drive (2 s at 50 Hz)");
-    // ttl_ms for a 20 ms control period.
     let ttl_ms = 60.min(board.watchdog_ms);
     let start = Instant::now();
     let mut tick = start;
@@ -445,7 +423,6 @@ fn run(path: &str, clear_estop: bool) -> Result<Report, String> {
             match rx.msg() {
                 Ok(Msg::State { part, value, .. }) if part == EYES => {
                     states += 1;
-                    // Eyes reports its last target as its state.
                     if sent.iter().rev().take(5).any(|s| s[..] == *value) {
                         matched += 1;
                     }
@@ -486,7 +463,6 @@ fn run(path: &str, clear_estop: bool) -> Result<Report, String> {
     println!("    the board counts {lost} frames lost from seq gaps");
 
     println!("link watchdog");
-    // PINGs alone keep the link (not the permit) alive.
     let until = Instant::now() + Duration::from_millis(u64::from(board.watchdog_ms) * 2);
     let mut tripped = false;
     while Instant::now() < until {

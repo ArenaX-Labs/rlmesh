@@ -21,9 +21,6 @@ where
     E: RuntimeEnv + Clone + 'static,
     M: ModelHandler,
 {
-    /// Hand a group its next observation: build the predict request, run the
-    /// observation transform, emit it, and ask for a prediction unless replay
-    /// frames still cover the next step.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn observe(
         &mut self,
@@ -66,24 +63,11 @@ where
         }
         let mut msg =
             state.predict_request_at(&positions, event.observation.clone(), phase, &self.contract);
-        // Hooks see the observation the model receives, for both step and
-        // reset observations, and the env's when a transform replaced it.
         fan_out_event!(self, observation_emitted, event);
 
         let group = &mut groups[gid];
-        // The observation re-plans now only if nothing covers the next step: no
-        // replay frame left, and no chunk in flight or waiting to be played
-        // (with a prefetch lead the replay can be spent while the prefetched
-        // chunk is still on its way, so the replay alone does not decide).
         let replans = group.replay.is_empty() && matches!(group.predict, PredictState::None);
         if self.deliver_history {
-            // Exactly-once: an observation is either the predict's own (it
-            // re-plans now, carrying the backlog as its rows) or a history row
-            // (a buffered or arriving frame will act on it). Never both, never
-            // neither. A row stays the group's latest observation: should an
-            // async prefetch or a stale-result re-arm re-plan from it later,
-            // `latest_request` promotes it off the backlog to that request's
-            // own, so it still leaves the group once.
             msg.step = Some(group.steps);
             if replans {
                 msg.history = std::mem::take(&mut group.history);
@@ -113,17 +97,6 @@ where
         Ok(())
     }
 
-    /// The request a re-plan from the group's latest observation sends: the
-    /// prefetch arm in `dispatch_steps` and the stale-result re-arm in
-    /// `on_predict_outcome` both predict from `obs_msg` rather than from a
-    /// fresh observation. On a history route that observation was buffered as
-    /// a row when it landed (nothing re-planned then), so it is popped off the
-    /// backlog as the request's own and the rows before it ride along: every
-    /// step still leaves the group exactly once. If it is not the backlog's
-    /// trailing row it already left as an earlier request's own (a lead of at
-    /// least the chunk length re-arms before the next observation lands);
-    /// re-sending it would deliver that step twice, so wait for the next
-    /// observation instead. Routes without history re-send it as before.
     pub(super) fn latest_request(
         &self,
         group: &mut Group<E>,
@@ -170,9 +143,6 @@ where
         }
     }
 
-    /// Instruction routes: ask `transform_instruction` for the episodes that
-    /// started since the group's last observation, then put each lane's
-    /// replacement into its instruction leaf while that episode runs.
     async fn transform_instruction(
         &self,
         group: &mut Group<E>,
@@ -244,14 +214,11 @@ where
     }
 }
 
-/// A fatal transform's failure, naming the hook.
 pub(super) fn transform_failed(hook: &str, err: HookError) -> RuntimeError {
     tracing::warn!("runtime hook {hook} failed: {err}");
     RuntimeError::Hook(HookError::Message(format!("{hook}: {err}")))
 }
 
-/// The canonical leaf index and space of the Text observation leaf the env
-/// tags `text/instruction`, walking its tag tree beside the space.
 pub(super) fn instruction_leaf(
     contract: &rlmesh_spaces::EnvContract,
 ) -> Option<(usize, rlmesh_spaces::SpaceSpec)> {

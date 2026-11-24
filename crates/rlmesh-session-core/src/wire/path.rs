@@ -1,12 +1,10 @@
 //! Part paths: the only address of a part.
 //!
-//! A path is 1-6 `/`-separated segments of `[a-z][a-z0-9_]*`, each 1-32
-//! characters, at most 96 bytes in all, with no leading `/`. Every path is
-//! therefore a run of valid Zenoh key chunks (no wildcards, no `@`, no `$`)
-//! and every segment is an identifier in Python, Rust and C#. Segments
-//! starting with `_` are reserved: the edge's derived `{path}/_applied`
-//! stream ([`APPLIED`]) and the host's `_session/...` streams are never
-//! declared.
+//! A path is 1-6 `/`-separated segments of `[a-z][a-z0-9_]*`, each 1-32 characters, at most 96
+//! bytes in all, with no leading `/`, so every path is a run of valid Zenoh key chunks and every
+//! segment an identifier in Python, Rust and C#. Segments starting with `_` are reserved (the
+//! edge's `{path}/_applied` stream, [`APPLIED`], and the host's `_session/...` streams) and are
+//! never declared.
 
 #[allow(unused_imports)]
 use crate::prelude::*;

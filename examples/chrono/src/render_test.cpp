@@ -1,13 +1,3 @@
-// The Vulkan renderer against the CPU ray tracer, on scenes the env never
-// draws: enough spheres and capsules to grow the instance buffer three times past
-// its initial 256 instances, several frame sizes, and frame sizes it must
-// refuse without leaving anything broken behind. Exits non-zero on a failure.
-//
-//   chrono_reach_render_test
-//
-// Run it under VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation to have the
-// validation layers check every call, and with VK_DRIVER_FILES pointing at
-// lavapipe to test on the CPU.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -30,7 +20,6 @@ void expect(bool ok, const std::string& what) {
   if (!ok) ++failures;
 }
 
-// The robot-sized scene the env draws: a few links and joints.
 scene::Scene small_scene() {
   scene::Scene s;
   const Vec3 steel(0.93, 0.55, 0.12), joint(0.18, 0.19, 0.22);
@@ -43,7 +32,6 @@ scene::Scene small_scene() {
   return s;
 }
 
-// A grid of `n` spheres on the floor around the camera's target.
 scene::Scene many_spheres(int n) {
   scene::Scene s;
   const int side = static_cast<int>(std::ceil(std::sqrt(n)));
@@ -55,8 +43,6 @@ scene::Scene many_spheres(int n) {
   return s;
 }
 
-// `n` capsules leaning in a fan: 3 instances each (two end spheres and a
-// cylinder).
 scene::Scene many_capsules(int n) {
   scene::Scene s;
   const int side = static_cast<int>(std::ceil(std::sqrt(n)));
@@ -69,9 +55,6 @@ scene::Scene many_capsules(int n) {
   return s;
 }
 
-// The share of pixels where any channel differs by more than 48 of 255:
-// silhouettes and shadow edges, where the tessellated meshes and the shadow
-// map's texels part from the ray tracer's analytic shapes.
 double mismatch(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
   if (a.size() != b.size() || a.empty()) return 1.0;
   size_t bad = 0;
@@ -86,7 +69,6 @@ double mismatch(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
   return static_cast<double>(bad) / (a.size() / 3);
 }
 
-// Renders with both backends and compares them.
 std::vector<uint8_t> compare(chrono_reach::Renderer& vulkan, chrono_reach::Renderer& reference,
                              const std::string& name, const scene::Scene& s, int width, int height,
                              double tolerance) {
@@ -133,21 +115,13 @@ int main() {
   const scene::Scene small = small_scene();
   const std::vector<uint8_t> first =
       compare(*vulkan, *reference, "small scene", small, 256, 256, 0.005);
-  // 1 floor + 300 spheres: past the initial 256 instances.
   compare(*vulkan, *reference, "300 spheres", many_spheres(300), 96, 96, 0.04);
-  // 1 floor + 1200 capsule instances: past the 602 the first growth made room for.
   compare(*vulkan, *reference, "400 capsules", many_capsules(400), 160, 120, 0.04);
-  // 3001 instances, past the 2402 of the second growth, in a frame taller than
-  // it is wide.
   compare(*vulkan, *reference, "3000 spheres", many_spheres(3000), 120, 200, 0.05);
 
-  // Back to the small scene in its cached target: the same pixels as before
-  // the buffer grew.
   expect(vulkan->render(small, scene::Camera{}, 256, 256) == first,
          "small scene after growth matches its first frame");
 
-  // Sizes the renderer must refuse, twice each so a failure cannot leave a
-  // broken target cached, and then a good frame still renders.
   expect(throws(*vulkan, 0, 64), "a zero-width frame is refused");
   expect(throws(*vulkan, 1 << 20, 1), "an oversized frame is refused");
   expect(throws(*vulkan, 1 << 20, 1), "an oversized frame is refused again");

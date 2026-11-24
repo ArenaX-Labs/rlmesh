@@ -10,10 +10,6 @@ use super::{Prediction, RuntimeError};
 use crate::model::handler::{ModelHandler, ModelResetOptions, PredictFrames};
 use crate::model::types::{EpisodeInfo, ModelObservation};
 
-/// A model error as the driver's, keeping its recoverable flag.
-/// The options the model adds for the lanes `starts` a reset starts as
-/// `trials`: one lane's map, or for several lanes each key as a per-lane list
-/// (`None` where a lane did not set it).
 pub(super) async fn model_reset_options(
     source: Option<Arc<dyn ModelResetOptions>>,
     starts: &[EpisodeInfo],
@@ -48,7 +44,6 @@ pub(super) async fn model_reset_options(
     ))
 }
 
-/// The model's reset options under the runtime's own reserved ones.
 pub(super) fn merge_options(
     model: Option<rlmesh_spaces::MetaMap>,
     reserved: Option<rlmesh_spaces::MetaMap>,
@@ -62,9 +57,6 @@ fn model_error(error: crate::Error) -> RuntimeError {
     RuntimeError::model_rpc_with_recoverability("model", error.is_transient(), error)
 }
 
-/// One grouped predict: every observation in one `predict_grouped` call, the
-/// model's fusion seam, then each group's frames encoded against the action
-/// space. One group's failure is its own.
 pub(super) async fn predict_grouped<M: ModelHandler>(
     model: &tokio::sync::Mutex<M>,
     contract: &rlmesh_spaces::EnvContract,
@@ -86,13 +78,8 @@ pub(super) async fn predict_grouped<M: ModelHandler>(
     let call_started = Instant::now();
     let results = handler.predict_grouped(observations).await;
     let user_ns = rlmesh_proto::elapsed_ns(call_started);
-    // Drain the adapter share even for a failed forward, or its time leaks
-    // into the next predict's.
     let adapter_ns = handler.take_adapter_ns();
     let held = handler.held_state();
-    // A served model's own timing replaces this call's: its user time is its
-    // share of a forward it may have fused with other routes' requests, and
-    // the call's wall time is the op's RPC.
     let (endpoint_total_ns, endpoint) = match handler.take_endpoint_timing() {
         Some((total, phases)) => (total, Some(phases)),
         None => (None, None),
@@ -133,8 +120,6 @@ pub(super) async fn predict_grouped<M: ModelHandler>(
             });
             Ok(Prediction {
                 frames,
-                // Timed here only when the model reported nothing: a total
-                // it left out stays absent beside the phases it reported.
                 endpoint_total_ns: if endpoint.is_some() {
                     endpoint_total_ns
                 } else {
@@ -152,7 +137,6 @@ pub(super) async fn predict_grouped<M: ModelHandler>(
         .collect()
 }
 
-/// Drops the model's route state at route end.
 pub(super) async fn release<M: ModelHandler>(
     model: &tokio::sync::Mutex<M>,
     env_id: String,
@@ -167,8 +151,6 @@ pub(super) async fn release<M: ModelHandler>(
     }
 }
 
-/// Ends `episode_ids` on the model: the route's own state first, then the
-/// model's hook, as a served model does.
 pub(super) async fn evict<M: ModelHandler>(
     model: &tokio::sync::Mutex<M>,
     env_id: String,

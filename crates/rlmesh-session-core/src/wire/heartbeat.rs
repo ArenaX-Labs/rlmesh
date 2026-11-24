@@ -1,10 +1,4 @@
 //! Heartbeats and clock pings.
-//!
-//! A participant heartbeats on the control class; the host echoes each one
-//! at once with its receive and send times, and the participant's next
-//! heartbeat carries the completed four-timestamp exchange
-//! ([`TimingSample`]), so the host learns all four timestamps without a third
-//! message.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -31,9 +25,8 @@ pub struct TimingSample {
 impl TimingSample {
     /// θ = ((t2 − t1) + (t3 − t4)) / 2: host minus participant, floored.
     ///
-    /// For any non-negative one-way delays d1 (out) and d2 (back) the true
-    /// offset lies within δ/2 of the exact midpoint, since the midpoint is
-    /// θ + (d1 − d2)/2 and δ = d1 + d2.
+    /// For any non-negative one-way delays the true offset lies within δ/2
+    /// ([`Self::rtt_ns`]) of this midpoint.
     pub fn offset_ns(&self) -> i64 {
         let sum = (i128::from(self.t2_ns) - i128::from(self.t1_ns))
             + (i128::from(self.t3_ns) - i128::from(self.t4_ns));
@@ -204,9 +197,8 @@ pub struct ClockRefusal {
 }
 
 impl ClockRefusal {
-    /// The refusal `clocks` (`(whose, error)`) earn a chunk for `channel`
-    /// under `bound_ns`, naming the worst clock; `None` when every one is
-    /// within it.
+    /// The refusal `clocks` (`(whose, error)`) earn a chunk for `channel` under
+    /// `bound_ns`, naming the worst clock; `None` when every one is within it.
     pub fn judge(
         channel: ChannelId,
         bound_ns: u64,
@@ -238,7 +230,6 @@ impl ClockRefusal {
     }
 }
 
-/// Nanoseconds as milliseconds to one decimal, without a trailing `.0`.
 fn millis_text(ns: u64) -> String {
     let tenths = ns.saturating_add(50_000) / 100_000;
     match tenths % 10 {
@@ -281,7 +272,6 @@ mod tests {
 
     #[test]
     fn symmetric_delay_recovers_the_offset_exactly() {
-        // Participant clock = host − 5 s; 300 µs each way, 20 µs hold.
         let s = TimingSample {
             seq: 1,
             t1_ns: 1_000_000 - 5_000_000_000,

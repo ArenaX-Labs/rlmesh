@@ -1,4 +1,3 @@
-//! Sized C Describe options over the facade's shared envelope implementation.
 #![allow(unsafe_code)]
 use crate::abi::{
     sizing,

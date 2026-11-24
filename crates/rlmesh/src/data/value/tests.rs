@@ -38,7 +38,6 @@ fn render_request_with_env_index_maps_to_single_index() {
 fn render_result_passes_known_formats_and_drops_unknown() {
     use rlmesh_proto::env::v1::{RenderFormat, RenderResponse};
 
-    // UNSPECIFIED (historical PNG default) and PNG surface the frame.
     for format in [RenderFormat::Unspecified, RenderFormat::Png] {
         let resp = RenderResponse {
             frame: Some(b"\x89PNG".to_vec()),
@@ -51,8 +50,6 @@ fn render_result_passes_known_formats_and_drops_unknown() {
         );
     }
 
-    // An unrecognized future format must be skipped (no frame), never surfaced
-    // as if it were PNG.
     let resp = RenderResponse {
         frame: Some(b"future-codec".to_vec()),
         format: 999,
@@ -86,7 +83,6 @@ fn box_leaf_shares_storage_with_the_encoded_value() {
 
     let leaves = encode_leaves(&value, &space).unwrap();
     assert_eq!(leaves.len(), 1);
-    // The leaf must view the tensor's refcounted storage, not a copy.
     assert_eq!(leaves[0].as_ptr(), storage_ptr);
     assert_eq!(&leaves[0][..], &[1, 2, 3, 4]);
 }
@@ -97,7 +93,6 @@ fn top_level_discrete_roundtrips_at_declared_dtype_width() {
     for value in [0i64, 1, 999] {
         let leaves = encode_leaves(&SpaceValue::Discrete(value), &space).unwrap();
         assert_eq!(leaves.len(), 1);
-        // gym Discrete defaults to int64, so the leaf is the dtype-wide 8 bytes.
         assert_eq!(
             leaves[0].len(),
             8,
@@ -108,7 +103,6 @@ fn top_level_discrete_roundtrips_at_declared_dtype_width() {
         };
         assert_eq!(got, value);
     }
-    // A leaf that is not exactly the dtype width is rejected, not truncated.
     assert!(decode_leaves(&[Bytes::from_static(&[0u8; 4])], &space).is_err());
 }
 
@@ -151,7 +145,6 @@ fn batched_partial_box_values_use_raw_concatenated_slab() {
 
     let n = values.len();
     let payload = encode_batched_partial_values(&values, &space).unwrap();
-    // One leaf, the row-major (N, *shape) slab = lane-contiguous concat.
     assert_eq!(payload.leaves.len(), 1);
     assert_eq!(payload.leaves[0].as_ref(), &[1, 2, 3, 4]);
     let decoded = decode_batched_partial_values(Some(&payload), &space, n).unwrap();
@@ -165,7 +158,6 @@ fn batched_partial_decode_rejects_wrong_lane_count() {
         .dtype(DType::Uint8)
         .build()
         .unwrap();
-    // 3 bytes can't split into N=2 lanes of stride 2.
     let bad = leaves_value(vec![Bytes::from_static(&[1, 2, 3])]);
 
     let error = decode_batched_partial_values(Some(&bad), &space, 2).unwrap_err();
@@ -191,8 +183,6 @@ fn binary_payload_roundtrips_through_message_bytes() {
 
 #[test]
 fn nested_image_box_roundtrips_byte_exact_without_inflation() {
-    // A Dict{image: uint8 Box, choice: Discrete(2^53+1)} round-trips byte-exact,
-    // and the 100KB image leaf is raw bytes with zero per-leaf framing.
     let big_discrete = (1i64 << 53) + 1;
     let space = DictSpaceBuilder::new()
         .insert(
@@ -227,7 +217,6 @@ fn nested_image_box_roundtrips_byte_exact_without_inflation() {
     let leaves = encode_leaves(&value, &space).unwrap();
     let decoded = decode_leaves(&leaves, &space).unwrap();
     assert_eq!(decoded, value);
-    // Keys sort to (choice, image): the image leaf is leaves[1], raw and exact.
     assert_eq!(
         leaves[1].len(),
         raw.len(),
@@ -277,13 +266,11 @@ fn int16_box_roundtrips_raw_and_nested() {
         .collect();
     let value = SpaceValue::Box(Tensor::from_vec(data.clone(), vec![3], DType::Int16).unwrap());
 
-    // Raw single-value leaf.
     let leaves = encode_leaves(&value, &space).unwrap();
     assert_eq!(leaves[0].as_ref(), data.as_slice());
     let decoded = decode_leaves(&leaves, &space).unwrap();
     assert_eq!(decoded, value);
 
-    // Raw concatenated batch slab.
     let values = vec![value.clone(), value.clone()];
     let n = values.len();
     let batch = encode_batched_partial_values(&values, &space).unwrap();
@@ -291,7 +278,6 @@ fn int16_box_roundtrips_raw_and_nested() {
     let decoded = decode_batched_partial_values(Some(&batch), &space, n).unwrap();
     assert_eq!(decoded, values);
 
-    // Nested in a Dict, the leaf carries the same raw little-endian bytes.
     let dict_space = DictSpaceBuilder::new()
         .insert(
             "reading",
@@ -316,7 +302,6 @@ fn strided_box_view_encodes_contiguously() {
         .dtype(DType::Uint8)
         .build()
         .unwrap();
-    // Storage [1, 9, 3, 9]; stride-2 view sees [1, 3].
     let storage = Storage::from_slice(&[1, 9, 3, 9]);
     let view = Tensor::from_storage(storage, DType::Uint8, vec![2], Some(vec![2]), 0).unwrap();
     let value = SpaceValue::Box(view);
@@ -351,8 +336,6 @@ fn nested_discrete_survives_beyond_two_pow_53_exactly() {
 
 #[test]
 fn top_level_text_is_raw_utf8() {
-    // Text crosses as raw UTF-8, self-framed by the `repeated bytes` element
-    // length -- no SpaceValueNode tree. A conformant non-Rust peer relies on this.
     let space = TextBuilder::new(8).build().unwrap();
     let value = SpaceValue::Text("hi".to_string());
 
@@ -361,7 +344,6 @@ fn top_level_text_is_raw_utf8() {
     let decoded = decode_leaves(&leaves, &space).unwrap();
     assert_eq!(decoded, value);
 
-    // An empty Text round-trips as a single empty leaf (present, not absent).
     let empty = SpaceValue::Text(String::new());
     let empty_leaves = encode_leaves(&empty, &space).unwrap();
     assert_eq!(empty_leaves.len(), 1);
@@ -373,8 +355,6 @@ fn top_level_text_is_raw_utf8() {
 fn wire_decode_rejects_malformed_specs() {
     use rlmesh_proto::spaces::v1 as proto;
 
-    // A peer-supplied MultiBinary spec with a wide (non-1-byte) dtype would make
-    // the leaf byte count disagree with the raw batch stride; reject at decode.
     let wide_multibinary = proto::SpaceSpec {
         shape: vec![3],
         dtype: proto::DataType::Int32 as i32,
@@ -384,7 +364,6 @@ fn wire_decode_rejects_malformed_specs() {
     };
     assert!(crate::data::space_spec_from_proto(wide_multibinary).is_err());
 
-    // A MultiDiscrete spec with a float dtype would lose index precision.
     let float_multidiscrete = proto::SpaceSpec {
         shape: vec![2],
         dtype: proto::DataType::Float32 as i32,
@@ -394,7 +373,6 @@ fn wire_decode_rejects_malformed_specs() {
     };
     assert!(crate::data::space_spec_from_proto(float_multidiscrete).is_err());
 
-    // A well-formed uint8 MultiBinary still decodes.
     let ok = proto::SpaceSpec {
         shape: vec![3],
         dtype: proto::DataType::Uint8 as i32,
@@ -407,10 +385,6 @@ fn wire_decode_rejects_malformed_specs() {
 
 #[test]
 fn large_image_batch_roundtrips_identically_through_parallel_slab_paths() {
-    // Two 120KB image leaves x 3 lanes crosses PARALLEL_SLAB_MIN_BYTES on both
-    // the per-leaf-column and per-lane fan-outs; the parallel paths must stay
-    // byte-identical to the sequential codec (asserted via typed equality and
-    // encode determinism against a second encode of the same input).
     let image = |seed: u8| {
         let raw: Vec<u8> = (0..200 * 200 * 3)
             .map(|i| ((i as u64 * 31 + seed as u64) % 256) as u8)

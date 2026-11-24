@@ -29,7 +29,6 @@ def test_python_entrypoint_marks_wheel_distribution_and_forwards(
         "argv": ["version"],
         "distribution": "python-wheel",
     }
-    # `rlmesh check` / `rlmesh describe` run rlmesh._describe in this interpreter.
     assert os.environ["RLMESH_PYTHON"] == sys.executable
 
 
@@ -103,10 +102,6 @@ def test_python_entrypoint_errors_without_native_module_or_checkout(
 def test_import_error_from_cli_execution_propagates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An ImportError raised while the CLI runs is a failure inside the CLI, not a
-    missing native module; it must propagate rather than being swallowed into the
-    cargo/native-module fallback path."""
-
     def run_cli(argv: list[str]) -> int:
         raise ImportError("boom from inside the CLI")
 

@@ -39,12 +39,7 @@ pub enum RuntimeError {
         operation: &'static str,
         step: i64,
         message: String,
-        /// Whether the underlying transport error is retryable. Captured at
-        /// construction by the adapter, which owns the structured error.
         recoverable: bool,
-        /// The structured underlying error, preserved so callers can downcast
-        /// or inspect the chain. The driver does not name
-        /// the driver's types, so the concrete type is erased here.
         #[source]
         source: Option<BoxError>,
     },
@@ -53,7 +48,6 @@ pub enum RuntimeError {
     ModelRpc {
         component_id: String,
         message: String,
-        /// Whether the underlying error is retryable. Captured at construction.
         recoverable: bool,
         #[source]
         source: Option<BoxError>,
@@ -74,8 +68,6 @@ pub enum RuntimeError {
     Hook(HookError),
 }
 
-/// What a closed connection means, for an env failure that is one: the
-/// hint would mislead on any other (an env that raised, say).
 fn closed_hint(message: &str) -> &'static str {
     if message.contains("connection closed") {
         ". The env session's stream ended without a reply (an env error that ended the session is reported as itself, not as a closed connection), so the environment server most likely exited, crashed, or received SIGTERM; inspect the environment container logs immediately before the runtime error timestamp"
@@ -85,8 +77,6 @@ fn closed_hint(message: &str) -> &'static str {
 }
 
 impl RuntimeError {
-    /// This error stamped with the runtime step it failed at: an env adapter
-    /// cannot know it, the driver does.
     pub(crate) fn at_step(mut self, at: i64) -> Self {
         if let Self::EnvRpc { step, .. } = &mut self {
             *step = at;
@@ -179,11 +169,8 @@ impl RuntimeError {
         }
     }
 
-    /// Whether this error is recoverable (retryable).
-    ///
-    /// For RPC failures this reflects the recoverability captured from the
-    /// underlying transport error at construction. All other variants are
-    /// treated as non-recoverable.
+    /// Whether this error is recoverable (retryable): for an RPC failure, as the transport error
+    /// reported it; every other variant is not.
     pub fn is_recoverable(&self) -> bool {
         match self {
             Self::EnvRpc { recoverable, .. } | Self::ModelRpc { recoverable, .. } => *recoverable,

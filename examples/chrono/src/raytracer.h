@@ -37,7 +37,6 @@ inline double hit_sphere(const Vec3& ro, const Vec3& rd, const Sphere& s, Vec3* 
   return t;
 }
 
-// Inigo Quilez's analytic ray-capsule intersection.
 inline double hit_capsule(const Vec3& ro, const Vec3& rd, const Capsule& c, Vec3* normal) {
   const Vec3 axis = c.b - c.a;
   const Vec3 oa = ro - c.a;
@@ -58,7 +57,6 @@ inline double hit_capsule(const Vec3& ro, const Vec3& rd, const Capsule& c, Vec3
     if (y > 0.0 && y < axis2 && body > 1e-6) {
       t = body;
     } else {
-      // The end caps.
       const Vec3 oc = (y <= 0.0) ? oa : ro - c.b;
       b = dot(rd, oc);
       k = dot(oc, oc) - ra * ra;
@@ -69,7 +67,6 @@ inline double hit_capsule(const Vec3& ro, const Vec3& rd, const Capsule& c, Vec3
       }
     }
   } else {
-    // Ray parallel to the axis: the caps alone.
     for (const Vec3& end : {c.a, c.b}) {
       Sphere cap{end, ra, c.color};
       t = std::min(t, hit_sphere(ro, rd, cap, nullptr));
@@ -126,7 +123,6 @@ inline uint8_t to_byte(double v) {
 
 }  // namespace detail
 
-// Render `scene` to a row-major RGB8 image of `width` x `height`.
 inline std::vector<uint8_t> render(const Scene& scene, const Camera& cam, int width, int height) {
   using namespace detail;
   std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 3);
@@ -146,7 +142,6 @@ inline std::vector<uint8_t> render(const Scene& scene, const Camera& cam, int wi
 
       Vec3 color;
       if (hit.t >= kMiss) {
-        // Sky: a soft vertical gradient.
         const double k = 0.5 * (rd.y + 1.0);
         color = Vec3(0.78, 0.84, 0.92) * (1.0 - k) + Vec3(0.42, 0.55, 0.75) * k;
       } else {
@@ -157,7 +152,6 @@ inline std::vector<uint8_t> render(const Scene& scene, const Camera& cam, int wi
               (static_cast<int>(std::floor(p.x * 5)) + static_cast<int>(std::floor(p.z * 5))) % 2 ==
               0;
           albedo = even ? Vec3(0.82, 0.82, 0.80) : Vec3(0.62, 0.63, 0.62);
-          // Fade the floor into the horizon.
           const double fade = std::clamp(hit.t / 6.0, 0.0, 1.0);
           albedo = albedo * (1.0 - fade) + Vec3(0.78, 0.84, 0.92) * fade;
         }

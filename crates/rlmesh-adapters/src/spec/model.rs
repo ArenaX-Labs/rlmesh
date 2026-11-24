@@ -1,5 +1,3 @@
-//! The model-side spec: expected input payload tree plus the action output.
-
 mod custom;
 mod image;
 mod state;
@@ -18,61 +16,26 @@ pub use image::{CHANNEL_ORDERS, CROP_MODES, Image, Normalize, StackPad};
 pub use state::{ConcatPart, PartSource, State, StateContainer};
 pub use text::{Text, TextContainer};
 
-// ---------------------------------------------------------------------------
-// Shared structural node parser
-//
-// Both spec trees — the model input tree ([`InputNode`]) and the env
-// observation tree ([`super::env_tags::ObsNode`]) — share one structural
-// discriminant: a JSON array is a `Tuple`, a JSON object whose `"type"` is in
-// the leaf vocabulary is a `Leaf`, an object whose `"type"` is an unrecognized
-// string is a clear unknown-kind error, and any other object is a `Dict`. This
-// is the single Rust source of that discriminant; each tree supplies only its
-// leaf type, leaf vocabulary, and the `KIND` word naming it in errors.
-// ---------------------------------------------------------------------------
-
-/// The three structural shapes a tree node can take, generic over the leaf
-/// payload `L` and the child node `C`, so [`from_shape`](TreeNode::from_shape)
-/// builds a node from the discriminant's output without duplicating the
-/// leaf/dict/tuple match per tree.
 pub(super) enum NodeShape<L, C> {
     Leaf(L),
     Dict(BTreeMap<String, C>),
     Tuple(Vec<C>),
 }
 
-/// A recursive spec tree (leaf / dict / tuple) parsed by the shared structural
-/// discriminant. Implementors supply only their leaf type, leaf `type`
-/// vocabulary, and the `KIND` word naming the tree in the unknown-kind error;
-/// the [`Deserialize`] impl delegates to [`deserialize_node`], which is why that
-/// trait is required here. (Serialization is the trivial inverse — a leaf
-/// serializes as its tagged object, a dict as a JSON object, a tuple as a JSON
-/// array — and stays a per-type three-arm match.)
 pub(super) trait TreeNode: Sized + for<'de> Deserialize<'de> {
-    /// The leaf payload. Its own [`Deserialize`] sorts a known `type` into the
-    /// strict variant and an unrecognized `type` into the tolerant `Unknown`
-    /// arm, so the visitor's job is purely structural (leaf / dict / tuple).
     type Leaf: Serialize + for<'de> Deserialize<'de>;
 
-    /// Domain word naming this tree in the reserved-`type`-key error, e.g.
-    /// `"model input"`.
     const KIND: &'static str;
 
-    /// Build a node from one of the three owned structural shapes the shared
-    /// discriminant produces.
     fn from_shape(shape: NodeShape<Self::Leaf, Self>) -> Self;
 }
 
-/// Deserialize any [`TreeNode`] via the shared structural discriminant.
 pub(super) fn deserialize_node<'de, N: TreeNode, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<N, D::Error> {
     deserializer.deserialize_any(NodeVisitor::<N>(std::marker::PhantomData))
 }
 
-/// Hand-written visitor mirroring [`AcceptSet`](crate::spec::AcceptSet)'s
-/// str-or-map pattern: it distinguishes a leaf object from a dict object
-/// structurally (by the `"type"` key) so the leaf keeps its own
-/// `#[serde(tag = "type")]` form intact.
 struct NodeVisitor<N: TreeNode>(std::marker::PhantomData<N>);
 
 impl<'de, N: TreeNode> Visitor<'de> for NodeVisitor<N> {
@@ -95,17 +58,10 @@ impl<'de, N: TreeNode> Visitor<'de> for NodeVisitor<N> {
     }
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<N, A::Error> {
-        // Buffer the object into an ordered map of raw JSON so we can peek at the
-        // `"type"` key, then re-interpret as either a leaf or a dict of nodes.
         let mut buffered: BTreeMap<String, serde_json::Value> = BTreeMap::new();
         while let Some((key, value)) = map.next_entry::<String, serde_json::Value>()? {
             buffered.insert(key, value);
         }
-        // `"type"` is a reserved Dict key: a *string* `"type"` forces the leaf
-        // branch (the leaf's own Deserialize then sorts known vs `Unknown` kind),
-        // so the visitor stays purely structural. A non-string `"type"` cannot be
-        // a leaf discriminant and is malformed — a clear error here rather than a
-        // misparse-as-Dict that fails deep with a misleading message.
         if let Some(tag) = buffered.get("type") {
             if tag.is_string() {
                 let object = serde_json::Value::Object(buffered.into_iter().collect());
@@ -128,13 +84,9 @@ impl<'de, N: TreeNode> Visitor<'de> for NodeVisitor<N> {
 
 /// One input *leaf* expected by a model, tagged by the kind of payload it is.
 ///
-/// **Tolerant kind tag.** A `type` in `MODEL_LEAF_TYPES` deserializes into the
-/// strict variant (a malformed payload of a *recognized* kind still hard-errors).
-/// An unrecognized `type` becomes [`Unknown`](ModelLeaf::Unknown), retained
-/// verbatim for round-trip — a newer peer's new modality parses and relays
-/// without loss, and surfaces only at *resolve*: a model input of an unknown
-/// kind is always an [`UnsupportedKind`](crate::v1::ErrorCode) error (an old core
-/// has no apply path for it), named by its placement.
+/// A recognized `type` parses strictly. Any other `type` becomes
+/// [`Unknown`](ModelLeaf::Unknown), kept verbatim for round-trip; a model input of an unknown
+/// kind fails at resolve with `UnsupportedKind`, named by its placement.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(
     clippy::large_enum_variant,
@@ -146,20 +98,13 @@ pub enum ModelLeaf {
     State(State),
     Text(Text),
     Custom(Custom),
-    /// A model input kind this core does not define. Carries the raw object
-    /// verbatim (it already embeds `type`) so it re-emits byte-faithfully.
+    /// A model input kind this core does not define.
     Unknown {
         kind: String,
         raw: serde_json::Value,
     },
 }
 
-// The fragile, internally-tagged + flatten-aware serde codec for this leaf —
-// shared verbatim with `ObsLeaf` — lives in one place. The macro emits the
-// `MODEL_LEAF_TYPES` vocabulary, the owned/borrowed known-variant mirrors, the
-// `From` lift, and the hand-written Serialize/Deserialize impls. Unlike
-// `ObsLeaf`, the `Unknown` arm does not lift `role` (`lift_role: no`): a model
-// input of an unknown kind is always an `UnsupportedKind` error at resolve.
 leaf_codec! {
     leaf: ModelLeaf,
     known: ModelLeafKnown,
@@ -178,15 +123,9 @@ leaf_codec! {
 /// A node in the recursive model input tree: a leaf, a `Dict` of named
 /// sub-nodes, or a `Tuple` of positional sub-nodes.
 ///
-/// The container type written here **is** the payload container the model's
-/// `predict` receives. Discrimination on the wire is **structural** (the shared
-/// `TreeNode` parser): a JSON array is a `Tuple`, a JSON object whose `"type"`
-/// is a string is a `Leaf` — a recognized leaf kind
-/// (`image`/`state`/`text`/`custom`) parses fully, an unrecognized one becomes a
-/// tolerant [`ModelLeaf::Unknown`] (rejected only at resolve, and only if a model
-/// input references it) — and any other JSON object is a `Dict`. `"type"` is
-/// therefore a **reserved key**: a `Dict` child may not be named `"type"` (a
-/// non-string `"type"` is a clear error).
+/// The container written here is the payload container `predict` receives. On the wire a
+/// JSON array is a `Tuple`, an object whose `"type"` is a string is a `Leaf`, and any other
+/// object is a `Dict`; `"type"` is therefore reserved and may not name a `Dict` child.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(
     clippy::large_enum_variant,
@@ -199,9 +138,6 @@ pub enum InputNode {
     Tuple(Vec<InputNode>),
 }
 
-/// Wires [`InputNode`] into the shared structural [`TreeNode`] parser; the
-/// only model-specific knowledge is its leaf type, leaf vocabulary, and the
-/// `KIND` word used in the unknown-kind error.
 impl TreeNode for InputNode {
     type Leaf = ModelLeaf;
 
@@ -234,28 +170,25 @@ impl<'de> Deserialize<'de> for InputNode {
 
 /// Declarative description of a model's input payload tree and action output.
 ///
-/// `input` is the recursive [`InputNode`] tree the model's `predict` receives;
-/// `output` is the model's action layout. A model role may be reused across
-/// leaves (one env camera can feed several input slots) — there is no
-/// duplicate-key check, since placement (tree position) is unique by structure.
+/// A role may be reused across leaves (one env camera can feed several inputs); placement in
+/// the tree keeps each leaf unique.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSpec {
     pub input: InputNode,
     pub output: Action,
     /// Named projections (lossy fits) the model accepts, by name
-    /// (`drop_action`). A resolve applies one only when it is listed, and
-    /// records it on the adapter.
+    /// (`drop_action`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
-    /// How the model paces its actions (see [`Timing`]). Omitted when unset.
+    /// How the model paces its actions (see [`Timing`]).
     #[serde(default, skip_serializing_if = "Timing::is_unset")]
     pub timing: Timing,
 }
 
-/// How a model paces its actions. `execution` is how many actions of each
-/// predicted chunk a run executes before re-planning when neither the run
-/// nor the model's `load()` names one (`1..=1024`); omitted when unset.
+/// How a model paces its actions. `execution` is how many actions of each predicted chunk
+/// a run executes before re-planning when neither the run nor the model's `load()` names one
+/// (`1..=1024`); omitted when unset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Timing {
@@ -287,15 +220,10 @@ impl Timing {
 
 /// The camera resolutions this model's image inputs assert, in document order.
 ///
-/// One entry per [`Image`] leaf that declares a `render`, as
-/// `(role, (height, width))`; leaves without one contribute nothing, and a role
-/// reused across leaves appears once per leaf. Order is the spec's own document
-/// order — dict keys by their sorted names, tuple entries by position — so two
-/// walks of the same spec always agree entry for entry.
-///
-/// Callers can feed these requests into the environment package's
-/// `renderParams` camera dial before the run. [`resolve`](crate::v1::resolve)
-/// then asserts each one against the camera it actually bound.
+/// One `(role, (height, width))` per [`Image`] leaf that declares a `render`; a reused role
+/// appears once per leaf. Document order is dict keys sorted, tuple entries by position, so two
+/// walks of one spec agree. Feed them to the environment's camera dial before a run;
+/// [`resolve`](crate::v1::resolve) asserts each against the camera it binds.
 pub fn render_requests(spec: &ModelSpec) -> Vec<(String, (u32, u32))> {
     fn walk(node: &InputNode, out: &mut Vec<(String, (u32, u32))>) {
         match node {
@@ -327,9 +255,6 @@ pub fn render_requests(spec: &ModelSpec) -> Vec<(String, (u32, u32))> {
 mod tests {
     use super::{InputNode, ModelLeaf, ModelSpec, render_requests};
 
-    /// Parse, serialize, re-parse, and assert structural stability (the
-    /// serializer fills leaf defaults, so we compare the parsed structs rather
-    /// than byte-comparing to the minimal input).
     fn round_trip(json: &str) -> InputNode {
         let node: InputNode = serde_json::from_str(json).expect("parse node");
         let serialized = serde_json::to_string(&node).expect("serialize node");
@@ -397,9 +322,6 @@ mod tests {
 
     #[test]
     fn unknown_type_parses_into_a_tolerant_unknown_leaf() {
-        // Tolerant reader: an unrecognized string `type` becomes an `Unknown`
-        // leaf retaining the raw object, not a parse error. A model input of an
-        // unknown kind is rejected at *resolve* (UnsupportedKind), never here.
         let node: InputNode =
             serde_json::from_str(r#"{"type": "audio", "role": "x", "sample_rate": 16000}"#)
                 .expect("unknown kind parses");
@@ -407,7 +329,6 @@ mod tests {
             panic!("expected an unknown leaf, got {node:?}")
         };
         assert_eq!(kind, "audio");
-        // Round-trips verbatim.
         let json = serde_json::to_string(&node).unwrap();
         assert!(
             json.contains(r#""type":"audio""#) && json.contains("sample_rate"),
@@ -415,7 +336,6 @@ mod tests {
         );
     }
 
-    /// A `ModelSpec` whose input tree is the given JSON, with a throwaway action.
     fn spec(input: &str) -> ModelSpec {
         let json = format!(
             r#"{{"input": {input}, "output": {{"components": [{{"role": "action/gripper", "dim": 1}}]}}}}"#
@@ -425,10 +345,6 @@ mod tests {
 
     #[test]
     fn render_requests_walks_the_tree_in_document_order() {
-        // Dict keys walk sorted, tuple entries walk by position, and the two
-        // nest: the order is the spec's own document order. `wrist` declares no render, so it
-        // contributes nothing; `zzz` sorts after `obs` despite being written
-        // first.
         let requests = render_requests(&spec(
             r#"{
                 "zzz": {"type": "image", "role": "image/secondary", "render": [240, 320]},
@@ -448,7 +364,6 @@ mod tests {
                 ("image/secondary".to_owned(), (240, 320)),
             ]
         );
-        // Stable: the same spec always walks the same way.
         assert_eq!(
             requests,
             render_requests(&spec(
@@ -472,8 +387,6 @@ mod tests {
 
     #[test]
     fn non_string_type_is_a_reserved_key_error() {
-        // `type` is a reserved Dict key: a non-string `type` cannot be a leaf
-        // discriminant, so it is rejected rather than misparsed as a Dict child.
         let err = serde_json::from_str::<InputNode>(r#"{"type": 7}"#)
             .expect_err("non-string type rejected");
         assert!(

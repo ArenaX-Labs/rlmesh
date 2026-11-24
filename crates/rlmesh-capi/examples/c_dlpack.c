@@ -1,4 +1,3 @@
-/* ABI 5: versioned CPU DLPack and success-only ownership transfer. */
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,7 +80,7 @@ static void imports_copy_and_consume_once(void) {
     }
     RLMeshTensor* imported = NULL;
     assert(rlmesh_tensor_from_dlpack(&producer->managed, &imported) == RLMESH_OK);
-    assert(deletes == 1); /* producer, its data and its shape are already gone */
+    assert(deletes == 1);
     if (layout == 1) {
       const unsigned char reversed[] = {3, 2, 1, 6, 5, 4};
       assert_bytes(imported, reversed, sizeof(reversed));
@@ -132,7 +131,6 @@ static void failed_imports_keep_producer(void) {
     RLMeshTensor* imported = (RLMeshTensor*)producer;
     assert(rlmesh_tensor_from_dlpack(&producer->managed, &imported) == RLMESH_ERR_INVALID_ARGUMENT);
     assert(imported == NULL && deletes == 0);
-    /* Failed calls can repeat without consuming the producer. */
     assert(rlmesh_tensor_from_dlpack(&producer->managed, &imported) == RLMESH_ERR_INVALID_ARGUMENT);
     assert(deletes == 0);
     producer->managed.deleter(&producer->managed);
@@ -141,7 +139,7 @@ static void failed_imports_keep_producer(void) {
   int deletes = 0;
   Producer* producer = producer_new(&deletes);
   assert(rlmesh_tensor_from_dlpack(&producer->managed, NULL) == RLMESH_ERR_INVALID_ARGUMENT);
-  assert(deletes == 0); /* invalid out must be checked before consuming obj */
+  assert(deletes == 0);
   RLMeshTensor* imported = NULL;
   assert(rlmesh_tensor_from_dlpack(&producer->managed, &imported) == RLMESH_OK);
   assert(deletes == 1);
@@ -184,15 +182,15 @@ static void exports_own_storage(void) {
   assert(copy->flags == DLPACK_FLAG_BITMASK_IS_COPIED);
   assert(copy->dl_tensor.data != buffer);
   ((unsigned char*)copy->dl_tensor.data)[0] = 42;
-  assert_bytes(tensor, data, sizeof(data)); /* writable copy is isolated */
+  assert_bytes(tensor, data, sizeof(data));
   rlmesh_tensor_free(tensor);
   memset(data, 0, sizeof(data));
   assert(memcmp(shared->dl_tensor.data, "\1\2\3\4", 4) == 0);
-  assert(shared->dl_tensor.shape[1] == 2); /* metadata also survives */
+  assert(shared->dl_tensor.shape[1] == 2);
   assert(((unsigned char*)copy->dl_tensor.data)[0] == 42);
-  shared->deleter(shared); /* release exactly once through its own deleter */
+  shared->deleter(shared);
   RLMeshTensor* imported = NULL;
-  assert(rlmesh_tensor_from_dlpack(copy, &imported) == RLMESH_OK); /* consumes copy */
+  assert(rlmesh_tensor_from_dlpack(copy, &imported) == RLMESH_OK);
   const unsigned char expected[] = {42, 2, 3, 4};
   assert_bytes(imported, expected, sizeof(expected));
   rlmesh_tensor_free(imported);

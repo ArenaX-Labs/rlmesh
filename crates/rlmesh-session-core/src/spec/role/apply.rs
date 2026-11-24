@@ -1,15 +1,11 @@
-//! Running a Gym binding's plans: one env camera frame to a model image,
-//! a model state's sources to its vector, and a model action to the env's.
+//! Running a Gym binding's plans: one env camera frame to a model image, a model state's
+//! sources to its vector, and a model action to the env's.
 //!
-//! The host walks its observation tree and hands each plan the values it
-//! reads; this module does the conversions. State and action values are
-//! carried in `f32` between steps, each step computed in `f64` (rotations,
-//! affines) or `f32` (range maps) as v1 adapters always have, so a binding
-//! is byte-identical to the engine it replaced. Casts are NumPy `astype`
-//! with integer targets refusing non-integral or out-of-range values.
+//! Values are carried in `f32` between steps, each step computed in `f64` (rotations, affines)
+//! or `f32` (range maps). Casts are NumPy `astype`, with integer targets refusing
+//! non-integral or out-of-range values.
 //!
-//! The one codec step, the JPEG round trip, is the host's
-//! ([`Codec`]): this crate carries no image codec.
+//! The JPEG round trip is the host's ([`Codec`]): this crate carries no image codec.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -41,9 +37,6 @@ pub(crate) fn err(message: impl Into<String>) -> ApplyError {
     ApplyError(message.into())
 }
 
-/// `values` cast to `target` as NumPy's `astype`, except that an integer
-/// target refuses a non-integral or out-of-range value rather than
-/// truncating or wrapping it.
 pub(crate) fn cast(values: &[f64], shape: Vec<u32>, target: DType) -> Result<Tensor, ApplyError> {
     if !target.is_float() {
         let (low, high) = int_range(target);
@@ -70,7 +63,6 @@ pub(crate) fn cast(values: &[f64], shape: Vec<u32>, target: DType) -> Result<Ten
     })
 }
 
-/// An integer dtype's exact range (`u64`'s signed-representable half).
 fn int_range(dtype: DType) -> (f64, f64) {
     match dtype {
         DType::Bool => (0.0, 1.0),
@@ -86,7 +78,6 @@ fn int_range(dtype: DType) -> (f64, f64) {
     }
 }
 
-/// `values` as an `f32` vector, one element each.
 pub(crate) fn f32_tensor(shape: Vec<u32>, values: &[f32]) -> Tensor {
     Tensor {
         dtype: DType::F32,

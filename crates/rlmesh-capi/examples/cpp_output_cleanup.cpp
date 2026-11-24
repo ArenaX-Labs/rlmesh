@@ -1,4 +1,3 @@
-// Fail shared_ptr allocation after C returned two owned Value outputs.
 #define rlmesh_binding_reset test_binding_reset
 #define rlmesh_binding_step test_binding_step
 #define rlmesh_binding_free test_binding_free

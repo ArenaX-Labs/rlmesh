@@ -11,7 +11,7 @@ def test_episode_success_reads_gymnasium_info_keys() -> None:
 
     assert episode_success({"is_success": True}) is True
     assert episode_success({"success": False}) is False
-    assert episode_success({}) is None  # no signal -> unknown, never inferred
+    assert episode_success({}) is None
 
 
 def test_success_rate_counts_only_the_env_reported_outcome() -> None:
@@ -19,9 +19,7 @@ def test_success_rate_counts_only_the_env_reported_outcome() -> None:
     from rlmesh._models._eval import EpisodeResult
 
     episodes = (
-        # terminated but the env reported NOT a success
         EpisodeResult(0, None, 5, 1.0, terminated=True, truncated=False, success=False),
-        # truncated but the env reported success
         EpisodeResult(1, None, 5, 1.0, terminated=False, truncated=True, success=True),
     )
     assert RunResult(episodes).success_rate == pytest.approx(0.5)
@@ -34,7 +32,6 @@ def test_success_rate_counts_a_missing_signal_as_a_failure() -> None:
     reported = EpisodeResult(
         0, None, 5, 1.0, terminated=True, truncated=False, success=True
     )
-    # terminated, but the env never said whether that was a success
     unknown = EpisodeResult(1, None, 5, 1.0, terminated=True, truncated=False)
     assert RunResult((reported, unknown)).success_rate == pytest.approx(0.5)
     assert RunResult((unknown,)).success_rate is None
@@ -43,9 +40,6 @@ def test_success_rate_counts_a_missing_signal_as_a_failure() -> None:
 
 
 def test_local_contract_builds_from_a_bare_env_without_forwarding_lookups() -> None:
-    # A local env (no env_contract) yields a contract synthesized from its spaces
-    # and metadata; num_envs must NOT be probed via __getattr__, so a gymnasium
-    # wrapper does not emit its deprecated attribute-forwarding warning.
     from rlmesh._models._connect import local_contract
 
     forwarded: list[str] = []
@@ -57,7 +51,7 @@ def test_local_contract_builds_from_a_bare_env_without_forwarding_lookups() -> N
         def __init__(self) -> None:
             self.metadata = {"k": "v"}
 
-        def __getattr__(self, name: str) -> object:  # gymnasium warns in here
+        def __getattr__(self, name: str) -> object:
             forwarded.append(name)
             raise AttributeError(name)
 
@@ -68,12 +62,10 @@ def test_local_contract_builds_from_a_bare_env_without_forwarding_lookups() -> N
     assert contract.num_envs == 1
     assert contract.observation_space == "obs"
     assert contract.metadata == {"k": "v"}
-    assert forwarded == []  # nothing reached the forwarding __getattr__
+    assert forwarded == []
 
 
 def test_shutdown_calls_shutdown_plainly_with_no_reason() -> None:
-    # shutdown_env calls the owner-level shutdown() with no arguments; a remote
-    # owner's shutdown(reason=...) keeps its own default.
     from rlmesh._models._connect import shutdown_env
 
     calls: list[tuple[object, ...]] = []
@@ -176,8 +168,6 @@ def test_bound_predict_context_carries_stable_episode_identity() -> None:
         while not binding.done:
             binding.step()
 
-    # One id for the whole episode, the seed riding on every step, and the
-    # re-plan ordinal counting up.
     assert len(seen) == 3
     ids = {context["episode_id"] for context in seen}
     assert len(ids) == 1 and ids != {""}
@@ -219,8 +209,6 @@ def test_spec_none_rejects_tagged_env_with_no_adapter_hint() -> None:
 
 
 def test_random_sample_samples_action_space_and_skips_adapter_on_tagged_env() -> None:
-    # A RANDOM_SAMPLE baseline adapts nothing, so it drives a tagged env without
-    # raising AdapterResolutionError, stepping it under actions of its space.
     import rlmesh
     import rlmesh.adapters as adapt
 
@@ -263,12 +251,6 @@ def test_invalid_model_spec_mentions_no_adapter_sentinel() -> None:
         resolve_adapter(object(), cast(Any, SimpleNamespace(metadata={})), False)
 
 
-# rlmesh moves every obs tensor leaf onto the model's `device` before predict,
-# so authors delete `.to(self.device)`. The dual of the env-side action
-# placement (test_env_framework.py); real-GPU round-trips are the integration
-# suite's, these are fast wiring checks.
-
-
 def test_to_device_places_torch_obs_leaves_and_passes_non_tensors() -> None:
     torch = pytest.importorskip("torch")
     import rlmesh.torch
@@ -283,13 +265,10 @@ def test_to_device_places_torch_obs_leaves_and_passes_non_tensors() -> None:
     m.device = "cpu"
     placed = cast("dict[str, Any]", m._to_device({"img": torch.zeros(2), "n": 5}))
     assert placed["img"].device.type == "cpu"
-    assert placed["n"] == 5  # non-tensor leaf passes through unchanged
+    assert placed["n"] == 5
 
 
 def test_to_device_reads_device_dynamically(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The served worker is built (in __init__) BEFORE load() runs on the served
-    # path, so the corners must read `device` at predict time, not snapshot it.
-    # Mirror that: set `device` AFTER construction and confirm it is honored.
     pytest.importorskip("torch")
     import rlmesh.torch
 
@@ -304,9 +283,9 @@ def test_to_device_reads_device_dynamically(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(
         type(m)._bridge, "to_device", lambda value, device: seen.append(device) or value
     )
-    m.device = "cuda:7"  # set late, as load() would
+    m.device = "cuda:7"
     m._to_device({"x": 1})
-    assert seen == ["cuda:7"]  # read the post-construction value, not a snapshot
+    assert seen == ["cuda:7"]
 
 
 def test_device_is_noop_and_guard_rejects_for_numpy_model() -> None:
@@ -322,10 +301,8 @@ def test_device_is_noop_and_guard_rejects_for_numpy_model() -> None:
 
     m = M()
     m.device = "cpu"
-    # numpy has no device: placement is a silent no-op (same array back)...
     arr = np.zeros(3)
     assert cast("dict[str, Any]", m._to_device({"x": arr}))["x"] is arr
-    # ...but the guard rejects the meaningless device at a drive entry point.
     with pytest.raises(ValueError, match="device"):
         m._require_device_support()
 
@@ -342,27 +319,21 @@ def test_device_guard_allows_a_torch_model() -> None:
 
     m = M()
     m.device = "cpu"
-    m._require_device_support()  # does not raise
+    m._require_device_support()
 
 
 def test_model_construction_builds_no_native_worker() -> None:
-    """The native worker (and its runtime) is lazy: a Model that is only ever
-    driven locally must not pay for serve-path machinery at construction."""
     import rlmesh
 
     model = rlmesh.Model(lambda obs: 0)
     assert model._worker is None
     assert model._install_worker() is model._worker
-    assert model._install_worker() is model._worker  # cached, built once
+    assert model._install_worker() is model._worker
 
 
 def test_allow_fusion_reaches_the_native_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``Model.allow_fusion`` is the author's cross-route fusion permission: it
-    must reach the native ``PyModel`` worker as the ``allow_fusion`` kwarg --
-    True by default, False when the author opts a shape-pinned batched forward
-    out (grouped predicts then serve per route)."""
     import rlmesh
     import rlmesh._load_native as load_native_mod
 
@@ -391,9 +362,6 @@ def test_allow_fusion_reaches_the_native_worker(
 def test_native_chunk_is_read_after_load_not_at_class_definition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """K usually comes off the loaded checkpoint, so the worker must read
-    ``native_chunk`` AFTER ``load()`` ran -- two instances whose ``load()`` picked
-    different K build two workers declaring different K."""
     import rlmesh
     import rlmesh._load_native as load_native_mod
 
@@ -423,16 +391,12 @@ def test_native_chunk_is_read_after_load_not_at_class_definition(
     FromCheckpoint(50)._install_worker()
     assert captured == [30, 50]
 
-    # Undeclared stays undeclared: the elastic contract reaches the worker as None.
     captured.clear()
     rlmesh.Model(lambda obs: 0)._install_worker()
     assert captured == [None]
 
 
 def test_native_chunk_without_a_chunk_corner_is_rejected_at_construction() -> None:
-    """A class-level K on a model with no chunk corner could never be honored --
-    and nothing downstream would ever check it -- so it fails where the corners
-    are known."""
     import rlmesh
 
     class NoCorner(rlmesh.Model):
@@ -471,8 +435,6 @@ def test_native_chunk_below_one_is_rejected_at_worker_build(
 def test_a_duck_typed_policy_declares_its_own_native_chunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``Model(policy)`` reads K off the coerced policy, so a wrapped object
-    declares exactly the way a subclass does."""
     import rlmesh
     import rlmesh._load_native as load_native_mod
 

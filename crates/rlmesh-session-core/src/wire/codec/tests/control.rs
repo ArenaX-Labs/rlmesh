@@ -1,5 +1,3 @@
-//! Control messages, device views and bindings.
-
 use super::*;
 use crate::wire::codec::convert::{clock_mode_from_pb, mode_from_pb};
 use crate::wire::codec::ctl::status_from_pb;
@@ -42,7 +40,6 @@ fn a_device_view_decodes_on_its_own_path() {
     let bytes = encode_view(&view);
     g.add("view", &bytes);
     assert_eq!(decode_view(&bytes).expect("decode"), view);
-    // A robot on the datagram path: its routes ride the view as field 18.
     let routed = DeviceView {
         datagram: Some(DatagramRoutes {
             probe: 9,
@@ -69,11 +66,8 @@ fn a_device_view_decodes_on_its_own_path() {
         bytes[..],
         "the routes only follow the view"
     );
-    // The view is its own message, not a state a board could misread.
     assert!(decode_state(&bytes).is_err());
 
-    // A ctl reply to a robot that takes its view carries it in field 9
-    // and no state; the view path reads any reply, skipping `state`.
     let reply = ViewReply {
         result: Err(CtlError::new(CtlStatus::LeaseBusy, "held")),
         view: Some(view),
@@ -108,7 +102,6 @@ fn binding_records_round_trip() {
     let binding = &state.bindings[0];
     let decoded = decode_binding(g.add("binding", &encode_binding(binding))).expect("decodes");
     assert_eq!(&decoded, binding);
-    // A binding that declares how many actions its chunks carry.
     let mut chunked = binding.clone();
     chunked.grids[0].chunk = 4;
     let decoded =
@@ -240,7 +233,6 @@ fn control_messages_round_trip() {
         Command::Rearm {
             robot: pid("eye-1"),
         },
-        // A hand-back: field 3, absent from a plain release.
         Command::ReleaseLease {
             channels: vec![ChannelId(4)],
             token: LeaseToken(2),
@@ -265,7 +257,6 @@ fn control_messages_round_trip() {
         decode_state(g.add("state", &encode_state(&state))).expect("decode"),
         state
     );
-    // A lease end that handed the part back: LeaseEnd field 4.
     let mut handed = snapshot();
     handed.ended[0].reason.code = ReasonCode::Released;
     handed.ended[0].by = None;
@@ -398,8 +389,6 @@ fn control_messages_round_trip() {
         );
     }
 
-    // The first of each without a wire revision: the bytes a build from
-    // before the field sends.
     for wire_revision in [0, WIRE_REVISION] {
         let hello = HandshakeRequest {
             participant: pid("op"),
@@ -453,7 +442,6 @@ fn control_messages_round_trip() {
         .expect("decode"),
         offering
     );
-    // An offer this side can't read is no offer.
     let mut unreadable =
         pb::HandshakeAccept::decode(&encode_handshake_accept(&offering)[..]).expect("decode");
     unreadable.datagram = Some(pb::DatagramOffer {
@@ -723,8 +711,6 @@ fn unknown_enum_values_are_refused_but_unknown_statuses_are_refusals() {
     assert!(status_from_pb(pb::CtlStatus::Ok as i32, String::new()).is_ok());
 }
 
-/// The view as prost and the conversions decoded it before
-/// [`decode_view_into`]: what that must agree with.
 fn prost_view(buf: &[u8]) -> Result<DeviceView, WireError> {
     use crate::wire::codec::convert::{collect, fingerprint_from_pb};
     use crate::wire::codec::part::part_from_pb;
@@ -777,11 +763,8 @@ fn prost_view(buf: &[u8]) -> Result<DeviceView, WireError> {
     })
 }
 
-/// eye-1's view in the demo's session (two boards, a camera, a tracker, a
-/// desk, a driver and a viewer), as the host rendered it with its part.
 const DEMO_VIEW: &str = "0a056579652d311002181e20032803320208013887d4d99941400150015ab8010a046579657312066a6f696e7473180120022a0f0a03706f73100b1a010222037261643100000000000049403a0565766572794a0370616e4a0474696c7452037261776a5f0a08706f736974696f6e120f0a03706f73100b1a010222037261641a290a03706f731210333333333333e3bf9a9999999999d9bf1a10333333333333e33f9a9999999999d93f2204686f6c642880c2d72f308084af5f380158016880e1eb1778028201056579652d3199010000000000004940622b08011206647269766572180220022880e59a7730cbbbd1d20538a79b838a4242082e9bfc4af9a6ddc048196a250a0664726976657210e6c2c79f041884a30d210000000000407f4028a4c3133094d1ffe2406a230a056579652d3110af9fb90718c6ea0c210000000000407f40289bf71230aab29fe54072110a082e9bfc4af9a6ddc010011880dac4097a1108011001180339000000000000244048018201070a0363616d10038201080a046465736b100582010a0a0664726976657210068201090a056579652d3110018201090a056579652d32100282010b0a07747261636b6572100482010a0a067669657765721007";
 
-/// [`DEMO_VIEW`]'s bytes.
 fn demo_view() -> Vec<u8> {
     (0..DEMO_VIEW.len())
         .step_by(2)
@@ -789,7 +772,6 @@ fn demo_view() -> Vec<u8> {
         .collect()
 }
 
-/// A view as a board in a full session holds it.
 fn full_view() -> DeviceView {
     let state = snapshot();
     DeviceView {
@@ -872,7 +854,6 @@ fn a_view_decoded_in_place_is_the_one_prost_decodes_whatever_the_bytes() {
     decode_view_into(&bytes, &mut held, true).expect("decodes");
     assert_eq!(held, view);
     assert_eq!(prost_view(&bytes).expect("decodes"), view);
-    // Without its parts, the rest is the same.
     decode_view_into(&bytes, &mut held, false).expect("decodes");
     assert!(held.parts.is_empty());
     assert_eq!(
@@ -882,8 +863,6 @@ fn a_view_decoded_in_place_is_the_one_prost_decodes_whatever_the_bytes() {
         },
         view
     );
-    // Whatever a byte becomes, a view decoded in place is never one prost
-    // reads otherwise.
     let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
     let mut next = || {
         seed ^= seed << 13;
@@ -928,23 +907,18 @@ fn a_hostile_or_oversized_view_is_refused_unread() {
         bytes.append(&mut tail);
         bytes
     };
-    // Two thousand empty members: 4 KB on the wire, refused before one is
-    // made.
     assert_eq!(
         refused(&robot([0x82, 0x01, 0x00].repeat(2000))),
         Some(Unread::TooLarge("members"))
     );
-    // Thirty-three parts.
     assert_eq!(
         refused(&robot([0x5a, 0x00].repeat(33))),
         Some(Unread::TooLarge("parts"))
     );
-    // A length prefix of four gigabytes.
     assert_eq!(
         refused(&robot(vec![0x82, 0x01, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x0a])),
         Some(Unread::Malformed("length past the end"))
     );
-    // An id longer than any, and one that isn't one.
     let mut long = vec![0x82, 0x01, 0x84, 0x01, 0x0a, 0x81, 0x01];
     long.extend([b'a'; 129]);
     assert_eq!(
@@ -955,14 +929,12 @@ fn a_hostile_or_oversized_view_is_refused_unread() {
         refused(&robot(vec![0x82, 0x01, 0x03, 0x0a, 0x01, b'/'])),
         Some(Unread::Malformed("participant id"))
     );
-    // A closing reason past what a board keeps.
     let mut view = full_view();
     view.closing.as_mut().expect("closing").detail = "x".repeat(MAX_VIEW_TEXT + 1);
     assert_eq!(
         refused(&encode_view(&view)),
         Some(Unread::TooLarge("reason"))
     );
-    // No robot, an unknown mode: malformed.
     assert_eq!(refused(&[0x10, 0x01]), Some(Unread::Malformed("robot")));
     assert_eq!(
         refused(&robot(vec![0x20, 0x63])),
@@ -995,7 +967,6 @@ fn a_view_decoded_into_the_one_held_keeps_its_buffers() {
     decode_view_into(&two, &mut held, false).expect("decodes");
     assert_eq!(held.leases[0].expires_ns, next.leases[0].expires_ns);
     assert_eq!(buffers(&held), before, "every buffer reused");
-    // A view refused part way leaves the next one decodable all the same.
     assert!(decode_view_into(&two[..two.len() - 3], &mut held, false).is_err());
     decode_view_into(&one, &mut held, false).expect("decodes");
     assert_eq!(
@@ -1007,8 +978,6 @@ fn a_view_decoded_into_the_one_held_keeps_its_buffers() {
     );
 }
 
-/// eye-1's view in the demo's session decodes in place to what prost made
-/// of it, its part skipped or not, and lean.
 #[test]
 fn the_demo_view_decodes_in_place_as_prost_did() {
     let full = demo_view();
@@ -1036,7 +1005,6 @@ fn the_demo_view_decodes_in_place_as_prost_did() {
 #[test]
 fn every_message_a_board_decodes_is_refused_unread_when_it_holds_too_much() {
     let why = |r: Result<(), WireError>| r.err().and_then(|e| e.why_unread());
-    // Two thousand empty keys or leases: refused before a vector is made.
     let keys = [0x32, 0x00].repeat(2000);
     let mut view = DeviceView::empty(pid("x"));
     assert_eq!(
@@ -1052,7 +1020,6 @@ fn every_message_a_board_decodes_is_refused_unread_when_it_holds_too_much() {
         why(decode_key_delivery(&[0x0a, 0x00].repeat(2000)).map(drop)),
         Some(Unread::Malformed("too short"))
     );
-    // More keys than any delivery holds, each a valid size.
     let mut many = Vec::new();
     for _ in 0..1025 {
         many.extend([0x0a, 34, 0x42, 32]);
@@ -1073,19 +1040,15 @@ fn every_message_a_board_decodes_is_refused_unread_when_it_holds_too_much() {
         .map(drop)),
         Some(Unread::TooLarge("key delivery"))
     );
-    // Two views in one reply, a view past its caps.
     let two = [0x4a, 0x00, 0x4a, 0x00].to_vec();
     assert_eq!(
         why(decode_view_reply_into(&two, &mut view, false).map(drop)),
         Some(Unread::Malformed("two views"))
     );
-    // A chunk computed from two thousand empty inputs.
     assert_eq!(
         why(decode_chunk(Bytes::from([0x32, 0x00].repeat(2000))).map(drop)),
         Some(Unread::TooLarge("action chunk"))
     );
-    // A stranger's unsealed answer: only its status and message are read,
-    // and anything else in it is never decoded.
     let mut stranger = vec![0x08, 17, 0x12, 0x03, b'n', b'o', b'!'];
     stranger.extend([0x4a, 0x00].repeat(1000));
     let hint = decode_unauthenticated(&stranger).expect("a hint");
@@ -1258,7 +1221,6 @@ fn enums_decode_every_value_and_zero_epochs_and_norms_mean_none() {
             Some(class)
         );
     }
-    // A part's traffic class and a delta limit's norm.
     let mut state = snapshot();
     let arm = state
         .parts
@@ -1281,7 +1243,6 @@ fn enums_decode_every_value_and_zero_epochs_and_norms_mean_none() {
         state.parts[arm].priority = priority;
         assert_eq!(decode_state(&encode_state(&state)).expect("decode"), state);
     }
-    // An unchecked request carries epoch 0.
     let request = Request {
         from: pid("op"),
         epoch: None,
@@ -1401,7 +1362,6 @@ fn a_view_at_every_cap_a_board_holds_decodes() {
         decode_view(&encode_view(&view)).expect("at every cap"),
         view
     );
-    // Every mode and lease class a board reads.
     let mut view = base;
     for mode in [
         Mode::Disarmed,

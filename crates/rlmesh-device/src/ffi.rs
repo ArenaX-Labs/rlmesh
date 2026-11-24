@@ -1,6 +1,4 @@
-//! The C ABI (`include/rlmesh_device.h`).
-
-#![allow(unsafe_code)] // C callbacks and out-pointers.
+#![allow(unsafe_code)]
 
 use core::ffi::c_int;
 
@@ -21,8 +19,8 @@ pub const RLMESH_DEVICE_ERR_ARG: c_int = -1;
 pub const RLMESH_DEVICE_ERR_RNG: c_int = -2;
 /// The crypto failed where it can't (a bug, or memory corrupted).
 pub const RLMESH_DEVICE_ERR_CRYPTO: c_int = -3;
-/// A config field is invalid: an address without its key, a name that
-/// isn't one, a map the host would refuse, a zero heartbeat period.
+/// A config field is invalid: an address without its key, a name that isn't one, a map the
+/// host would refuse, a zero heartbeat period.
 pub const RLMESH_DEVICE_ERR_CONFIG: c_int = -4;
 /// Not running yet, or the stream's key hasn't arrived: nothing was sent.
 pub const RLMESH_DEVICE_ERR_NOT_READY: c_int = -5;
@@ -33,8 +31,7 @@ pub const RLMESH_DEVICE_ERR_NO_MEMORY: c_int = -7;
 
 /// The platform's microsecond clock.
 pub type NowUs = unsafe extern "C" fn() -> u64;
-/// The platform's cryptographic randomness: fills `len` bytes, 0 on
-/// success.
+/// The platform's cryptographic randomness: fills `len` bytes, 0 on success.
 pub type Random = unsafe extern "C" fn(buf: *mut u8, len: usize) -> c_int;
 
 /// The crate's version: major, minor and patch, a byte each.
@@ -122,7 +119,6 @@ mod tests {
 
     static DRAWN: AtomicU64 = AtomicU64::new(0);
 
-    /// A different byte stream on every call: no two keys alike.
     unsafe extern "C" fn random(buf: *mut u8, len: usize) -> c_int {
         for i in 0..len {
             let n = DRAWN

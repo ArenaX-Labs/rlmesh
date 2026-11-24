@@ -54,7 +54,7 @@ def robot_loop(
         robot.publish("wrist/ft", force=[0.0, 0.0, 9.8], torque=[0.0, 0.0, 0.0])
         target = robot.command("arm")
         if isinstance(target, np.ndarray):
-            q = target.astype(np.float64)  # a real robot sends it to the drives here
+            q = target.astype(np.float64)
             applied.append(float(q[0]))
         rate.sleep()
 
@@ -77,8 +77,6 @@ def main() -> None:
             arm[:, 0] = 0.2 * np.sin(2 * np.pi * 0.5 * t)
             return {"arm": arm}
 
-        # Each builder returns the plain dict the policy map takes: a dict
-        # written by hand works the same.
         with realtime.Policy(
             hz=20,
             inputs={
@@ -100,7 +98,7 @@ def main() -> None:
         edge = robot.edge_stats("arm")
         robot.close()
 
-    assert stats["clock"] == "wall"  # a robot of this loop's own
+    assert stats["clock"] == "wall"
     print(
         f"policy: {stats['completions']} replans, {stats['chunks_sent']} chunks, skipped {stats['skipped']}"
     )

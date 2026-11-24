@@ -6,8 +6,7 @@ verbatim. Two arms are ``EEF_POS`` under ``part=LEFT_ARM`` and under
 ``part=RIGHT_ARM``. The constants below are conventions, not a registry: a part
 outside them resolves the same way and draws no advisory.
 
-Values are defined once, in the ``rlmesh-adapters`` crate (``roles/parts.rs``);
-this module re-exports them through the native bindings.
+Values are defined in the ``rlmesh-adapters`` crate and re-exported here.
 """
 
 from ..._rlmesh import (

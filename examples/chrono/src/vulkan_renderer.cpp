@@ -1,9 +1,3 @@
-// An offscreen Vulkan rasterizer for the env's camera: no window, no surface,
-// no display server. It draws the same scene as the CPU ray tracer (scene.h)
-// from instanced sphere and cylinder meshes over a floor plane, with a shadow
-// map standing in for the ray tracer's shadow rays, then copies the frame back
-// to host memory. It runs on any Vulkan 1.1 device with a graphics queue: a
-// GPU, or Mesa's lavapipe on the CPU (VK_DRIVER_FILES=.../lvp_icd.*.json).
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
@@ -18,8 +12,6 @@
 #include <vector>
 
 #include "renderer.h"
-
-// SPIR-V compiled from ../shaders at build time (glslangValidator --vn).
 #include "scene_frag.spv.h"
 #include "scene_vert.spv.h"
 #include "shadow_vert.spv.h"
@@ -39,8 +31,6 @@ void check(VkResult result, const char* what) {
   }
 }
 
-// Runs `undo` when a scope exits by an exception, unless dismissed first: it
-// releases whatever a half-finished construction already created.
 template <typename F>
 class OnFailure {
  public:
@@ -57,7 +47,6 @@ class OnFailure {
   bool armed_ = true;
 };
 
-// Column-major, as GLSL reads it.
 struct Mat4 {
   std::array<float, 16> m{};
   float& operator()(int row, int col) { return m[col * 4 + row]; }
@@ -76,7 +65,6 @@ Mat4 operator*(const Mat4& a, const Mat4& b) {
   return out;
 }
 
-// A model matrix from three (scaled) basis columns and a translation.
 Mat4 basis(const Vec3& x, const Vec3& y, const Vec3& z, const Vec3& origin) {
   Mat4 out;
   const Vec3 cols[4] = {x, y, z, origin};
@@ -134,7 +122,6 @@ void store(float* out, const Vec3& v, double w) {
   out[3] = static_cast<float>(w);
 }
 
-// The shaders' layouts (shaders/common.glsl): std140 Frame, std430 Instance.
 struct FrameUniforms {
   float view_proj[16];
   float light_view_proj[16];
@@ -171,7 +158,7 @@ struct Mesh {
 constexpr VkFormat kColorFormat = VK_FORMAT_R8G8B8A8_UNORM;
 constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
 constexpr uint32_t kShadowSize = 2048;
-constexpr double kFloorExtent = 200;  // metres: the floor reaches the horizon
+constexpr double kFloorExtent = 200;
 
 class VulkanRenderer : public Renderer {
  public:
@@ -205,7 +192,6 @@ class VulkanRenderer : public Renderer {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
   };
-  // An offscreen color + depth target and its readback buffer, per frame size.
   struct Target {
     Image color, depth;
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
@@ -413,7 +399,6 @@ void VulkanRenderer::create_render_passes() {
   info.pDependencies = shadow_deps.data();
   check(vkCreateRenderPass(device_, &info, nullptr, &shadow_pass_), "vkCreateRenderPass(shadow)");
 
-  // Main pass: color + depth, the color left ready to copy back to the host.
   std::array<VkAttachmentDescription, 2> attachments{};
   attachments[0].format = kColorFormat;
   attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -471,7 +456,6 @@ void VulkanRenderer::create_shadow_map() {
   check(vkCreateFramebuffer(device_, &fb, nullptr, &shadow_framebuffer_),
         "vkCreateFramebuffer(shadow)");
 
-  // Hard shadows, like the ray tracer's shadow rays: one nearest compare.
   VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
   sampler.magFilter = VK_FILTER_NEAREST;
   sampler.minFilter = VK_FILTER_NEAREST;
@@ -646,7 +630,7 @@ void VulkanRenderer::create_pipelines() {
       for (VkShaderModule m : all) vkDestroyShaderModule(device, m, nullptr);
     }
   } modules{device_, {}};
-  modules.all.reserve(5);  // so a push_back cannot throw and drop a module
+  modules.all.reserve(5);
   auto load = [&](const uint32_t* code, size_t bytes) {
     modules.all.push_back(shader(code, bytes));
     return modules.all.back();
@@ -661,7 +645,6 @@ void VulkanRenderer::create_pipelines() {
       pipeline(scene_vert, scene_frag, main_pass_, true, true, VK_COMPARE_OP_LESS, false);
   shadow_pipeline_ =
       pipeline(shadow_vert, VK_NULL_HANDLE, shadow_pass_, true, true, VK_COMPARE_OP_LESS, true);
-  // The sky fills whatever the scene left at the far plane.
   sky_pipeline_ =
       pipeline(sky_vert, sky_frag, main_pass_, false, false, VK_COMPARE_OP_LESS_OR_EQUAL, false);
 }
@@ -686,7 +669,6 @@ void VulkanRenderer::create_meshes() {
   };
   constexpr uint32_t kSlices = 48, kStacks = 24;
 
-  // A unit sphere at the origin.
   begin(sphere_);
   for (uint32_t i = 0; i <= kStacks; ++i) {
     const double phi = M_PI * i / kStacks;
@@ -701,7 +683,6 @@ void VulkanRenderer::create_meshes() {
   grid(kStacks, kSlices);
   end(sphere_);
 
-  // An open unit cylinder along +y, from y = 0 to 1 (capsules add end spheres).
   begin(cylinder_);
   for (uint32_t i = 0; i <= 1; ++i) {
     for (uint32_t j = 0; j <= kSlices; ++j) {
@@ -714,7 +695,6 @@ void VulkanRenderer::create_meshes() {
   grid(1, kSlices);
   end(cylinder_);
 
-  // The floor: a unit quad in the xz plane.
   begin(floor_);
   for (const float z : {-1.0f, 1.0f}) {
     for (const float x : {-1.0f, 1.0f}) vertices.push_back({{x, 0, z}, {0, 1, 0}});
@@ -758,8 +738,6 @@ VulkanRenderer::Buffer VulkanRenderer::make_buffer(VkDeviceSize size, VkBufferUs
   const VkMemoryPropertyFlags coherent = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
   const VkMemoryPropertyFlags cached = VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
   VkMemoryPropertyFlags flags = 0;
-  // Reading back from uncached (write-combined) memory is slow, so frames
-  // land in cached memory when the device has it.
   const uint32_t type =
       readback
           ? memory_type(req.memoryTypeBits,
@@ -852,8 +830,8 @@ VulkanRenderer::Target& VulkanRenderer::target(int width, int height) {
   fb.height = h;
   fb.layers = 1;
   check(vkCreateFramebuffer(device_, &fb, nullptr, &t.framebuffer), "vkCreateFramebuffer");
-  t.readback = make_buffer(static_cast<VkDeviceSize>(w) * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                           /*readback=*/true);
+  t.readback =
+      make_buffer(static_cast<VkDeviceSize>(w) * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
   Target& cached = targets_.emplace(key, t).first->second;
   release.dismiss();
   return cached;
@@ -872,12 +850,9 @@ std::vector<uint8_t> VulkanRenderer::render(const scene::Scene& scene, const sce
   if (width <= 0 || height <= 0) throw std::runtime_error("empty frame size");
   Target& frame_target = target(width, height);
 
-  // Instances: the floor, then spheres (including capsule ends), then the
-  // capsules' cylinders.
   std::vector<Instance> list;
-  list.push_back(
-      instance(basis(Vec3(kFloorExtent, 0, 0), Vec3(0, 1, 0), Vec3(0, 0, kFloorExtent), Vec3()),
-               Vec3(), /*floor=*/1));
+  list.push_back(instance(
+      basis(Vec3(kFloorExtent, 0, 0), Vec3(0, 1, 0), Vec3(0, 0, kFloorExtent), Vec3()), Vec3(), 1));
   const uint32_t first_sphere = static_cast<uint32_t>(list.size());
   auto add_sphere = [&](const Vec3& center, double r, const Vec3& color) {
     list.push_back(instance(basis(Vec3(r, 0, 0), Vec3(0, r, 0), Vec3(0, 0, r), center), color));
@@ -916,8 +891,6 @@ std::vector<uint8_t> VulkanRenderer::render(const scene::Scene& scene, const sce
   }
   std::memcpy(instances_.mapped, list.data(), list.size() * sizeof(Instance));
 
-  // The light's orthographic view covers every caster and the floor patch
-  // its shadow falls on.
   const Vec3 light = scene::normalize(scene::light_direction());
   Vec3 lo(1e9, 1e9, 1e9), hi(-1e9, -1e9, -1e9);
   double pad = 0;
@@ -958,7 +931,6 @@ std::vector<uint8_t> VulkanRenderer::render(const scene::Scene& scene, const sce
   store(uniforms.up, up, half);
   std::memcpy(uniforms_.mapped, &uniforms, sizeof(uniforms));
 
-  // Record: shadow pass, main pass, copy back.
   check(vkResetCommandBuffer(commands_, 0), "vkResetCommandBuffer");
   VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1044,7 +1016,6 @@ std::vector<uint8_t> VulkanRenderer::render(const scene::Scene& scene, const sce
     check(vkInvalidateMappedMemoryRanges(device_, 1, &range), "vkInvalidateMappedMemoryRanges");
   }
 
-  // RGBA8 -> the env's RGB8.
   const size_t pixels = static_cast<size_t>(width) * height;
   std::vector<uint8_t> rgb(pixels * 3);
   const auto* rgba = static_cast<const uint8_t*>(frame_target.readback.mapped);
@@ -1058,10 +1029,6 @@ std::vector<uint8_t> VulkanRenderer::render(const scene::Scene& scene, const sce
 
 void VulkanRenderer::destroy() {
   if (device_ != VK_NULL_HANDLE) {
-    // Children before what they were created from: framebuffers before their
-    // images and render passes, pipelines before their layout, the
-    // descriptor pool (and its set) before the set layout, everything before
-    // the device, and the device before the instance.
     vkDeviceWaitIdle(device_);
     for (auto& [size, t] : targets_) destroy_target(t);
     targets_.clear();

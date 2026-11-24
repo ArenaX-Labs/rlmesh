@@ -1,7 +1,5 @@
 //! Building `rlmesh.toml`'s variants with `docker buildx build`, each pushed
 //! under its own tag in the version's repository with its rendered label.
-//! (Pushing by digest alone would be tidier, but buildx's default `docker`
-//! driver cannot.)
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -14,14 +12,12 @@ use crate::manifest::VariantBuild;
 
 /// Builds one variant and pushes it by digest; a test hands in a fake.
 pub(crate) trait Builder {
-    /// Run the build `args` (from [`build_args`]) and return the pushed
-    /// image's digest.
     fn build(&self, args: &[String]) -> Result<String>;
 }
 
-/// The `docker buildx build` arguments for `variant`, pushed as `name` with
-/// OCI media types (so the index can carry its annotation), writing its
-/// metadata to `metadata`.
+/// The `docker buildx build` arguments for `variant`, pushed as `name` with OCI
+/// media types (so the index can carry its annotation), writing its metadata to
+/// `metadata`.
 pub(crate) fn build_args(variant: &VariantBuild, name: &str, metadata: &Path) -> Vec<String> {
     let label = serde_json::to_string(&Value::Object(variant.label.clone()))
         .expect("a JSON map serializes");

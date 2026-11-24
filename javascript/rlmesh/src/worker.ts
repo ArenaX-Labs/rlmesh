@@ -1,14 +1,9 @@
-// One instance per traffic class (control | state | bulk), each in its own dedicated Worker with its own
-// reconnecting WebSocket and its own wasm instance. Classes never share a Worker: sharing a thread between
-// the 1 kHz state socket and the camera socket brings the head-of-line hiccup back.
+// One instance per traffic class (control | state | bulk), each in its own Worker with its own reconnecting
+// WebSocket and wasm instance. Classes never share a Worker: sharing a thread between the 1 kHz state socket
+// and the camera socket brings the head-of-line hiccup back.
 //
-// Runs as a browser module Worker or a Node worker_threads Worker (the `default` export condition).
-// A wasm trap poisons this instance: every entry point is guarded, and a `WebAssembly.RuntimeError`
-// stops the Worker's sockets and timers and posts `fatal`, so the supervisor on the main thread respawns
-// it from the compiled Module.
-//
-// Every binary frame is a real v2 message behind a one-byte tag (wasm/src/frame.rs); the
-// wasm encodes and decodes them with the session wire (rlmesh-session-core). Text frames are the gateway's JSON.
+// A wasm trap poisons the instance: every entry point is guarded, and a `WebAssembly.RuntimeError` stops
+// the sockets and timers and posts `fatal`, so the supervisor respawns it from the compiled Module.
 
 import { initSync, Streams, ControlSession, build_info, web_time_now_ms, std_instant_now_panics } from '../pkg/rlmesh.js';
 import { ReconnectingSocket } from './socket.js';
@@ -46,12 +41,10 @@ const post = (m: Msg, t: Transferable[] = []) => {
   if (!poisoned || m.op === 'fatal' || m.op === 'console') port.post(m, t);
 };
 
-// Surface wasm panic messages (console_error_panic_hook writes to console.error) and warnings.
 for (const lvl of ['error', 'warn'] as const) {
   const orig = console[lvl].bind(console);
   console[lvl] = (...a: unknown[]) => {
     const msg = a.map(String).join(' ').slice(0, 2000);
-    // console_error_panic_hook: "panicked at file:line:col:\n<message>\n\nStack: ..."
     if (lvl === 'error' && msg.includes('panicked')) lastPanic = msg.split('\n').slice(0, 2).join(' ').trim();
     post({ op: 'console', cls, lvl, msg });
     orig(...a);
@@ -73,7 +66,6 @@ function fatal(e: unknown) {
   port.post({ op: 'fatal', cls, reason });
 }
 
-/** Run `fn`; a wasm trap poisons the instance, other errors are reported and survived. */
 function guard<A extends unknown[]>(fn: (...a: A) => void): (...a: A) => void {
   return (...a: A) => {
     if (poisoned) return;
@@ -91,7 +83,6 @@ function every(ms: number, fn: () => void) {
   cleanups.push(() => clearInterval(h));
 }
 
-/** A wasm call that may refuse: a `JsError` is returned as a message, a trap still poisons. */
 function attempt<T>(fn: () => T): { ok: true; value: T } | { ok: false; error: string } {
   try {
     return { ok: true, value: fn() };
@@ -147,23 +138,18 @@ function parse(t: string): Msg | null {
   }
 }
 
-// ------------------------------------------------------------------ state / bulk
-
 interface Sub {
   idx: number;
   path: string;
   deliver: boolean;
   kind: string;
-  // SharedArrayBuffer seqlock slot for `latest()` (state class, when memory can be shared)
   lock?: Int32Array;
   meta?: Float64Array;
   vals?: Float64Array;
   slot?: number;
-  /** The last edge mode seen (applied streams). */
   edge?: string;
 }
 
-/** A subscription asked for before the declarations arrived. */
 interface Wanted {
   path: string;
   deliver: boolean;
@@ -208,8 +194,6 @@ function runData(init: InitMsg) {
   };
 
   const onFrame = async (s: Sub, t0: number) => {
-    // Copy the payload out of wasm memory into a pooled buffer, decode the image here (off the main
-    // thread), then transfer both.
     const len = streams.data_len();
     let buf = pool.pop();
     if (!buf || buf.byteLength < len) buf = new ArrayBuffer(Math.max(len, 256 * 1024));
@@ -257,7 +241,6 @@ function runData(init: InitMsg) {
     }
     const applied = streams.applied_mode();
     if (applied && applied !== s.edge) {
-      // The edge mode, on every change (status.edge), whether or not anyone subscribed.
       s.edge = applied;
       post({ op: 'edge', path: s.path, mode: applied, token: streams.applied_token() });
     }
@@ -290,7 +273,7 @@ function runData(init: InitMsg) {
     const u8 = new Uint8Array(data);
     let n: number;
     try {
-      n = streams.push(u8, t); // JS -> wasm copy, wire decode, the session's receive rules
+      n = streams.push(u8, t);
     } catch (e) {
       if (e instanceof WebAssembly.RuntimeError) throw e;
       return; // a malformed frame is an Err from the core, not a panic: drop it
@@ -354,8 +337,6 @@ function runData(init: InitMsg) {
   };
 }
 
-// ------------------------------------------------------------------ control
-
 interface Drive {
   vals: Float64Array;
   hz: number;
@@ -363,7 +344,6 @@ interface Drive {
   rate: { t: number; n: number; hz: number };
 }
 
-/** The request id the wasm stamped into a `REQUEST` frame (tag, then a u32 LE). */
 const requestId = (b: Uint8Array) => (b[1]! | (b[2]! << 8) | (b[3]! << 16) | (b[4]! << 24)) >>> 0;
 
 function runControl(init: InitMsg) {
@@ -375,7 +355,7 @@ function runControl(init: InitMsg) {
   let lastStatePost = 0;
   let hbCount = 0;
   const drives = new Map<string, Drive>();
-  const verbs = new Map<number, number>(); // wasm request id -> main-thread rid
+  const verbs = new Map<number, number>();
   let sent = 0, refused = 0, lastRefusal = '', hbSent = 0, gated = 0;
   let lastClockPost = 0;
   let hbTimer: ReturnType<typeof setTimeout> | undefined;
@@ -389,10 +369,8 @@ function runControl(init: InitMsg) {
     drives.delete(path);
   };
 
-  // Disconnect: the gateway drops this connection's participant, so every lease it held ends at the
-  // host (the edge holds, then goes safe). Locally the clients are dropped so the old tokens can never be
-  // used again, and the main thread reports the leases as revoked. Nothing is resumed on reconnect: the
-  // new connection is a new participant.
+  // Disconnect: the gateway drops this connection's participant, so its leases end at the host. Locally the
+  // clients are dropped so old tokens are never reused; nothing resumes on reconnect (a new participant).
   const dropLeases = (reason: string) => {
     for (const path of cs.lease_paths()) {
       const token = cs.forget(path);
@@ -434,7 +412,6 @@ function runControl(init: InitMsg) {
   };
 
   const onOpen = () => {
-    // The hello attaches this connection's participant; the answer names it.
     sock.send(JSON.stringify({ type: 'hello', priority: init.priority ?? 'model' }));
   };
 
@@ -608,8 +585,6 @@ function runControl(init: InitMsg) {
   };
 }
 
-// ------------------------------------------------------------------ bootstrap
-
 let handler: ((m: Msg) => void) | null = null;
 port.listen(guard((m: Msg) => {
   if (m.op === 'init') {
@@ -637,7 +612,6 @@ port.listen(guard((m: Msg) => {
     return;
   }
   if (m.op === 'trap') {
-    // Debug: a real Rust panic in this wasm instance (panic=abort -> `unreachable` trap).
     std_instant_now_panics();
     return;
   }

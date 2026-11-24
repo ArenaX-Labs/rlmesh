@@ -1,4 +1,3 @@
-// The C++ host declaration goes through ABI 5 server options.
 #include <cassert>
 #include <rlmesh.hpp>
 int main() {

@@ -1,5 +1,3 @@
-//! Command groups: one leased member dispatches, and which parts get an edge.
-
 use super::*;
 
 #[test]
@@ -20,7 +18,6 @@ fn a_group_dispatches_only_its_leased_member_and_hands_over() {
     assert_eq!(tick.applied.len(), 2);
     assert_eq!(tick.applied[1].applied, Applied::absent(EdgeMode::Idle));
 
-    // The model switches to the Cartesian member in one revision.
     let tcp = f.grant_with("policy", "arm/tcp", &["arm"], MS);
     f.publish(MS);
     f.accept(

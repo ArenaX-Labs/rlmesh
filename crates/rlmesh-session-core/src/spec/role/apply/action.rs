@@ -1,5 +1,3 @@
-//! A model action to the env's action vector.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -24,9 +22,6 @@ impl ActionPlan {
         let mut pieces: Vec<f32> = Vec::new();
         for segment in &plan.segments {
             if let Some((width, value)) = segment.fill {
-                // Opaque (role-less) actuator, or an optional role no model output
-                // drives: emit the constant for each dim and read nothing from the
-                // model.
                 pieces.extend(core::iter::repeat_n(value as f32, width as usize));
                 continue;
             }
@@ -40,10 +35,7 @@ impl ActionPlan {
             if let (Some(src_range), Some(dst_range)) = (segment.src_range, segment.dst_range) {
                 map_range(&mut piece, src_range, dst_range)?;
             }
-            // Corrections after the declared formats are bridged: model-side first
-            // (the model's own output convention, in the model's own axis order),
-            // then the scatter onto the env's axes, then env-side, each one affine
-            // (scale, offset, invert, threshold); the binary snap follows, at 0.
+            // Order: model-side affine, scatter onto the env's axes, env-side affine, then the binary snap.
             apply_affine(
                 &mut piece,
                 segment.model_scale,
@@ -81,8 +73,6 @@ impl ActionPlan {
             if segment.binarize {
                 for entry in &mut piece {
                     // TODO: verify intended binary-gripper behavior at raw 0.0.
-                    // No threshold on either side keeps a raw 0.0 neutral; a
-                    // thresholded boundary opens.
                     if segment.threshold.is_some()
                         || segment.model_threshold.is_some()
                         || *entry != 0.0
@@ -91,8 +81,6 @@ impl ActionPlan {
                     }
                 }
             }
-            // Per-actuator safety clamp, last: bound this component to its declared
-            // range so a mixed-range action keeps a clamp the one global clip cannot.
             if let Some((low, high)) = segment.clip {
                 let (low, high) = (low as f32, high as f32);
                 for entry in &mut piece {
@@ -120,12 +108,10 @@ mod tests {
 
     use crate::spec::role::plan::{ActionPlan, ActionSegment};
 
-    /// The model action as the host hands it over.
     fn numbers(values: &[f64]) -> Vec<f32> {
         values.iter().map(|&v| v as f32).collect()
     }
 
-    /// A single-component plan carrying the env-side scalar corrections.
     fn one_segment(
         scale: Option<f64>,
         invert: bool,
@@ -172,8 +158,6 @@ mod tests {
 
     #[test]
     fn per_actuator_clip_clamps_to_its_range() {
-        // Two 1-D segments with different clamp ranges: a single global clip
-        // could not bound both correctly. The per-actuator clip does.
         let plan = ActionPlan {
             segments: vec![
                 ActionSegment {
@@ -246,14 +230,12 @@ mod tests {
         };
         let out = ActionPlan::apply(&plan, &numbers(&[5.0, 5.0])).unwrap();
         let got = out;
-        assert_eq!(got[0], 1.0); // clamped to a's range
-        assert!((got[1] - (f64::consts::FRAC_PI_2 as f32)).abs() < 1e-6); // clamped to b's wider range
+        assert_eq!(got[0], 1.0);
+        assert!((got[1] - (f64::consts::FRAC_PI_2 as f32)).abs() < 1e-6);
     }
 
     #[test]
     fn opaque_fill_segment_emits_the_constant() {
-        // model[0]=0.7 maps to the roled segment; the role-less segment emits
-        // (3 × 0.5) reading nothing from the model.
         let plan = ActionPlan {
             segments: vec![
                 ActionSegment {
@@ -331,8 +313,6 @@ mod tests {
 
     #[test]
     fn model_side_corrections_apply_before_env_side() {
-        // model: scale 2 then invert; env: invert. Order is model(scale, invert)
-        // then env(invert): 0.3 -> *2 = 0.6 -> -0.6 (model) -> 0.6 (env).
         let plan = ActionPlan {
             segments: vec![ActionSegment {
                 role: Some("action/gripper".to_owned()),
@@ -392,7 +372,6 @@ mod tests {
 
     #[test]
     fn threshold_recenters_the_binary_split() {
-        // Subtract 0.5, then snap: values above 0.5 open, below close.
         let plan = one_segment(None, false, Some(0.5), true);
         assert_eq!(apply_one(&plan, 0.8), 1.0);
         assert_eq!(apply_one(&plan, 0.3), -1.0);
@@ -400,8 +379,6 @@ mod tests {
 
     #[test]
     fn binary_boundary_opens_rather_than_emitting_zero() {
-        // model output == threshold lands exactly on 0.0 after the subtract; it
-        // must snap to a definite side (open), never an undefined 0.0.
         let plan = one_segment(None, false, Some(0.5), true);
         assert_eq!(apply_one(&plan, 0.5), 1.0);
     }
@@ -415,8 +392,6 @@ mod tests {
 
     #[test]
     fn a_scatter_permutes_the_model_piece_between_the_two_sides_corrections() {
-        // Model [a, b, c] with model scale 2; env axis e reads model[scatter[e]],
-        // then env offset 1.
         let mut plan = one_segment(None, false, None, false);
         plan.in_dim = 3;
         let segment = &mut plan.segments[0];
@@ -438,7 +413,6 @@ mod tests {
 
     #[test]
     fn corrections_apply_in_scale_invert_threshold_order() {
-        // 0.3 -> *2 = 0.6 -> invert = -0.6 -> -0.5 = -1.1 (no binarize).
         let plan = one_segment(Some(2.0), true, Some(0.5), false);
         assert!((apply_one(&plan, 0.3) - (-1.1)).abs() < 1e-6);
     }

@@ -1,5 +1,3 @@
-//! Produce one model text input value, honoring the plan's fill.
-
 use std::collections::BTreeMap;
 
 use super::lookup::resolve_in_obs;
@@ -7,11 +5,6 @@ use super::value::Value;
 use crate::error::ApplyError;
 use crate::plans::TextPlan;
 
-/// Produce one model text input value, honoring the plan's fill.
-///
-/// Returns `Ok(None)` when there is no env source value and no fill — the
-/// caller then omits the placement entirely (a text input the env never
-/// provided and the model declared no fill).
 pub(super) fn apply_text(
     plan: &TextPlan,
     raw_obs: &BTreeMap<String, Value>,
@@ -22,9 +15,6 @@ pub(super) fn apply_text(
     {
         value = Some(match found {
             Value::Text(text) => text.clone(),
-            // A text input is only ever paired with an env Text feature, so a
-            // non-string here means the env violated its declared space. Surface
-            // it rather than silently stringifying a stray number.
             other => {
                 return Err(ApplyError::new(format!(
                     "text input '{}' resolved to '{}', but {other:?} is not a string",

@@ -1,16 +1,5 @@
-//! The tolerant-reader relay-fidelity CI gate.
-//!
-//! Any hop that parses + re-serializes a spec must retain every unknown kind and
-//! field. The contract is **semantic** round-trip, not byte-identical: the field
-//! capture map is a `BTreeMap` and re-emits in sorted key order, but every
-//! unknown key/value survives, and an `Unknown` leaf's raw object is byte-faithful
-//! (it already embeds `type`). These tests pin that, plus the malformed floor that
-//! stays a hard error in every mode.
-
 use rlmesh_adapters::v1::{EnvTags, ModelSpec};
 
-/// The READ-door canonicalizer: parse (tolerant) then re-serialize. Models one
-/// relay hop. A real hop never runs `reject_unknowns` (that is the publish gate).
 fn normalize_env(json: &str) -> String {
     let tags: EnvTags = serde_json::from_str(json).expect("env tags parse (tolerant)");
     serde_json::to_string(&tags).expect("env tags serialize")
@@ -23,8 +12,6 @@ fn normalize_model(json: &str) -> String {
 
 #[test]
 fn normalize_is_idempotent_and_preserves_unknown_kind_and_field() {
-    // Carries an unknown *kind* (audio, with its own sub-field), an unknown
-    // *field* on a recognized kind (bare `normalize`), and an `x-` field.
     let input = r#"{
         "observation": {
             "cam": {"type": "image", "role": "image/primary", "normalize": false, "x-team": 7},
@@ -34,10 +21,8 @@ fn normalize_is_idempotent_and_preserves_unknown_kind_and_field() {
     }"#;
 
     let once = normalize_env(input);
-    // Gate 1: idempotence.
     assert_eq!(normalize_env(&once), once, "normalize is not idempotent");
 
-    // Gate 2: every injected unknown kind and field survives verbatim.
     for needle in [
         r#""type":"audio""#,
         "sample_rate",
@@ -71,9 +56,6 @@ fn model_spec_preserves_unknown_kind_and_field() {
 
 #[test]
 fn type_never_leaks_into_a_capture_map() {
-    // Gate 3 (partial): a known leaf's `type` is consumed by the leaf branch
-    // and must not reappear as a duplicate or a captured field. Re-serializing
-    // emits exactly one `type` for the leaf.
     let once = normalize_env(
         r#"{"observation":{"cam":{"type":"image","role":"image/primary","x-z":1}},
             "action":{"components":[]}}"#,
@@ -83,9 +65,6 @@ fn type_never_leaks_into_a_capture_map() {
 
 #[test]
 fn malformed_of_known_kind_still_hard_errors_in_every_mode() {
-    // Gate 3: tolerance never weakens the malformed floor for a *recognized*
-    // kind. A reversed range, a zero dim, and a non-string `type` all hard-error
-    // at parse, tolerant mode included.
     assert!(
         serde_json::from_str::<EnvTags>(
             r#"{"observation":{"s":{"type":"state","role":"r","range":[1.0,0.0]}},
@@ -113,9 +92,6 @@ fn malformed_of_known_kind_still_hard_errors_in_every_mode() {
 
 #[test]
 fn inner_leaves_carry_an_unknown_field_through_a_hop() {
-    // A split `Field` and a state `ConcatPart` are growable too: an older reader
-    // must parse a newer writer's key and relay it, and a part carrying a
-    // captured key can no longer collapse to the bare-role-string sugar.
     let env = normalize_env(
         r#"{"observation": {"s": {"type": "split",
                 "fields": [{"role": "r", "dim": 7, "frame": "world"}]}},
@@ -138,9 +114,6 @@ fn inner_leaves_carry_an_unknown_field_through_a_hop() {
 
 #[test]
 fn reversed_range_still_hard_errors() {
-    // Leniency is field-*name* only: a recognized field's value guard stays a
-    // hard error at the wire boundary, on the inner leaves and alongside a
-    // captured unknown key.
     for json in [
         r#"{"observation": {"s": {"type": "split",
                 "fields": [{"role": "r", "dim": 1, "range": [1.0, 0.0]}]}},

@@ -1,11 +1,9 @@
 """Route spec (de)serialization through the authoritative Rust codec.
 
-The Rust ``rlmesh-adapters`` crate is the single source of truth for the v1
-spec format. Rather than re-validate in Python (a second codec that can drift),
-every spec dict is passed through :func:`normalize_spec`, which calls the Rust
-serde codec to validate (frozen vocabulary, unknown-field rejection, finiteness,
-dim bounds, the stack ceiling) and re-serialize the canonical form. Python keeps
-only the dataclass<->dict *shape* mapping; the format authority lives in Rust.
+The Rust ``rlmesh-adapters`` crate is the source of truth for the v1 spec
+format. Every spec dict is passed through :func:`normalize_spec`, which
+validates it with the Rust serde codec and re-serializes the canonical form.
+Python keeps only the dataclass<->dict shape mapping.
 """
 
 from __future__ import annotations
@@ -58,11 +56,9 @@ def one_or_many(value: Any) -> Any:
 def _arm_to_wire(arm: Any) -> str:
     """One custom-encoding arm as a wire string.
 
-    An entrypoint arm travels as its ``module:callable`` reference. An in-process
-    callable has no wire form, so it travels as the non-portable
-    :data:`~rlmesh.adapters.specs.custom_encoding.LOCAL_ARM` marker: the spec is
-    still showable and validatable, but the arm cannot be reconstructed or run
-    from the wire.
+    An entrypoint arm travels as its ``module:callable`` reference; an
+    in-process callable as the
+    :data:`~rlmesh.adapters.specs.custom_encoding.LOCAL_ARM` marker.
     """
     return arm if isinstance(arm, str) else LOCAL_ARM
 
@@ -72,10 +68,8 @@ def encoding_to_wire(encoding: Any) -> Any:
 
     A native encoding (a ``str``, or a ``tuple`` accept-set of strings) passes
     through (the tuple as a list); ``None`` stays ``None``. A
-    :class:`~rlmesh.adapters.CustomEncoding` becomes a ``{base, ...}`` object the
-    Rust codec accepts: a describe/validate *schema*, not executable code. Entrypoint arms travel as their ``module:callable``
-    strings; in-process callable arms travel as the ``<local>`` marker (see
-    :func:`_arm_to_wire`).
+    :class:`~rlmesh.adapters.CustomEncoding` becomes a ``{base, ...}`` schema
+    object (see :func:`_arm_to_wire` for the arms).
     """
     if encoding is None or isinstance(encoding, str):
         return encoding
@@ -132,12 +126,9 @@ def check_accept_set(what: str, role: str | None, encoding: Any) -> None:
 def hashable_node(node: Any) -> Any:
     """Return a hashable, key-order-canonical rendering of a spec tree node.
 
-    A Dict node is a plain ``dict``: unhashable, and the dataclass-generated
-    ``__eq__`` compares it order-insensitively, so a hash must not depend on
-    key order. Render it as a key-sorted tuple of ``(key, child)`` pairs;
-    tuples recurse; frozen leaf dataclasses already hash by value. Applies no
-    serialization, so a spec carrying a Custom input (an in-process callable)
-    stays hashable.
+    A Dict node is rendered as a key-sorted tuple of ``(key, child)`` pairs,
+    since ``__eq__`` ignores key order. Applies no serialization, so a Custom
+    input stays hashable.
     """
     if isinstance(node, Mapping):
         items = cast("Mapping[str, Any]", node)

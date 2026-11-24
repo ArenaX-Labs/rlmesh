@@ -1,5 +1,3 @@
-//! Resolved instructions for one model text input.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 

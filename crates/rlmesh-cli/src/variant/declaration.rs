@@ -13,8 +13,8 @@ pub const MAX_PRIORITY: i64 = 1000;
 /// The most GPUs a profile may request.
 pub const MAX_PROFILE_GPUS: u64 = 8;
 
-/// The package keys an index annotation may set for the whole version
-/// (besides `schemaVersion` and `rev`); the annotation wins over a child.
+/// The package keys an index annotation may set for the whole version (besides
+/// `schemaVersion` and `rev`); the annotation wins over a child.
 pub const VERSION_PACKAGE_KEYS: [&str; 6] = [
     "name",
     "description",
@@ -56,8 +56,8 @@ pub struct Profile {
     pub gpu_count: Option<u64>,
     /// Overrides the variant's, key by key.
     pub requires: Requires,
-    /// Whether the profile sets `resources`, which the platform validates
-    /// against its own ceilings.
+    /// Whether the profile sets `resources`, which the platform validates against
+    /// its own ceilings.
     pub resources: bool,
 }
 
@@ -83,9 +83,9 @@ impl ComputeBlocks {
     }
 
     /// The rows the parser derives from this image, given its variant key
-    /// (declared, or synthesized by [`synth_key`](super::synth_key)): one per profile, named
-    /// `<variant.key>-<profile.key>` (the bare profile key without a variant
-    /// block), else the one key.
+    /// (declared, or synthesized by [`synth_key`](super::synth_key)): one per
+    /// profile, named `<variant.key>-<profile.key>` (the bare profile key without a
+    /// variant block), else the one key.
     pub fn row_keys(&self, base: &str) -> Vec<String> {
         if self.profiles.is_empty() {
             return vec![base.to_owned()];
@@ -101,9 +101,7 @@ impl ComputeBlocks {
 }
 
 /// Parse the `variant` and `profiles` blocks out of a package label object,
-/// reporting invalid declarations in the returned report. Whatever parsed cleanly is
-/// kept, so one bad field does not
-/// hide the rest.
+/// reporting invalid declarations in the returned report.
 pub fn parse_compute_blocks(package: &Map<String, Value>) -> (ComputeBlocks, CheckReport) {
     let mut report = CheckReport::default();
     let mut blocks = ComputeBlocks::default();
@@ -193,7 +191,6 @@ fn parse_variant(raw: &Map<String, Value>, report: &mut CheckReport) -> Variant 
             )),
         }
     }
-    // A declared stack must agree with the declared vendor when both are set.
     if let (Some(accel), Some(requires)) = (variant.facets.get("accel"), raw.get("requires")) {
         let vendor = requires.get("accel.vendor").and_then(Value::as_str);
         if accel_vendor(accel) != vendor {
@@ -266,7 +263,6 @@ fn parse_profile(index: usize, entry: &Value, report: &mut CheckReport) -> Optio
     Some(profile)
 }
 
-/// A profile needs a valid `key`; without one the entry is dropped.
 fn profile_key(index: usize, raw: &Map<String, Value>, report: &mut CheckReport) -> Option<String> {
     match raw.get("key").and_then(Value::as_str) {
         Some(key) if valid_key(key) => Some(key.to_owned()),
@@ -286,8 +282,6 @@ fn profile_key(index: usize, raw: &Map<String, Value>, report: &mut CheckReport)
     }
 }
 
-/// `envVars` is an object of strings; names should be portable, and the
-/// serve address variable has no effect.
 fn parse_env_vars(scope: &str, vars: &Value, report: &mut CheckReport) -> BTreeMap<String, String> {
     let mut env_vars = BTreeMap::new();
     let Value::Object(vars) = vars else {
@@ -319,7 +313,6 @@ fn parse_env_vars(scope: &str, vars: &Value, report: &mut CheckReport) -> BTreeM
     env_vars
 }
 
-/// `gpu` is an object whose `count` lies in `[0, MAX_PROFILE_GPUS]`.
 fn parse_gpu(scope: &str, gpu: &Value, report: &mut CheckReport) -> Option<u64> {
     let Value::Object(gpu) = gpu else {
         report.failed.push(format!("{scope} gpu is not an object"));
@@ -348,8 +341,7 @@ fn is_env_name(name: &str) -> bool {
 
 /// Check an index annotation's `dev.rlmesh.package` object: it may carry only
 /// the version-level keys ([`VERSION_PACKAGE_KEYS`], plus `schemaVersion` and
-/// `rev`); the parser ignores anything else, which belongs on the child
-/// images. Returns the warnings.
+/// `rev`); the parser ignores anything else, which belongs on the child images.
 pub fn index_annotation_warnings(package: &Map<String, Value>) -> Vec<String> {
     let ignored: Vec<&str> = package
         .keys()

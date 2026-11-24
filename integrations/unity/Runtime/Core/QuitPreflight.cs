@@ -6,8 +6,6 @@ namespace RLMesh.Unity
 {
     public static class QuitPreflight
     {
-        // Process exit is best effort, unlike domain unload. Return to the
-        // ORIGINAL quit request, preserving its exit code and normal save prompts.
         public static bool TryShutdown(TimeSpan timeout, Func<TimeSpan, bool> shutdown,
             Func<IReadOnlyList<string>> pending, Action<string> report)
         {

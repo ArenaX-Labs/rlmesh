@@ -1,12 +1,3 @@
-"""End-to-end live path for rlmesh.adapters.
-
-Serves a tagged env, then runs an adapted ``Model(spec=...)`` against it:
-the adapter is resolved from the env's published tags in the contract,
-the prediction function works in the model's own format, and the env receives
-actions in its format. This exercises tag -> serve -> resolve_from_contract
--> Model(spec=).run() and the on_episode_end chaining, over a real transport.
-"""
-
 from __future__ import annotations
 
 import importlib
@@ -65,8 +56,6 @@ def _model_spec() -> adapt.ModelSpec:
 
 
 class TinyArmEnv:
-    """A 3-step episodic env: camera image + eef state, 7-dim action."""
-
     def __init__(self) -> None:
         import gymnasium as gym
         import numpy as np
@@ -84,7 +73,6 @@ class TinyArmEnv:
         self.action_space = gym.spaces.Box(-1.0, 1.0, (7,), np.float32)
         self._t = 0
         self.last_action: NumpyArray | None = None
-        # Every action the env received, in order (chunk-replay value assertions).
         self.actions: list[NumpyArray] = []
 
     def _obs(self) -> dict[str, Any]:
@@ -144,8 +132,6 @@ def test_adapted_model_runs_against_tagged_server() -> None:
     server.start()
     try:
         with RemoteEnv(server.address) as client:
-            # The tags published via EnvServer(tags=) survive the
-            # round-trip through the contract metadata.
             recovered = adapt.EnvTags.from_metadata(client.env_contract.metadata or {})
         assert recovered == tags
 
@@ -155,8 +141,6 @@ def test_adapted_model_runs_against_tagged_server() -> None:
     finally:
         server.shutdown()
 
-    # The prediction function saw the model's declared payload, and the env
-    # received a transformed 7-dim action; the episode-end hook chained.
     assert seen["payload_keys"] == ["image", "instruction", "state"]
     assert env_obj.last_action is not None
     assert tuple(env_obj.last_action.shape) == (7,)
@@ -164,8 +148,6 @@ def test_adapted_model_runs_against_tagged_server() -> None:
 
 
 class TinyArmFactory(rlmesh.EnvFactory):
-    """EnvFactory whose tags are the env's contract -- make() stamps them on."""
-
     tags = _tags()
 
     def make(self, **kwargs: Any) -> Any:
@@ -186,8 +168,6 @@ def _arm_predict(spec: adapt.ModelSpec, captured: dict[str, Any]) -> Any:
 def test_envfactory_make_stamps_its_tags_on_the_env() -> None:
     pytest.importorskip("numpy")
     env = TinyArmFactory().make()
-    # The tag rides the environment: a locally-made env carries the factory's
-    # contract in its metadata, with no server in the loop.
     assert adapt.EnvTags.from_metadata(getattr(env, "metadata", {}) or {}) == _tags()
 
 
@@ -197,7 +177,6 @@ def test_adapted_model_runs_against_local_tagged_env() -> None:
     env_obj = TinyArmEnv()
     captured: dict[str, Any] = {}
 
-    # A locally tagged env -- no EnvServer, no transport -- resolves the adapter.
     tagged = adapt.tag(env_obj, _tags())
     result = Model(_arm_predict(spec, captured), spec=spec).run(tagged, episodes=1)
 
@@ -205,8 +184,6 @@ def test_adapted_model_runs_against_local_tagged_env() -> None:
     assert captured["keys"] == ["image", "instruction", "state"]
     assert env_obj.last_action is not None
     assert tuple(env_obj.last_action.shape) == (7,)
-    # A spec'd route measures its adapter work (obs assembly + action apply):
-    # the engine's split reaches the run telemetry end to end.
     adapter_rows = [r for r in result.telemetry if r.metric == "predict.adapter"]
     assert adapter_rows and adapter_rows[0].avg > 0.0
 
@@ -218,12 +195,6 @@ def test_adapted_model_runs_against_local_tagged_env() -> None:
 def test_instruction_override_reaches_predict_in_declared_shape(
     container: str, expected: object
 ) -> None:
-    """``run(..., instruction=)`` overrides the text input in its declared shape.
-
-    The env publishes its own instruction ("pick up the cube"); the override must
-    win and land as a bare ``str`` for ``container='str'`` and as ``[instruction]``
-    for ``container='list'`` -- and only for the run that asked.
-    """
     pytest.importorskip("numpy")
 
     spec = adapt.ModelSpec(
@@ -255,9 +226,6 @@ def test_instruction_override_reaches_predict_in_declared_shape(
     assert seen["instruction"] != expected, "the override is scoped to its run"
 
 
-# (framework module, leaf tensor type, zeros constructor) for the cross-framework
-# local-driving test. A torch/jax model driven against a local numpy gym env must
-# encode the env's numpy obs with the *env's* (numpy) bridge, not the model's.
 _FRAMEWORK_LEAF = {
     "numpy": ("numpy", "ndarray"),
     "torch": ("torch", "Tensor"),
@@ -281,14 +249,6 @@ def _fw_zeros(framework: str, dim: int) -> Any:
 
 @pytest.mark.parametrize("framework", list(_FRAMEWORK_LEAF))
 def test_spec_model_drives_local_numpy_env_for_any_framework(framework: str) -> None:
-    """A spec'd model of any framework drives a *local* numpy gym env.
-
-    The env hands the loop raw numpy obs, so the env-side bridge must be numpy
-    (the env's native type) -- not the model's framework bridge, which rejects
-    numpy at the native plan (the cross-framework local-driving bug). ``predict``
-    still receives the model's own framework tensors, and the env still receives
-    a numpy action of the declared shape.
-    """
     pytest.importorskip("numpy")
     mod_name, type_name = _FRAMEWORK_LEAF[framework]
     leaf_type = getattr(pytest.importorskip(mod_name), type_name)
@@ -306,9 +266,7 @@ def test_spec_model_drives_local_numpy_env_for_any_framework(framework: str) -> 
     result = model_cls(predict, spec=spec).run(tagged, episodes=1)
 
     assert result.num_episodes == 1
-    # predict saw the model's own framework tensors (obs decoded into them)...
     assert issubclass(captured["image_type"], leaf_type), captured["image_type"]
-    # ...and the local numpy env got a numpy action of the declared 7-dim shape.
     assert env_obj.last_action is not None
     assert tuple(env_obj.last_action.shape) == (7,)
 
@@ -318,7 +276,6 @@ def test_adapted_model_runs_against_env_factory() -> None:
     spec = _model_spec()
     captured: dict[str, Any] = {}
 
-    # Pass the EnvFactory straight in: run builds + tags + drives it locally.
     result = Model(_arm_predict(spec, captured), spec=spec).run(
         TinyArmFactory(), episodes=1
     )
@@ -354,8 +311,6 @@ def test_resolve_from_contract_describes_the_pairing() -> None:
 
 @contextmanager
 def _served(model: Any, port: int) -> Iterator[str]:
-    """Serve ``model`` on a session at ``port`` in a thread; yield the address
-    reaching it."""
     session = f"127.0.0.1:{port}"
     thread = threading.Thread(
         target=model.serve, args=(session,), kwargs={"name": "model"}
@@ -371,9 +326,6 @@ def _served(model: Any, port: int) -> Iterator[str]:
 def test_served_spec_model_resolves_adapter_at_configure_route(
     session_port: int,
 ) -> None:
-    """A spec'd model served over the wire resolves its adapter from the route's
-    contract (configure_route) and applies transform_obs/transform_action, so
-    ``Model(address).run`` drives an adapted model end-to-end."""
     pytest.importorskip("numpy")
 
     tags = _tags()
@@ -390,9 +342,7 @@ def test_served_spec_model_resolves_adapter_at_configure_route(
     with _served(Model(predict, spec=spec), session_port) as address:
         Model(address).run(adapt.tag(env_obj, tags), episodes=1)
 
-    # transform_obs ran server-side: the policy saw the model's declared payload.
     assert seen["payload_keys"] == ["image", "instruction", "state"]
-    # transform_action ran and round-tripped: the env got its 7-dim action.
     assert env_obj.last_action is not None
     assert tuple(env_obj.last_action.shape) == (7,)
 
@@ -419,8 +369,6 @@ def test_local_stacked_run_reports_held_state_telemetry() -> None:
 
     result = Model(predict, spec=spec).run(tagged, episodes=1)
 
-    # A stacked route holds per-episode frame windows: the engine's held-state
-    # gauges reach the run telemetry end to end.
     rows = {r.metric: r for r in result.telemetry if r.op == "model.predict"}
     assert rows["held.episodes"].avg >= 1.0
     assert rows["held.bytes"].avg > 0.0
@@ -428,13 +376,6 @@ def test_local_stacked_run_reports_held_state_telemetry() -> None:
 
 
 def test_served_frame_stacking_adapter_stacks_per_episode(session_port: int) -> None:
-    """A served frame-stacking (stateful) spec'd model end-to-end.
-
-    The native serving engine episode-keys the frame buffers and stacks
-    server-side, so the policy sees a stacked image with first-frame padding at
-    step 0 and a sliding window after -- the vectorized-stateful relocation the
-    old single-lane rejection forbade.
-    """
     pytest.importorskip("numpy")
 
     tags = _tags()
@@ -463,34 +404,23 @@ def test_served_frame_stacking_adapter_stacks_per_episode(session_port: int) -> 
     import numpy as np
 
     assert len(images) >= 2, "policy was not called for at least two steps"
-    # Each obs carries a leading stack axis of depth 2.
     assert images[0].shape[0] == 2, images[0].shape
-    # Step 0: window is first-frame padded, so both stacked frames are equal.
     np.testing.assert_array_equal(images[0][0], images[0][1])
-    # Step 1: the window slid -- newest frame differs from the retained one...
     assert not np.array_equal(images[1][0], images[1][1])
-    # ...and the retained (older) slot equals step 0's frame (episode continuity).
     np.testing.assert_array_equal(images[1][0], images[0][1])
 
 
 def test_run_env_chunks_a_predict_chunk_model_in_process() -> None:
-    """In-process run(env, execution_horizon=2): a predict_chunk model emits a 2-row
-    chunk and the loop replays it one step per env step, re-planning every 2 steps.
-
-    The runtime-owned chunking story for the local path: predict_chunk is the chunk
-    corner and execution_horizon is a caller (not spec) decision. This model opts into
-    the horizon (an optional second param), so it can also assert the value reaches it.
-    """
     pytest.importorskip("numpy")
     pytest.importorskip("gymnasium")
     import numpy as np
 
     calls = {"predict": 0, "predict_chunk": 0, "horizon": 0}
     single = np.zeros(7, dtype=np.float32)
-    chunk = np.zeros((2, 7), dtype=np.float32)  # leading axis is the chunk axis
+    chunk = np.zeros((2, 7), dtype=np.float32)
 
     class ChunkModel(Model):
-        spec = rlmesh.NO_ADAPTER  # model returns raw 7-dim env actions, no adapter
+        spec = rlmesh.NO_ADAPTER
 
         def predict(self, obs: object) -> Any:
             calls["predict"] += 1
@@ -509,8 +439,6 @@ def test_run_env_chunks_a_predict_chunk_model_in_process() -> None:
     finally:
         server.shutdown()
 
-    # 3-step episode, chunk size 2: predict_chunk fires at steps 0 and 2 only; the
-    # single-step predict is never used. The chosen horizon reaches the model.
     assert calls["predict_chunk"] == 2, calls
     assert calls["predict"] == 0, calls
     assert calls["horizon"] == 2, calls
@@ -518,7 +446,6 @@ def test_run_env_chunks_a_predict_chunk_model_in_process() -> None:
 
 
 def test_run_env_without_predict_chunk_warns_and_runs_unchunked() -> None:
-    """execution_horizon > 1 on a model with no predict_chunk warns and runs per-step."""
     pytest.importorskip("numpy")
     pytest.importorskip("gymnasium")
     import warnings
@@ -545,7 +472,6 @@ def test_run_env_without_predict_chunk_warns_and_runs_unchunked() -> None:
     finally:
         server.shutdown()
 
-    # No chunk corner: predict every step (3-step episode), with a warning.
     assert calls["predict"] == 3, calls
     assert any("predict_chunk" in str(w.message) for w in caught), [
         str(w.message) for w in caught
@@ -553,10 +479,6 @@ def test_run_env_without_predict_chunk_warns_and_runs_unchunked() -> None:
 
 
 def test_served_model_chunks_through_a_run(session_port: int) -> None:
-    """A served spec'd model with predict_chunk, run with execution_horizon=2:
-    the served engine emits the chunk; the driver pins the horizon at resolve,
-    buffers the chunk's future frames and replays them open-loop (a predict
-    only every 2 steps). The end-to-end served chunking path."""
     pytest.importorskip("numpy")
     pytest.importorskip("gymnasium")
     import numpy as np
@@ -581,9 +503,6 @@ def test_served_model_chunks_through_a_run(session_port: int) -> None:
     with _served(ChunkModel(), session_port) as address:
         Model(address).run(adapt.tag(env_obj, _tags()), episodes=1, execution_horizon=2)
 
-    # 3-step episode, chunk size 2: the served model's predict_chunk fires once per
-    # 2 steps (steps 0 and 2); the driver replays the in-between step without a predict.
-    # The runtime-chosen horizon reaches the served model's predict_chunk.
     assert calls["predict_chunk"] == 2, calls
     assert calls["predict"] == 0, calls
     assert calls["horizon"] == 2, calls

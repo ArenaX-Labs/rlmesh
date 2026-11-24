@@ -1,9 +1,4 @@
 //! Frame encoding for the viewer.
-//!
-//! The Session feeds an already-decoded HWC uint8 array (from `session.read()`),
-//! so the viewer only normalizes channels to RGB and encodes to the wire format.
-//! JPEG is the default (lighter/faster over a remote link); PNG is lossless for
-//! pixel-exact inspection.
 
 use std::io::Cursor;
 
@@ -53,7 +48,6 @@ mod tests {
 
     #[test]
     fn rgb_roundtrip_png_is_exact() {
-        // 2x2 RGB: red, green, blue, white.
         let buf = [255u8, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
         let img = rgb_from_hwc(&buf, 2, 2, 3).expect("rgb");
         let png = encode(&img, FrameFormat::Png).expect("png");
@@ -66,11 +60,11 @@ mod tests {
 
     #[test]
     fn grayscale_expands_and_jpeg_encodes() {
-        let buf = [10u8, 20, 30, 40]; // 2x2x1
+        let buf = [10u8, 20, 30, 40];
         let img = rgb_from_hwc(&buf, 2, 2, 1).expect("gray");
         assert_eq!(img.get_pixel(0, 0).0, [10, 10, 10]);
         let jpg = encode(&img, FrameFormat::Jpeg(80)).expect("jpeg");
-        assert_eq!(&jpg[..2], &[0xff, 0xd8]); // JPEG SOI marker
+        assert_eq!(&jpg[..2], &[0xff, 0xd8]);
         assert!(image::load_from_memory(&jpg).is_ok());
     }
 

@@ -17,9 +17,6 @@ use crate::model::predict_fn::RouteConfig;
 use crate::model::types::{EpisodeInfo, ModelObservation};
 use crate::{Error, Result};
 
-/// The top-level obs keys to materialize for `config`: a declarative-only route
-/// needs just the referenced keys (lazy); a route with custom holes needs the
-/// full observation so the custom callback sees everything.
 fn obs_keys(config: &RouteConfig) -> BTreeSet<String> {
     let referenced = config.adapter.referenced_obs_keys();
     let has_customs = config
@@ -30,15 +27,12 @@ fn obs_keys(config: &RouteConfig) -> BTreeSet<String> {
     if !has_customs {
         return referenced;
     }
-    // Customs see the full per-lane obs: include every top-level key.
     match config.observation_space.spec.as_ref() {
         Some(SpaceKind::Dict(dict)) => dict.keys.iter().cloned().collect(),
         _ => [".".to_owned()].into_iter().collect(),
     }
 }
 
-/// One value's dtype/shape signature for error context: `float32[8]`,
-/// `{image: uint8[3, 256, 256], state: float32[8]}`.
 fn value_summary(value: &Value) -> String {
     match value {
         Value::Tensor(tensor) => format!("{}{:?}", tensor.dtype().name(), tensor.shape()),
@@ -63,9 +57,6 @@ fn value_summary(value: &Value) -> String {
     }
 }
 
-/// The signature of the assembled model inputs handed to predict. Lanes share
-/// one shape (a homogeneous vectorized fleet), so summarize lane 0 plus the
-/// lane count.
 pub(super) fn inputs_summary(inputs: &[Value]) -> String {
     match inputs.first() {
         Some(first) => format!(
@@ -77,9 +68,6 @@ pub(super) fn inputs_summary(inputs: &[Value]) -> String {
     }
 }
 
-/// Append the assembled-input signature to a predict failure, so a shape/dtype
-/// error raised inside the model states what the adapter actually handed it
-/// instead of surfacing as an opaque framework traceback.
 pub(super) fn annotate_predict_error(err: Error, summary: &str) -> Error {
     match err {
         Error::Model(mut model) => {
@@ -91,15 +79,6 @@ pub(super) fn annotate_predict_error(err: Error, summary: &str) -> Error {
     }
 }
 
-/// Validate the observation and assemble each lane's model input. Runs under
-/// the route's entry lock (frame-stacking mutates the per-episode buffers
-/// here, once per call).
-///
-/// Every lane must carry a non-empty episode_id: the engine keys all
-/// per-episode state (frame windows) by it. The session layer already
-/// enforces `num_envs == slots.len()` with non-empty ids, but the engine must
-/// not silently fall back to a shared "" buffer (which would cross-contaminate
-/// lanes) if any other producer violates that.
 pub(super) fn assemble_route_inputs(
     entry: &mut RouteEntry,
     observation: &ModelObservation,
@@ -120,10 +99,6 @@ fn assemble_route_inputs_inner(
     let episodes = &observation.route.episodes;
     let num_envs = observation.num_envs;
 
-    // The wire contract requires every predict request to carry a decodable
-    // observation; validate the structure up front (cheap) so a malformed request
-    // errors here. Every call re-plans (the runtime owns replay), so the obs is
-    // always decoded below.
     observation.ensure_decodable()?;
 
     let RouteEntry {
@@ -133,10 +108,6 @@ fn assemble_route_inputs_inner(
     let customs: &dyn rlmesh_adapters::v1::CustomTransform = config.customs.as_ref();
     let encodings: &dyn rlmesh_adapters::v1::EncodingTransform = config.encodings.as_ref();
 
-    // A route that negotiated history advances its windows through the
-    // replayed steps first, then holds this request's own row to the next
-    // step. A route that did not must not be handed rows: the producer thinks
-    // it is feeding a window this route does not keep.
     let stamped = if config.delivers_history {
         ingest_history(config, buffers, observation, &referenced)?;
         Some(observation.step.ok_or_else(|| {
@@ -154,10 +125,6 @@ fn assemble_route_inputs_inner(
              asked for them",
         ));
     };
-    // A route that reads its previous action needs every step numbered even
-    // when the runtime stamps none (no history offered, so execution_horizon
-    // is 1 and every predict is one step): the engine counts the episode's
-    // predicts itself. Any other unstamped route holds no per-step state.
     let counted = stamped.is_none() && config.adapter.reads_previous_action();
 
     let decoded = observation.decoded_lanes()?;
@@ -199,10 +166,6 @@ fn assemble_route_inputs_inner(
     Ok(inputs)
 }
 
-/// Advance the route's frame windows through the replayed steps the runtime
-/// delivered as history rows, oldest first, holding each row to the step after
-/// the one its episode last saw. Nothing is assembled: a row only ticks the
-/// windows, exactly as [`observe_obs`] does on the local path.
 fn ingest_history(
     config: &RouteConfig,
     buffers: &mut FrameBuffers,
@@ -237,17 +200,6 @@ fn ingest_history(
     }
     Ok(())
 }
-/// Apply the per-step adapter transform to each frame, peel frame 0 (this
-/// step's action) from the future frames (which the runtime replays), and
-/// transpose the per-lane future frames into per-step batched frames
-/// (`replay[step][lane]`), to the shortest lane (uniform for a homogeneous
-/// fleet; a short lane caps the batch — receding horizon).
-///
-/// Each lane's frame `k` is applied under the step it executes at, `k` past
-/// the step the lane assembled at, so a route reading its previous action
-/// sees, at the re-plan, the frame the runtime replayed last. That record
-/// lives in the route's buffers, so the entry lock is taken again here (after
-/// the model call, never across it).
 pub(super) fn finish_route_frames(
     entry: &Arc<Mutex<RouteEntry>>,
     lane_raw_steps: Vec<Vec<Value>>,
@@ -279,11 +231,6 @@ fn finish_route_frames_inner(
     let mut frame0 = Vec::with_capacity(num_envs);
     let mut lane_replays: Vec<Vec<SpaceValue>> = Vec::with_capacity(num_envs);
     for (lane, raw_steps) in lane_raw_steps.into_iter().enumerate() {
-        // Frame `k` executes at `step + k`, where `step` is where the frames
-        // the runtime still holds queued end: the episode's last counted step
-        // when nothing is queued, or past the last recorded action under an
-        // async prefetch lead. A route that counts none holds no per-step
-        // state, so the value goes unread.
         let episode_id = episodes
             .get(lane)
             .map_or("", |episode| episode.episode_id.as_str());

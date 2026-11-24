@@ -1067,7 +1067,7 @@ def _arity(predict: Callable[..., Any]) -> int:
     """2 for ``predict(obs, policy)``: two required positional parameters; else 1."""
     try:
         params = list(inspect.signature(predict).parameters.values())
-    except (TypeError, ValueError):  # a builtin without a signature
+    except (TypeError, ValueError):
         return 1
     ordered = (
         inspect.Parameter.POSITIONAL_ONLY,

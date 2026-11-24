@@ -642,8 +642,6 @@ pub enum BoardData {
     UdpOnly,
 }
 
-// The session crate's default, so `rlmesh host` and every embedded host
-// agree.
 impl Default for BoardData {
     fn default() -> Self {
         rlmesh_session::host::BoardData::default().into()

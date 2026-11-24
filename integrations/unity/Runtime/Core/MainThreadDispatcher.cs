@@ -6,7 +6,6 @@ using RLMesh.Internal;
 
 namespace RLMesh.Unity
 {
-    // No Unity references: also compiled and exercised against netstandard2.1.
     public sealed class MainThreadDispatcher : IDisposable
     {
         private readonly int mainThread = Thread.CurrentThread.ManagedThreadId;
@@ -90,8 +89,6 @@ namespace RLMesh.Unity
             public override void Fail(Exception error) { completion.TrySetException(error); }
             public override void Run()
             {
-                // The native lane stays blocked in Call until this synchronous
-                // scope exits. Never hand a captured context to fire-and-forget work.
                 T result = default(T);
                 Exception failure = null;
                 using (context.Enter())

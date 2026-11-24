@@ -1,6 +1,6 @@
-//! One robot's device view, and the authority state an
-//! edge, its fallback and a keyring read ([`AuthorityView`]): a board that
-//! takes the view decodes it without the full state's decoder.
+//! One robot's device view, and the authority state an edge, its fallback and a
+//! keyring read ([`AuthorityView`]): a board that takes the view decodes it
+//! without the full state's decoder.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -54,9 +54,6 @@ pub trait AuthorityView {
 
     /// The fence an edge applies to an incoming chunk: right epoch, and the
     /// token of the part's current lease.
-    ///
-    /// # Errors
-    /// [`FenceError`].
     fn check_fence(
         &self,
         channel: ChannelId,
@@ -148,8 +145,8 @@ pub struct DeviceView {
     /// Set once the run is ending: detach and return to the lobby.
     pub closing: Option<Reason>,
     /// Its routes on the host's datagram path, once it attached with
-    /// [`LINK_DATAGRAM`](crate::wire::version::LINK_DATAGRAM) to a host
-    /// that offered one (`None`: every part rides the session).
+    /// [`LINK_DATAGRAM`](crate::wire::version::LINK_DATAGRAM) to a host that
+    /// offered one (`None`: every part rides the session).
     pub datagram: Option<DatagramRoutes>,
 }
 
@@ -179,9 +176,8 @@ impl DeviceView {
         }
     }
 
-    /// `robot`'s view of `state`: its own parts, the leases on them, the
-    /// clocks and grids those leases need, its streams' plans and every
-    /// present member.
+    /// `robot`'s view of `state`: its own parts, the leases on them, the clocks and
+    /// grids those leases need, its streams' plans and every present member.
     pub fn of(state: &AuthoritySnapshot, robot: &ParticipantId) -> Self {
         let parts: Vec<PartSpec> = state
             .parts
@@ -398,8 +394,6 @@ mod tests {
         }
     }
 
-    /// `ur10e`'s arm (1, applied 2) leased by `policy`; `cam-1`'s camera
-    /// (3) leased by `other`; `gone` lost.
     fn state() -> AuthoritySnapshot {
         let mut state = Authority::new(SessionId::named("demo"), AuthorityConfig::default())
             .snapshot(Vec::new(), 40);
@@ -489,7 +483,6 @@ mod tests {
             view.generation(&pid("gone")).is_none(),
             "present members only"
         );
-        // What the edge and keyring read agrees with the full state.
         for (channel, who) in [(ChannelId(1), &pid("policy")), (ChannelId(1), &ur)] {
             assert_eq!(AuthorityView::lease(&view, channel), state.lease(channel));
             assert_eq!(AuthorityView::grid(&view, channel), state.grid(channel));
@@ -507,7 +500,6 @@ mod tests {
             AuthorityView::check_fence(&view, ChannelId(1), LeaseToken(1), state.epoch),
             state.check_fence(ChannelId(1), LeaseToken(1), state.epoch)
         );
-        // The session-wide answers are the state's, whatever they are.
         let mut state = state;
         state.mode_reason.code = ReasonCode::EstopRemote;
         state.host_ns = 123;
@@ -532,7 +524,6 @@ mod tests {
             (AuthorityView::tick_ns(&view), AuthorityView::host_ns(&view)),
             (5_000_000, 123)
         );
-        // A robot that left the roster has no parts, no generation.
         let gone = DeviceView::of(&state, &pid("gone"));
         assert!(gone.parts.is_empty() && gone.leases.is_empty());
         assert_eq!(gone.generation, 0);

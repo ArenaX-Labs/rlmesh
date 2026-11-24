@@ -1,4 +1,3 @@
-//! Reusable cross-thread cancellation token (R-18).
 #![allow(unsafe_code)]
 use crate::abi::status::{CapiError, RLMeshStatus, guard, guard_value};
 use crate::value::handle::write_out;

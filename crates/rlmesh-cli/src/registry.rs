@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 const HELPER_BINARY: &str = "docker-credential-rlmesh";
 const HELPER_SUFFIX: &str = "rlmesh";
-// docker's sentinel for "no stored credential"; it must go to stdout verbatim.
+// docker's sentinel for "no stored credential"; must go to stdout verbatim.
 const CREDENTIALS_NOT_FOUND: &str = "credentials not found in native keychain";
 
 #[derive(Deserialize)]
@@ -90,9 +90,7 @@ pub async fn registry_login(
 }
 
 /// Implements docker's credential-helper protocol: the operation arrives as
-/// argv, its payload on stdin, and the response goes to stdout. `get` mints a
-/// fresh short-lived access token from the profile's refresh token, so docker
-/// never holds a credential that outlives a session.
+/// argv, its payload on stdin, and the response goes to stdout.
 pub async fn credential_helper(
     profiles: &mut ProfileStore,
     args: &CredentialHelperArgs,
@@ -105,8 +103,6 @@ pub async fn credential_helper(
 
     match args.operation.as_str() {
         "get" => credential_get(profiles, input.trim(), stdout).await,
-        // Credentials are managed by `rlmesh login`, not by docker: store and
-        // erase are acknowledged and ignored.
         "store" | "erase" => Ok(0),
         "list" => credential_list(profiles, stdout),
         other => bail!("unknown credential-helper operation {other:?}"),
@@ -134,8 +130,6 @@ async fn credential_get(
     };
 
     let client = http_client()?;
-    // docker surfaces the helper's stdout as the failure reason, so errors
-    // are reported there instead of propagating to stderr.
     let session = match ensure_fresh_session(&client, profiles, &profile, Refresh::IfStale).await {
         Ok(session) => session,
         Err(error) => {
@@ -183,8 +177,6 @@ fn registry_username(identity: Option<&Identity>) -> String {
         .to_owned()
 }
 
-/// Normalizes a registry reference (bare host, host:port, or full URL) to the
-/// key docker uses in credHelpers and passes back to the helper.
 fn registry_host_key(value: &str) -> String {
     let value = value.trim();
     let value = ["https://", "http://"]

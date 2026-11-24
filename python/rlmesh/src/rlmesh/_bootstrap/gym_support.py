@@ -89,7 +89,6 @@ def _seeded_reset(
 
 
 def _reset_info(result: object) -> dict[str, Any] | None:
-    """The info dict of a gym ``(obs, info)`` reset result, else ``None``."""
     if isinstance(result, tuple):
         items = cast("tuple[Any, ...]", result)
         if len(items) == 2 and isinstance(items[1], dict):
@@ -116,8 +115,7 @@ def make_gym_environment(
         make_vec_kwargs: dict[str, object] = {"num_envs": num_envs, **env_kwargs}
         if vectorization_mode is not None:
             make_vec_kwargs["vectorization_mode"] = vectorization_mode
-        # gymnasium rejects per-env wrappers when its auto mode picks a native
-        # vector entry point; those envs roll lanes internally, seed unreported.
+        # gymnasium rejects per-env wrappers when its auto mode picks a native vector entry point.
         if vectorization_mode is not None or not _has_vector_entry_point(
             gym_module, env_id
         ):
@@ -139,16 +137,7 @@ def vectorize(
     *,
     gym_module: object | None = None,
 ) -> object:
-    """Wrap ``num_envs`` copies of ``make_one()`` in a gym Sync/Async vector env.
-
-    The one fan-out used to vectorize *any* env factory -- a gym ``make`` thunk or
-    an :class:`~rlmesh.EnvFactory`'s ``make`` -- into a self-describing vector env
-    (``num_envs`` + ``single_*`` spaces) the native vector server serves. The
-    sub-envs must be gym-compatible (the gym vector wrappers build the batched
-    space from each sub-env's spaces). ``vectorization_mode=None`` is auto and
-    resolves to the sync fan-out here (there is no registry entry to consult);
-    any other unknown mode is an error rather than a silent collapse to sync.
-    """
+    """Wrap ``num_envs`` copies of ``make_one()`` in a gym Sync/Async vector env."""
     if vectorization_mode not in (None, "sync", "async"):
         raise ValueError(
             "vectorization_mode must be 'sync' or 'async' (or None for auto); "

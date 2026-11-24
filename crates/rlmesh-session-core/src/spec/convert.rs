@@ -4,7 +4,6 @@
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-/// `values[i]` broadcast: none is `default`, one applies to every element.
 fn pick(values: &[f64], i: usize, default: f64) -> f64 {
     match values {
         [] => default,

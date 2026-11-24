@@ -13,15 +13,12 @@ use rlmesh_spaces::spaces::{PolicyOutcome, ValidationPolicy};
 use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 
-/// One value-conformance warning surfaced in the info map.
 struct ConformanceWarning {
     kind: String,
     path: String,
     detail: String,
 }
 
-/// Resolve the serving-side validation policy from `RLMESH_VALIDATION_POLICY`
-/// (`strict`/`off`; default and any other value are `warn`).
 fn validation_policy_from_env() -> ValidationPolicy {
     match std::env::var("RLMESH_VALIDATION_POLICY") {
         Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
@@ -33,8 +30,6 @@ fn validation_policy_from_env() -> ValidationPolicy {
     }
 }
 
-/// Merge conformance warnings into an info map under the session edition's
-/// reserved key.
 fn inject_conformance_warnings(
     edition: Edition,
     info: &mut Option<spaces::MetaMap>,
@@ -64,18 +59,9 @@ fn inject_conformance_warnings(
     );
 }
 
-/// Serving-side value conformance: validate observations/actions against their
-/// declared space under the active policy. Structural deviations always
-/// reject; range deviations follow the policy (default `warn`, recorded once
-/// per `(kind, path)`). Shared by both adapters; lock-free on the accept path.
 struct Conformance {
     policy: ValidationPolicy,
-    /// `(lane, kind, path)` already reported for the server's life: once per
-    /// lane of a lane endpoint, once for all lanes of a vector env (lane 0).
-    /// Behind a lock because lane ops run concurrently through `&self`.
     warned: std::sync::Mutex<HashSet<(usize, String, String)>>,
-    /// The edition the current session runs at (see
-    /// the session's edition pin); the warning key is its promise.
     edition: std::sync::Mutex<Edition>,
 }
 
@@ -148,8 +134,6 @@ impl Conformance {
     }
 }
 
-/// Check a step's per-lane results (every per-lane vector `width` long) and
-/// its observations, folding every conformance warning into its info.
 fn finish_step(
     conformance: &Conformance,
     observation_space: &spaces::SpaceSpec,
@@ -173,8 +157,6 @@ fn finish_step(
     Ok(result)
 }
 
-/// Check a reset's per-lane observations, folding conformance warnings into
-/// its info.
 fn finish_reset(
     conformance: &Conformance,
     observation_space: &spaces::SpaceSpec,
@@ -195,7 +177,6 @@ fn finish_reset(
     Ok(result)
 }
 
-/// Check `width` per-lane actions: their count and their conformance.
 fn check_actions(
     conformance: &Conformance,
     action_space: &spaces::SpaceSpec,
@@ -208,8 +189,6 @@ fn check_actions(
     conformance.enforce_all(action_space, actions, "action", lanes, warnings)
 }
 
-/// What a native op measured: its queue wait, the env call and the env's
-/// own split of it.
 struct Call {
     queue_ns: u64,
     call_ns: u64,
@@ -217,7 +196,6 @@ struct Call {
 }
 
 impl Call {
-    /// The wire split, with this layer's decode and encode around the call.
     fn phases(self, decode_ns: u64, encode_ns: u64) -> EndpointPhases {
         let mut phases = EndpointPhases::nest(decode_ns, self.call_ns, encode_ns, self.inner);
         phases.queue_ns = self.queue_ns;
@@ -227,7 +205,6 @@ impl Call {
 
 /// Bridges a lockstep [`VectorEnv`] (a natively batched env such as a gym
 /// vector env) to the transport trait. Ops serialize on the env; a step that
-/// names lanes is rejected (`supports_lanes` is false).
 #[doc(hidden)]
 pub struct WireEnvAdapter<E> {
     inner: tokio::sync::Mutex<E>,
@@ -252,7 +229,6 @@ impl<E: VectorEnv> WireEnvAdapter<E> {
         }
     }
 
-    /// Reset `lanes` (empty: the whole vector), checked and conformed.
     async fn reset_native(
         &self,
         lanes: &[u32],
@@ -266,8 +242,6 @@ impl<E: VectorEnv> WireEnvAdapter<E> {
             timeout_ms,
             env_indices: lane_indices_to_native(lanes),
         };
-        // A reset naming lanes replies only those lanes; a whole-vector reset
-        // replies full width.
         let width = if lanes.is_empty() {
             self.num_envs
         } else {
@@ -277,9 +251,6 @@ impl<E: VectorEnv> WireEnvAdapter<E> {
         let mut env = self.inner.lock().await;
         let queue_ns = elapsed_ns(lock_started);
         let call_started = Instant::now();
-        // An env that cannot reset individual sub-envs inherits the rejecting
-        // `reset_subset` default, so a partial reset fails loud here rather
-        // than silently resetting the whole vector.
         let result = if lanes.is_empty() {
             env.reset(request).await
         } else {
@@ -307,7 +278,6 @@ impl<E: VectorEnv> WireEnvAdapter<E> {
         ))
     }
 
-    /// Step the whole vector, checked and conformed.
     async fn step_native(
         &self,
         lanes: &[u32],
@@ -363,7 +333,6 @@ impl<E: VectorEnv> WireEnvAdapter<E> {
         ))
     }
 
-    /// Render lane `lane` (`None`: the env's choice).
     async fn render_native(
         &self,
         lane: Option<usize>,
@@ -407,7 +376,6 @@ impl<E: VectorEnv> WireEnvAdapter<E> {
 
 /// Bridges a [`LaneEnv`] (N scalar envs, one actor each) to the transport
 /// trait: a request naming lanes fans out to those actors and gathers, a
-/// whole-vector request covers every lane. Lane ops run concurrently.
 #[doc(hidden)]
 pub struct WireLaneAdapter {
     lanes: LaneEnv,
@@ -428,7 +396,6 @@ impl WireLaneAdapter {
         self.lanes.track_abandoned(threads);
     }
 
-    /// The lanes a request covers: the ones it names, else every lane.
     fn lanes_for(&self, env_indices: &[u32]) -> Vec<usize> {
         if env_indices.is_empty() {
             (0..self.lanes.num_envs()).collect()
@@ -437,7 +404,6 @@ impl WireLaneAdapter {
         }
     }
 
-    /// Reset `lanes` (empty: every lane) side by side, checked and conformed.
     async fn reset_native(
         &self,
         lanes: &[u32],
@@ -446,9 +412,6 @@ impl WireLaneAdapter {
         timeout_ms: i64,
     ) -> Result<(VectorResetResult, EndpointPhases), EnvError> {
         let lanes = self.lanes_for(lanes);
-        // Each scalar lane gets its own slice of a per-lane option list, so a
-        // list that does not cover the lanes fails the whole reset here rather
-        // than per lane.
         let lane_options = (0..lanes.len())
             .map(|pos| lane_reset_options(options.as_ref(), pos, lanes.len()))
             .collect::<Result<Vec<_>, EnvError>>()?;
@@ -495,7 +458,6 @@ impl WireLaneAdapter {
         ))
     }
 
-    /// Step `lanes` (empty: every lane) side by side, checked and conformed.
     async fn step_native(
         &self,
         lanes: &[u32],
@@ -559,7 +521,6 @@ impl WireLaneAdapter {
         ))
     }
 
-    /// Render lane `lane`.
     async fn render_native(
         &self,
         lane: usize,
@@ -596,8 +557,6 @@ impl WireLaneAdapter {
     }
 }
 
-/// The lockstep path serves both adapters natively: the same checks,
-/// conformance and env calls as their wire shells, without the v1 messages.
 mod served {
     use async_trait::async_trait;
 
@@ -733,17 +692,6 @@ mod served {
     }
 }
 
-/// Fold a lane batch's per-lane results into the request's one outcome.
-///
-/// Every lane ran, so no lane's error may hide another's, and a request reported
-/// as recoverable must be safe to retry as is:
-/// - any lane failing fatally ends the session (that lane's error);
-/// - lanes that all failed recoverably fail only the request, since no lane
-///   moved;
-/// - a recoverable failure next to lanes that succeeded ends the session: those
-///   lanes moved on but their transitions never reach the client or the episode
-///   tracker, so retrying would replay them and stepping on would desync the
-///   accounting. The client's next reset opens a fresh session.
 fn gather_lane_results<T>(
     results: Vec<LaneReply<T>>,
     lanes: &[usize],
@@ -785,13 +733,10 @@ fn gym_error_to_env_error(error: spaces::EnvRuntimeError) -> EnvError {
             EnvError::new(EnvErrorCode::InvalidAction, message)
         }
         spaces::EnvRuntimeError::Runtime(message) => EnvError::new(EnvErrorCode::Internal, message),
-        // Still an internal failure, but the env vouched that it can keep
-        // serving: the flag (not the code) keeps the session open.
         spaces::EnvRuntimeError::Recoverable(message) => EnvError {
             is_recoverable: true,
             ..EnvError::new(EnvErrorCode::Internal, message)
         },
-        // The builtin class rides in `debug_info` to the lockstep reply.
         spaces::EnvRuntimeError::Raised {
             class,
             message,
@@ -801,14 +746,10 @@ fn gym_error_to_env_error(error: spaces::EnvRuntimeError) -> EnvError {
             debug_info: Some(class),
             ..EnvError::new(EnvErrorCode::Internal, message)
         },
-        // EnvRuntimeError is #[non_exhaustive]; treat unknown variants as internal.
         other => EnvError::new(EnvErrorCode::Internal, other.to_string()),
     }
 }
 
-/// Convert wire lane indices (uint32) to the native i32 representation. Lane
-/// offsets always fit i32; an unrepresentable value is clamped rather than
-/// wrapped so a foreign index is rejected loudly downstream.
 fn lane_indices_to_native(env_indices: &[u32]) -> Vec<i32> {
     env_indices
         .iter()
@@ -843,16 +784,6 @@ pub(super) fn validate_count<T>(
     ))
 }
 
-/// The reset options lane `pos` of a `lanes`-wide fan-out receives.
-///
-/// The runtime sends the reserved `trial_index` option as a list in lane order
-/// when a reset restarts several lanes (see
-/// [`crate::run::runtime::reset_options_for`]), but each lane here is a scalar env
-/// that gets its own `reset`: handing it the whole list leaves
-/// `trial_index(options, None)` unable to read an ordinal. Narrow the list to
-/// this lane's element; every other key rides through unchanged. A list that
-/// does not cover the lanes it was sent for is a malformed request, not a lane
-/// to silently leave unsequenced.
 fn lane_reset_options(
     options: Option<&spaces::MetaMap>,
     pos: usize,
@@ -922,7 +853,6 @@ mod tests {
                     "nested".into(),
                     spaces::SpaceValue::Dict(fields),
                 )]));
-                // Both lane and vector adapters use this check before dispatch.
                 let error = conformance
                     .enforce_all(&space, &[action], "action", &[0], &mut Vec::new())
                     .unwrap_err();

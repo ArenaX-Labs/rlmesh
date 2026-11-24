@@ -43,13 +43,9 @@ mod builder;
 pub use builder::{ActionEntry, Array, InputEntry, PerElement, PolicyBuilder};
 pub(crate) use builder::{Draft, Val, builder, key, named, setter};
 
-/// The longest entry name.
 const MAX_ENTRY_NAME: usize = 128;
-/// The highest rate a policy declares.
 const MAX_HZ: f64 = 10_000.0;
-/// The longest declared duration, in ms.
 const MAX_MS: f64 = 60_000.0;
-/// The largest target image side.
 const MAX_IMAGE_SIDE: u32 = 8192;
 
 /// A conversion a policy may allow.
@@ -420,7 +416,6 @@ pub struct Policy {
     pub actions: Vec<Action>,
 }
 
-/// A number or one number per element.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Numbers {
@@ -428,7 +423,6 @@ enum Numbers {
     Many(Vec<f64>),
 }
 
-/// An entry's `fields`: names (core kinds) or a schema (custom kinds).
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum EntryFields {
@@ -436,7 +430,6 @@ enum EntryFields {
     Schema(Ordered<FieldDecl>),
 }
 
-/// An entry's `names`: a list, or `"positional"`.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum NamesDecl {
@@ -562,7 +555,6 @@ fn numbers(where_: &str, key: &str, value: Option<Numbers>) -> Result<Option<Vec
     Ok(Some(values))
 }
 
-/// Which keys only inputs and only actions take.
 const INPUT_ONLY: [&str; 14] = [
     "fields",
     "shape",
@@ -745,7 +737,6 @@ fn common(
     })
 }
 
-/// An entry, or its shorthand: a bare kind.
 fn parse_entry(where_: &str, value: Value) -> Result<EntryDecl, String> {
     match value {
         Value::String(kind) => Ok(EntryDecl {
@@ -884,8 +875,7 @@ fn action(name: &str, value: Value, policy_allow: Allows) -> Result<Action, Stri
     if let Some(key) = decl
         .set_keys()
         .into_iter()
-        // A custom action's fields schema is not an input key; skip it
-        // without ending the search.
+        // A custom action's `fields` schema is not an input key; skip it without ending the search.
         .filter(|k| !(*k == "fields" && matches!(decl.fields, Some(EntryFields::Schema(_)))))
         .find(|k| INPUT_ONLY.contains(k) || *k == "max_age_ms")
     {
@@ -1075,7 +1065,6 @@ mod tests {
         let prompt = &policy.inputs[0];
         assert_eq!((prompt.entry.kind, prompt.history), (Kind::Text, 1));
         assert!(prompt.entry.at.is_none());
-        // Repeating a conversion, in the entry or with the policy's, keeps it.
         let image = &policy.inputs[1].entry;
         assert!(image.allow.has(Allow::Crop) && image.allow.has(Allow::Resize));
         let image = &policy.inputs[1];

@@ -1,8 +1,3 @@
-//! A model resolving the tags of an env written by a newer release: a field
-//! its reader does not know is refused unless the env marked it ignorable
-//! (`x-` / `ext.`). A model driving a robot must not silently drop a
-//! modifier that changes what an action means.
-
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -15,7 +10,6 @@ use rlmesh::prelude::*;
 use rlmesh::{DType, Model, ModelOptions, RunOptions, Tensor};
 use rlmesh_spaces::AutoresetMode;
 
-/// Holds still: seven zeros.
 struct Still;
 
 impl Policy for Still {
@@ -26,7 +20,6 @@ impl Policy for Still {
     }
 }
 
-/// Runs one episode of the catalog env publishing `tags`.
 fn run_against(tags: &serde_json::Value) -> rlmesh::Result<usize> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -70,7 +63,6 @@ fn a_newer_envs_ignorable_tag_fields_resolve_and_run() {
 #[test]
 fn a_newer_envs_bare_tag_field_is_refused_naming_it_and_the_older_side() {
     let mut tags = catalog_tags();
-    // A modifier a later release might add, which 0.2 has never seen.
     tags["action"]["components"][2]["deadband"] = 0.05.into();
     let refused = run_against(&tags).expect_err("a modifier this model cannot read");
     let message = refused.to_string();

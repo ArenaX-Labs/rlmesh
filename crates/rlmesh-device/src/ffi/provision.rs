@@ -1,6 +1,3 @@
-//! USB provisioning's C ABI: `rlmesh_device_key_public`
-//! and `rlmesh_device_provision_*`.
-
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ffi::c_int;
@@ -16,8 +13,7 @@ pub const RLMESH_DEVICE_PROVISION_REPLY: c_int = 1;
 /// `rlmesh_device_provision_stored`.
 pub const RLMESH_DEVICE_PROVISION_STORE: c_int = 2;
 
-/// The public key of a device key: the one `DEVICE_INFO` sends, and the
-/// daemon enrolls.
+/// The public key of a device key: the one `DEVICE_INFO` sends, and the daemon enrolls.
 ///
 /// # Safety
 /// `private` and `public` are null or valid for 32 bytes.
@@ -36,18 +32,16 @@ pub unsafe extern "C" fn rlmesh_device_key_public(private: *const u8, public: *m
     RLMESH_DEVICE_OK
 }
 
-/// `rlmesh_device_provision_t`: the responder, the record it asked to store,
-/// and the bytes the caller borrows.
+/// `rlmesh_device_provision_t`: the responder, the record it asked to store, and the bytes
+/// the caller borrows.
 pub struct DeviceProvision {
     responder: Responder,
     pending: Option<Record>,
     out: Vec<u8>,
 }
 
-/// A responder with device key
-/// `device_key` (32 bytes), holding the stored `record` (`record_len`
-/// bytes; null or 0 when not provisioned, or when it isn't valid). `arch`
-/// as in the tether's `HELLO`: 3 RISC-V, 4 Xtensa.
+/// A responder with device key `device_key` (32 bytes), holding the stored `record`
+/// (`record_len` bytes; null or 0 when not provisioned, or when it isn't valid).
 ///
 /// # Safety
 /// `device_key` null or 32 bytes;
@@ -94,8 +88,6 @@ pub unsafe extern "C" fn rlmesh_device_provision_free(p: *mut DeviceProvision) {
     }
 }
 
-/// # Safety
-/// `data` and `len` are null or valid for a write.
 unsafe fn hand_out(p: &mut DeviceProvision, bytes: Vec<u8>, data: *mut *const u8, len: *mut usize) {
     p.out = bytes;
     // SAFETY: per the contract.
@@ -109,9 +101,8 @@ unsafe fn hand_out(p: &mut DeviceProvision, bytes: Vec<u8>, data: *mut *const u8
     }
 }
 
-/// One byte from the serial port: `RLMESH_DEVICE_PROVISION_NONE`, or
-/// `_REPLY` / `_STORE` with `*data`/`*len` set (valid until the next call
-/// on `p`).
+/// One byte from the serial port: `RLMESH_DEVICE_PROVISION_NONE`, or `_REPLY` / `_STORE` with
+/// `*data`/`*len` set (valid until the next call on `p`).
 ///
 /// # Safety
 /// `p` is null or from `rlmesh_device_provision_new`; `data` and `len`
@@ -144,8 +135,8 @@ pub unsafe extern "C" fn rlmesh_device_provision_push(
     }
 }
 
-/// The record from `_STORE` was stored (`ok` non-zero) or not: `*data` and
-/// `*len` are the `PROVISIONED` to write (valid until the next call).
+/// The record from `_STORE` was stored (`ok` non-zero) or not: `*data` and `*len` are the
+/// `PROVISIONED` to write (valid until the next call).
 ///
 /// # Safety
 /// `p` is null or from `rlmesh_device_provision_new`; `data` and `len`
@@ -240,7 +231,6 @@ mod tests {
             (0, 0),
             "a delimited frame"
         );
-        // Nothing pending any more.
         let rc = unsafe { rlmesh_device_provision_stored(p, 1, &mut data, &mut len) };
         assert_eq!(rc, RLMESH_DEVICE_ERR_ARG);
         unsafe { rlmesh_device_provision_free(p) };

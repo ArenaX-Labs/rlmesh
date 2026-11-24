@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Thin Python entrypoint that forwards to the Rust RLMesh CLI."""
 
 from __future__ import annotations
 
@@ -13,20 +12,12 @@ from typing import cast
 from ._cli.main import find_repo_root
 
 _DISTRIBUTION_ENV = "RLMESH_CLI_DISTRIBUTION"
-#: The interpreter `rlmesh check` / `rlmesh describe` run `rlmesh._describe`
-#: in: this one, unless the caller already chose.
+#: Interpreter `rlmesh check` / `rlmesh describe` run `rlmesh._describe` in.
 _PYTHON_ENV = "RLMESH_PYTHON"
 
 
 def _load_extension_cli() -> Callable[[list[str]], int]:
-    """Import and return the native ``run_cli``, or raise ``ImportError``.
-
-    Import/lookup only -- the returned callable runs outside any ImportError
-    handler, so an ImportError raised *by* the CLI itself propagates instead of
-    being misreported as a missing native module. ``run_cli`` only exists in
-    builds with the 'cli' cargo feature; lean wheels omit it (and the embedded
-    CLI) entirely.
-    """
+    """Import and return the native ``run_cli``, or raise ``ImportError``."""
     import rlmesh._rlmesh as _rlmesh
 
     run_cli = cast(
@@ -57,8 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             return int(run_cli(argv))
         except KeyboardInterrupt:
-            # A command that stops on Ctrl-C (`rlmesh host`) has returned;
-            # Python's own handler raises here afterwards.
+            # A command that stops on Ctrl-C has returned; Python's own handler raises afterwards.
             return 130
 
     cargo = shutil.which("cargo")

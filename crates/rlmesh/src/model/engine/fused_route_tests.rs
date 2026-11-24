@@ -1,6 +1,3 @@
-//! The engine against real resolved routes: grouped and fused predicts, the
-//! horizon doors, observation history, and previous-action parts.
-
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -30,10 +27,6 @@ const MODEL_SPEC: &str = r#"{
         "output": {"components": [{"role": "action/gripper", "dim": 1, "range": [0.0, 10.0]}]}
     }"#;
 
-/// Resolves every route through the one ENV_TAGS x MODEL_SPEC pairing — the
-/// minimal real spec'd route (one gripper state in, one gripper action out),
-/// so grouped predicts exercise assemble -> fuse -> split -> finish against
-/// genuine adapter plans instead of hand-built frames.
 struct TagResolver;
 
 #[async_trait]
@@ -71,11 +64,6 @@ impl RouteResolver for TagResolver {
     }
 }
 
-/// Echoes each lane's state value back as its action (lane-identifying, so a
-/// split-back misalignment returns the wrong route's actions and fails the
-/// equality asserts). The chunk corner emits `CHUNK_FRAMES` frames of
-/// `state + 0.125 * frame`; `fail_recoverable` makes the batched corner
-/// return a recoverable model error instead.
 struct EchoModel {
     chunk: bool,
     fail_recoverable: bool,
@@ -101,9 +89,6 @@ impl EchoModel {
         })
     }
 
-    /// A single-lane model (no batched corner, so the engine always runs
-    /// the per-lane `predict()` loop), for asserting real episode identity
-    /// reaches it.
     fn new_single_lane() -> Arc<Self> {
         Arc::new(Self {
             chunk: false,
@@ -117,7 +102,6 @@ impl EchoModel {
     }
 }
 
-/// The first number reachable in the assembled input tree (the echoed state).
 fn state_number(input: &Value) -> f64 {
     match input {
         Value::Number(n) => *n,
@@ -231,8 +215,6 @@ fn box_f32(value: f32) -> SpaceValue {
     )
 }
 
-/// A grouped-member observation for `env_id`: one lane per value, each lane's
-/// state = the value, episode ids derived from the values (unique per lane).
 fn grouped_obs(
     env_id: &str,
     values: &[f32],
@@ -269,8 +251,6 @@ fn grouped_obs(
     }
 }
 
-/// A single-lane observation for `env_id` carrying real episode id/seed
-/// metadata, unlike `grouped_obs` (which leaves `episode_seeds` default).
 fn single_obs_with_episode(
     env_id: &str,
     value: f32,
@@ -298,8 +278,6 @@ fn single_obs_with_episode(
     }
 }
 
-/// Build a handler with real resolved routes (one per `(env_id, lanes)`),
-/// pinning `horizon` on each at resolve.
 async fn spec_handler(
     predict: Arc<dyn PredictFn>,
     envs: &[(&str, u32)],
@@ -352,11 +330,6 @@ async fn direct_predict_carries_real_episode_id_and_seed() {
 
 #[tokio::test]
 async fn grouped_predict_concatenates_row_aligned_episode_identity() {
-    // Grouped predict serves multiple routes' episodes in ONE batched
-    // forward. There is no single episode identity for the call, but every
-    // ROW has one: the fused batch concatenates each group's inputs and its
-    // episodes in the same order, so the batched corner can key per-episode
-    // state by row.
     let echo = EchoModel::new(false, false);
     let (mut handler, contracts) = spec_handler(
         Arc::clone(&echo) as Arc<dyn PredictFn>,
@@ -498,14 +471,6 @@ async fn grouped_chunk_and_batch_model_keeps_chunking_when_grouped() {
     }
 }
 
-/// Regression for the grouped-fusion deadlock: the fused path once held every
-/// route's entry guard across the whole call, so a request repeating one
-/// env_id re-locked the same mutex on one thread and hung forever. Locks are
-/// now short-lived; a duplicate route must simply serve twice.
-/// A wide fused batch — one route per lane, the fleet shape — assembles and
-/// finishes its groups on the rayon pool; every result must still land at
-/// its own group's index with its own lane's state, across the chunked and
-/// un-chunked corners.
 #[tokio::test]
 async fn wide_grouped_predict_keeps_every_group_in_request_order() {
     for chunk in [false, true] {
@@ -543,8 +508,6 @@ async fn wide_grouped_predict_keeps_every_group_in_request_order() {
     }
 }
 
-/// The camera route (the SmolVLA-on-LIBERO shape): one 256x256x3 uint8 frame
-/// tagged upside-down, consumed as normalised float32 CHW, plus a gripper state.
 const IMAGE_ENV_TAGS: &str = r#"{
         "observation": {"cam": {"type": "image", "role": "image/primary", "upside_down": true},
                         "state": {"type": "state", "role": "proprio/gripper"}},
@@ -665,10 +628,6 @@ fn grouped_image_obs(env_id: &str, seed: u32, value: f32) -> ModelObservation {
     }
 }
 
-/// `cargo test -p rlmesh --release camera_grouped_predict_timing -- --ignored --nocapture`
-/// (and again with `RAYON_NUM_THREADS=1`): wall time of one fused grouped predict
-/// over 32 camera routes and the adapter span it reports, so the lane fan-out's
-/// gain is a number rather than a projection.
 #[tokio::test]
 #[ignore = "timing, not correctness: run with --release --nocapture"]
 #[allow(clippy::print_stdout, reason = "the point of the test is the report")]
@@ -771,9 +730,6 @@ async fn fused_failure_reports_recoverable_error_with_each_groups_own_signature(
     }
 }
 
-/// A chunk model that emits `emit` frames per chunk call and optionally
-/// DECLARES a native chunk length, so the resolve doors and `take_prefix`
-/// can be driven against every combination of (declared, emitted, horizon).
 struct DeclaredChunkModel {
     emit: usize,
     declared: Option<u32>,
@@ -789,7 +745,6 @@ impl DeclaredChunkModel {
         })
     }
 
-    /// Declares a chunk length but defines no chunk corner at all.
     fn cornerless(declared: u32) -> Arc<Self> {
         Arc::new(Self {
             emit: 0,
@@ -831,8 +786,6 @@ impl PredictFn for DeclaredChunkModel {
     }
 }
 
-/// A resolver that declares every route spec-LESS, so the doors can be driven
-/// down the branch that never builds a `RouteConfig`.
 struct SpecLessResolver;
 
 #[async_trait]
@@ -846,7 +799,6 @@ impl RouteResolver for SpecLessResolver {
     }
 }
 
-/// Resolve one route at `horizon` and hand back the setup's answer.
 async fn resolve_once(
     predict: Arc<dyn PredictFn>,
     resolver: Arc<dyn RouteResolver>,
@@ -869,7 +821,6 @@ async fn resolve_once(
         .await
 }
 
-/// Total per-step frames one predict emitted (frame 0 plus the replay tail).
 async fn frame_count(handler: &mut AdaptedModelHandler, obs: ModelObservation) -> usize {
     let frames = handler
         .predict_chunked(obs)
@@ -878,7 +829,6 @@ async fn frame_count(handler: &mut AdaptedModelHandler, obs: ModelObservation) -
     1 + frames.replay.len()
 }
 
-// 1. A horizon past the bound is a mis-set knob, refused before any work.
 #[tokio::test]
 async fn resolve_refuses_a_horizon_over_the_bound() {
     let error = resolve_once(
@@ -897,7 +847,6 @@ async fn resolve_refuses_a_horizon_over_the_bound() {
     );
 }
 
-// 2. The bound itself is legal (it is a ceiling, not an exclusive limit).
 #[tokio::test]
 async fn resolve_accepts_the_horizon_bound_exactly() {
     resolve_once(
@@ -910,7 +859,6 @@ async fn resolve_accepts_the_horizon_bound_exactly() {
     .expect("the bound itself resolves");
 }
 
-// 3. The same door guards the spec-LESS branch, which never builds a config.
 #[tokio::test]
 async fn the_horizon_doors_guard_the_spec_less_branch_too() {
     resolve_once(
@@ -923,7 +871,6 @@ async fn the_horizon_doors_guard_the_spec_less_branch_too() {
     .expect_err("a spec-less route is bound by the same doors");
 }
 
-// 4. Declaring K without a chunk corner could never be honored or checked.
 #[tokio::test]
 async fn resolve_refuses_a_declared_chunk_with_no_chunk_corner() {
     let error = resolve_once(
@@ -940,7 +887,6 @@ async fn resolve_refuses_a_declared_chunk_with_no_chunk_corner() {
     );
 }
 
-// 5. h > K asks for actions the model cannot produce.
 #[tokio::test]
 async fn resolve_refuses_a_horizon_over_the_declared_chunk() {
     let error = resolve_once(
@@ -957,7 +903,6 @@ async fn resolve_refuses_a_horizon_over_the_declared_chunk() {
     );
 }
 
-// 6. A resolved route answers the declaration back to the runtime.
 #[tokio::test]
 async fn resolve_answers_the_declared_native_chunk() {
     let needs = resolve_once(
@@ -971,7 +916,6 @@ async fn resolve_answers_the_declared_native_chunk() {
     assert_eq!(needs.native_chunk, Some(6));
 }
 
-// 7. An undeclared model answers nothing: the elastic contract.
 #[tokio::test]
 async fn resolve_answers_none_when_undeclared() {
     let needs = resolve_once(
@@ -985,10 +929,6 @@ async fn resolve_answers_none_when_undeclared() {
     assert_eq!(needs.native_chunk, None);
 }
 
-// 8. The served path sees no lanes: `ResolveAdapterRequest` carries no
-//    num_envs, so the engine must NOT try to guard lanes here. A vector
-//    contract with a chunking horizon resolves; the refusal lives in the
-//    layers that actually know the lane count.
 #[tokio::test]
 async fn served_resolve_sees_no_lanes() {
     resolve_once(
@@ -1001,7 +941,6 @@ async fn served_resolve_sees_no_lanes() {
     .expect("the engine carries no lane check");
 }
 
-// 9. Declared K, whole chunk returned, h < K: the runtime takes the prefix.
 #[tokio::test]
 async fn a_declared_model_replays_the_horizon_prefix_of_its_whole_chunk() {
     let model = DeclaredChunkModel::new(6, Some(6));
@@ -1011,7 +950,6 @@ async fn a_declared_model_replays_the_horizon_prefix_of_its_whole_chunk() {
     assert_eq!(frame_count(&mut handler, obs).await, 4);
 }
 
-// 10. Declared K at h == K: the whole chunk is executed.
 #[tokio::test]
 async fn a_declared_model_at_the_full_horizon_replays_every_frame() {
     let model = DeclaredChunkModel::new(6, Some(6));
@@ -1021,8 +959,6 @@ async fn a_declared_model_at_the_full_horizon_replays_every_frame() {
     assert_eq!(frame_count(&mut handler, obs).await, 6);
 }
 
-// 11. Declared K but the model still slices to the horizon (the glue this
-//     contract removes): the predict fails instead of short-replaying.
 #[tokio::test]
 async fn a_declared_model_that_slices_its_own_chunk_fails_the_predict() {
     let model = DeclaredChunkModel::new(4, Some(6));
@@ -1040,7 +976,6 @@ async fn a_declared_model_that_slices_its_own_chunk_fails_the_predict() {
     );
 }
 
-// 12. Undeclared and short: elastic, so the run continues on what there is.
 #[tokio::test]
 async fn an_undeclared_short_chunk_replays_what_there_is() {
     let model = DeclaredChunkModel::new(3, None);
@@ -1050,7 +985,6 @@ async fn an_undeclared_short_chunk_replays_what_there_is() {
     assert_eq!(frame_count(&mut handler, obs).await, 3);
 }
 
-// 13. That short-chunk warning is latched once per episode, not per predict.
 #[test]
 fn the_short_chunk_warning_latches_once_per_episode() {
     let warned = ShortChunkWarned::default();
@@ -1072,7 +1006,6 @@ fn the_short_chunk_warning_latches_once_per_episode() {
     assert!(warned.first("other"), "another episode warns on its own");
 }
 
-// 13b. Declared-K and empty-chunk refusals are the ValueError class.
 #[test]
 fn chunk_refusals_are_value_errors() {
     let warned = ShortChunkWarned::default();
@@ -1081,8 +1014,6 @@ fn chunk_refusals_are_value_errors() {
     let error = take_prefix(Vec::new(), 2, None, &warned, "ep").unwrap_err();
     assert_eq!(error.class(), crate::ErrorClass::ValueError);
 }
-
-// ---- observation history (a stacked route fed replayed steps as rows) ----
 
 const STACK_ENV_TAGS: &str = r#"{
         "observation": {"cam": {"type": "image", "role": "image/primary", "layout": "hwc"}},
@@ -1094,8 +1025,6 @@ const STACK_MODEL_SPEC: &str = r#"{
         "output": {"components": [{"role": "action/gripper", "dim": 1, "range": [0.0, 10.0]}]}
     }"#;
 
-/// Resolves every route as one 1x1 RGB camera stacked 3 deep, so the
-/// engine's frame windows are real and every predict's input is the stack.
 struct StackResolver;
 
 #[async_trait]
@@ -1158,7 +1087,6 @@ fn cam_contract(env_id: &str) -> Arc<spaces::EnvContract> {
     })
 }
 
-/// The wire leaves of a one-lane camera frame whose every byte is `tag`.
 fn cam_leaves(tag: u8) -> Vec<bytes::Bytes> {
     let lane = SpaceValue::Dict(BTreeMap::from([(
         "cam".to_string(),
@@ -1177,8 +1105,6 @@ fn episode(id: &str) -> Vec<EpisodeInfo> {
     }]
 }
 
-/// A predict at `step` carrying the frame `tag`, preceded by `rows` of
-/// `(step, tag)` replayed steps.
 fn cam_predict(
     env_id: &str,
     episode_id: &str,
@@ -1207,7 +1133,6 @@ fn cam_predict(
     }
 }
 
-/// Records the stacked frame bytes each predict was handed.
 struct WindowRecorder {
     stacks: Mutex<Vec<Vec<u8>>>,
 }
@@ -1236,8 +1161,6 @@ impl PredictFn for WindowRecorder {
     }
 }
 
-/// A stacked handler resolved for `env_id`, with or without the runtime
-/// offering history, at `horizon`.
 async fn stacked_handler(
     env_id: &str,
     delivers_history: bool,
@@ -1268,14 +1191,11 @@ async fn stacked_handler(
 
 #[tokio::test]
 async fn a_stacked_route_needs_history_only_when_the_runtime_offers_it() {
-    // Offered: the route answers its window keys and the horizon is fine.
     let (_, _, needs) = stacked_handler("env-offer", true, 4).await.unwrap();
     let history = needs.history.expect("a stacked route asks for history");
     assert_eq!(history.keys.len(), 1, "one stacked input: {history:?}");
     assert!(!history.prunable);
 
-    // Not offered: above horizon 1 the window would hold decision points
-    // only, so the route is refused; at horizon 1 every step predicts.
     let refused = stacked_handler("env-refuse", false, 4)
         .await
         .err()
@@ -1288,7 +1208,6 @@ async fn a_stacked_route_needs_history_only_when_the_runtime_offers_it() {
     let (_, _, needs) = stacked_handler("env-h1", false, 1).await.unwrap();
     assert!(needs.history.is_none());
 
-    // An unstacked route never asks, offered or not.
     let handler = AdaptedModelHandler::new(
         EchoModel::new(false, false) as Arc<dyn PredictFn>,
         Some(Arc::new(TagResolver) as Arc<dyn RouteResolver>),
@@ -1312,9 +1231,6 @@ async fn a_stacked_route_needs_history_only_when_the_runtime_offers_it() {
 
 #[tokio::test]
 async fn history_rows_advance_the_window_exactly_like_sequential_predicts() {
-    // The invariant the wire exists for: a predict carrying the replayed
-    // steps as rows hands the model the same stack a predict-every-step
-    // route would have at that step.
     let (mut every_step, sequential, _) = stacked_handler("env-seq", true, 1).await.unwrap();
     for step in 0..8u8 {
         every_step
@@ -1332,8 +1248,6 @@ async fn history_rows_advance_the_window_exactly_like_sequential_predicts() {
     assert_eq!(expected.len(), 8);
 
     let (mut chunked, recorder, _) = stacked_handler("env-hist", true, 4).await.unwrap();
-    // Predict at 0; steps 1..3 replay; predict at 4 with rows 1..3; steps
-    // 5 and 6 replay; predict at 7 with rows 5 and 6.
     for (step, rows) in [
         (0i64, vec![]),
         (4, vec![(1, 1u8), (2, 2), (3, 3)]),
@@ -1357,7 +1271,6 @@ async fn history_rows_advance_the_window_exactly_like_sequential_predicts() {
 
 #[tokio::test]
 async fn held_state_is_an_endpoint_total_kept_by_route_deltas() {
-    // Two stacked routes, each holding one episode's window.
     let (mut handler, _, _) = stacked_handler("env-a", true, 1).await.unwrap();
     let setup = handler.route_setup().expect("resolver-backed route setup");
     setup
@@ -1386,8 +1299,6 @@ async fn held_state_is_an_endpoint_total_kept_by_route_deltas() {
     assert_eq!(both.episodes, 2);
     assert!(both.bytes > 0, "{both:?}");
 
-    // The total answers without the roster: read it from another thread
-    // while this one holds the routes map lock.
     let handler = Arc::new(handler);
     let roster = handler.routes.lock().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1399,8 +1310,6 @@ async fn held_state_is_an_endpoint_total_kept_by_route_deltas() {
     drop(roster);
     assert_eq!(read, Some(both));
 
-    // Evicting one route's episode, then releasing the other route, each
-    // take exactly their share back out of the total.
     setup
         .reset_adapter("env-a", &["ep-a".to_string()])
         .await
@@ -1414,8 +1323,6 @@ async fn held_state_is_an_endpoint_total_kept_by_route_deltas() {
     setup.release_adapter("env-b").await.unwrap();
     assert_eq!(handler.held_state().unwrap(), HeldState::default());
 }
-
-// ---- previous action (a route reading back its own executed frames) ----
 
 const PREVIOUS_ENV_TAGS: &str = r#"{
         "observation": {"g": {"type": "state", "role": "proprio/gripper"}},
@@ -1431,8 +1338,6 @@ const PLAIN_MODEL_SPEC: &str = r#"{
         "output": {"components": [{"role": "action/joint_pos", "dim": 2}]}
     }"#;
 
-/// Resolves every route as a scalar gripper reading plus, with
-/// [`PREVIOUS_MODEL_SPEC`], the model's own previous 2-d joint command.
 struct PreviousResolver(&'static str);
 
 #[async_trait]
@@ -1512,8 +1417,6 @@ fn g_leaves(g: f32) -> Vec<bytes::Bytes> {
         .leaves
 }
 
-/// A predict at `step` reading `g`, preceded by `rows` of `(step, g)`
-/// replayed steps.
 fn g_predict(
     env_id: &str,
     episode_id: &str,
@@ -1542,9 +1445,6 @@ fn g_predict(
     }
 }
 
-/// Records the state each predict was handed and answers a chunk whose
-/// frame `k` of call `c` is `[100c + 10 + k, 100c + 20 + k]`, so every
-/// executed frame is telling.
 struct PreviousRecorder {
     inputs: Mutex<Vec<Vec<f32>>>,
     calls: AtomicUsize,
@@ -1633,10 +1533,6 @@ async fn previous_handler(
 
 #[tokio::test]
 async fn a_previous_action_part_reads_the_last_replayed_frame_at_the_replan() {
-    // execution_horizon 4: the predict at step 0 emits frames 0..3, the
-    // runtime replays 1..3 and re-plans at 4 carrying their rows. The
-    // policy then reads frame 3 (the action executed at step 3), not
-    // frame 0 (the one it saw itself emit), and the fill before any.
     let (mut handler, recorder, needs) = previous_handler("env-prev", PREVIOUS_MODEL_SPEC, true, 4)
         .await
         .unwrap();
@@ -1667,11 +1563,6 @@ async fn a_previous_action_part_reads_the_last_replayed_frame_at_the_replan() {
 
 #[tokio::test]
 async fn a_previous_action_part_under_a_prefetch_lead_reads_the_frame_that_executed() {
-    // execution_horizon 4 with a prefetch lead of 1: the re-plan is
-    // requested at step 3, one frame before the first chunk runs out, so
-    // its own observation is step 3 but its frames execute from step 4.
-    // The predict at step 7 must read call 1's frame 2 (executed at 6),
-    // not frame 3, which the request's own step would have recorded there.
     let (mut handler, recorder, _) = previous_handler("env-lead", PREVIOUS_MODEL_SPEC, true, 4)
         .await
         .unwrap();
@@ -1711,9 +1602,6 @@ async fn a_previous_action_part_under_a_prefetch_lead_reads_the_frame_that_execu
 
 #[tokio::test]
 async fn a_previous_action_route_counts_its_own_steps_when_none_are_stamped() {
-    // No history offered at execution_horizon 1: every predict is one env
-    // step, so the engine numbers them itself and each predict reads the
-    // frame the one before it emitted.
     let (mut handler, recorder, needs) =
         previous_handler("env-count", PREVIOUS_MODEL_SPEC, false, 1)
             .await
@@ -1733,7 +1621,6 @@ async fn a_previous_action_route_counts_its_own_steps_when_none_are_stamped() {
             vec![3.0, 110.0, 120.0]
         ]
     );
-    // Above 1 without the offer the route is refused, like a stacked one.
     let refused = previous_handler("env-refuse", PREVIOUS_MODEL_SPEC, false, 4)
         .await
         .err()
@@ -1743,8 +1630,6 @@ async fn a_previous_action_route_counts_its_own_steps_when_none_are_stamped() {
         refused.contains("a previous-action part (input '<root>') needs every env step"),
         "{refused}"
     );
-    // A route without the part negotiates nothing, offered or not, and
-    // its predicts are the plain ones.
     let (mut plain, recorder, needs) = previous_handler("env-plain", PLAIN_MODEL_SPEC, true, 4)
         .await
         .unwrap();
@@ -1785,7 +1670,6 @@ async fn a_negotiated_route_rejects_a_step_gap_repeat_or_omission() {
         .to_string();
     assert!(omitted.contains("carries no step"), "{omitted}");
 
-    // A fresh episode starts its own sequence at any step.
     handler
         .predict(cam_predict("env-steps", "ep-2", Some(40), 0, &[]))
         .await
@@ -1819,8 +1703,6 @@ fn the_frame_history_budget_refuses_a_window_that_outgrows_it() {
     assert!(refused.contains(FRAME_HISTORY_LIMIT_ENV), "{refused}");
 }
 
-/// A predict for `env_id` at `step` carrying one frame per lane, each lane
-/// its own episode.
 fn cam_predict_lanes(env_id: &str, episode_ids: &[&str], step: i64) -> ModelObservation {
     let lanes: Vec<SpaceValue> = episode_ids
         .iter()
@@ -1860,8 +1742,6 @@ fn cam_predict_lanes(env_id: &str, episode_ids: &[&str], step: i64) -> ModelObse
 
 #[tokio::test]
 async fn fresh_lanes_are_admitted_against_the_endpoint_window_budget() {
-    // The 1x1x3 uint8 camera stacked 3 deep: 9 bytes per lane once full.
-    // Budget two lanes' worth for the whole endpoint.
     const LANE_BYTES: u64 = 9;
     let recorder = Arc::new(WindowRecorder {
         stacks: Mutex::new(Vec::new()),
@@ -1873,7 +1753,6 @@ async fn fresh_lanes_are_admitted_against_the_endpoint_window_budget() {
     handler.history_limit = 2 * LANE_BYTES;
     let setup = handler.route_setup().expect("resolver-backed");
     for env_id in ["env-a", "env-b"] {
-        // Each route fits on its own: the served resolve sees one lane.
         setup
             .resolve_adapter(
                 env_id,
@@ -1892,8 +1771,6 @@ async fn fresh_lanes_are_admitted_against_the_endpoint_window_budget() {
         LANE_BYTES
     );
 
-    // Many lanes at once: the multiplier is the real lane count, not the
-    // resolve-time placeholder, and a refusal seeds nothing.
     let refused = handler
         .predict(cam_predict_lanes("env-a", &["a1", "a2", "a3"], 0))
         .await
@@ -1902,15 +1779,12 @@ async fn fresh_lanes_are_admitted_against_the_endpoint_window_budget() {
     assert!(refused.contains(FRAME_HISTORY_LIMIT_ENV), "{refused}");
     assert_eq!(handler.held_state(), Some(HeldState::default()));
 
-    // Two lanes fill the budget (their windows are charged at full size
-    // from the first frame), and revisiting held lanes is never charged.
     for step in 0..2 {
         handler
             .predict(cam_predict_lanes("env-a", &["a1", "a2"], step))
             .await
             .expect("two lanes fit");
     }
-    // A second route that fits on its own is refused against the total.
     let refused = handler
         .predict(cam_predict_lanes("env-b", &["b1"], 0))
         .await
@@ -1918,8 +1792,6 @@ async fn fresh_lanes_are_admitted_against_the_endpoint_window_budget() {
         .to_string();
     assert!(refused.contains("other routes"), "{refused}");
 
-    // An ended episode gives its window back (the route setup evicts the
-    // window; the handler's reset is only the model's episode-end hook).
     setup
         .reset_adapter("env-a", &["a2".to_string()])
         .await

@@ -1,7 +1,3 @@
-"""The serve entrypoint stamps startup phase marks on the serving line and the
-handshake, so a container's model wait splits into imports, construction, and
-listen without a profiler."""
-
 from __future__ import annotations
 
 from typing import Any, cast
@@ -55,9 +51,7 @@ def test_serving_a_model_stamps_the_handshake_and_prints_the_phases(
         ) -> None:
             self.address = address
             self.options = options
-            # Nothing is printed before the model answers...
             assert "RLMesh serving" not in capsys.readouterr().out
-            # ...which the native serve says through the ready hook.
             serve._print_serving_line(  # pyright: ignore[reportPrivateUsage]
                 {"kind": "model", "address": "lab:7447#…/model"}
             )
@@ -111,7 +105,6 @@ def test_serving_a_model_puts_its_describe_envelope_on_the_handshake(
     envelope = json.loads(stamped[rlmesh.DESCRIBE_METADATA_KEY])
     assert envelope["kind"] == "model"
     assert envelope["target"]["qualname"].endswith("Tiny")
-    # Tiny declares no spec, and serve warns that inputs cannot be synthesized.
     err = capsys.readouterr().err
     assert err.count("\n") == 1 and "declares no spec" in err, err
 
@@ -183,8 +176,6 @@ def test_an_undescribable_target_still_serves(
 
 
 class _Declared(rlmesh.Model):
-    """Declares an edition on the class; a served option must override it."""
-
     workflow_edition = rlmesh.current_workflow_edition()
 
     def predict(self, observation: object) -> int:
@@ -205,13 +196,6 @@ class _Declared(rlmesh.Model):
 def test_envelope_preferred_edition_is_what_the_serve_options_declare(
     monkeypatch: pytest.MonkeyPatch, env_var: str | None
 ) -> None:
-    """The envelope reports the declaration the handshake sends, not a re-resolve.
-
-    The wire `preferred_workflow_edition` is `ServeOptions.workflow_edition`
-    (else this build's newest); the platform admits on the envelope, so the
-    two must agree on every rung: an explicit option, and an empty
-    `RLMESH_WORKFLOW_EDITION` that silences the class declaration.
-    """
     import json
 
     import rlmesh._peer_info as peer_info
@@ -236,13 +220,11 @@ def test_envelope_preferred_edition_is_what_the_serve_options_declare(
 
     envelope = json.loads(stamped[rlmesh.DESCRIBE_METADATA_KEY])
     options = cast("Any", served.options)
-    # What the handshake declares: the option's value, else this build's newest.
     wire = (
         options.workflow_edition if options is not None else None
     ) or build_info().workflow_edition
     assert envelope["runtime"]["preferred_workflow_edition"] == wire
     if env_var == "":
-        # The deliberate float: the class declaration is not consulted.
         assert options is None or options.workflow_edition is None
     else:
         assert options.workflow_edition == option
@@ -254,8 +236,6 @@ def test_envelope_preferred_edition_is_what_the_serve_options_declare(
 def test_an_env_prints_no_serving_line_before_it_answers(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # The line comes from the native ready hook (redacted there), never from
-    # the bound address, which is the invite with its key.
     import rlmesh._peer_info as peer_info
 
     monkeypatch.setattr(serve, "_marks", {})

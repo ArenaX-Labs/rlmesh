@@ -1,5 +1,3 @@
-"""Shared vector-environment remote client base."""
-
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -37,8 +35,7 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
     _single_action_space: Space[ActionT] | None = None
     _batched_spaces: tuple[Any, Any] | None = None
     _gym_codecs: tuple[_gym.Convert | None, _gym.Convert] | None = None
-    #: ``gymnasium.vector.VectorEnv``'s flag (its ``__del__`` closes an open
-    #: env); open only once connected.
+    #: ``gymnasium.vector.VectorEnv``'s flag: its ``__del__`` closes an open env.
     closed: bool = True
 
     def _initialize(self, *args: Any, **kwargs: Any) -> None:
@@ -64,20 +61,10 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
             connect_timeout_seconds=connect_timeout_seconds,
             request_timeout_seconds=request_timeout_seconds,
             workflow_edition=workflow_edition,
-            # A Gymnasium face's info is the env's own, exactly.
             **({"runtime_info": False} if self._gym_active else {}),
         )
 
     def _adapt_metadata(self, metadata: Mapping[str, object]) -> Metadata:
-        """Restore the Gymnasium ``AutoresetMode`` enum on the endpoint metadata.
-
-        The wire codec degrades Gymnasium's ``AutoresetMode`` enum to its plain
-        string value, but Gymnasium 1.x vector consumers (for example
-        ``RecordEpisodeStatistics``) assert that ``metadata["autoreset_mode"]`` is
-        an ``AutoresetMode`` instance. We restore the enum here so a
-        Gymnasium-compliant training loop can read the server-side autoreset
-        convention.
-        """
         return _normalize_autoreset_mode(metadata)
 
     @property
@@ -171,7 +158,6 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
         else:
             seeds = [seed]
         if self._gym_active:
-            # Seeds this env's own ``np_random``, as ``VectorEnv.reset`` does.
             cast("Any", _gym.gym).vector.VectorEnv.reset(
                 self, seed=seed if isinstance(seed, int) else None
             )
@@ -193,7 +179,6 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
             name wins and shadows the runtime's; the client logs that once.
         """
         if self._gym_values and not isinstance(actions, list):
-            # One batched action (Gymnasium's form); a list stays per lane.
             actions = cast("ActionT", self._codecs()[1](actions))
         obs, rewards, terminated, truncated, info = self._client.step(
             self._encode_actions(cast("ActionT", actions))
@@ -207,11 +192,7 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
         )
 
     def _encode_actions(self, actions: ActionT) -> object:
-        """Encode a batched action through the value bridge when possible.
-
-        The value conversion module owns the framework-array batch heuristic;
-        this client only supplies the action-space and lane context.
-        """
+        """Encode a batched action through the value bridge when possible."""
         return encode_framework_array_batch(
             actions,
             bridge=self._bridge,
@@ -233,18 +214,13 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
 
 
 def _normalize_autoreset_mode(metadata: Mapping[str, object]) -> Metadata:
-    """Restore ``autoreset_mode`` to a Gymnasium ``AutoresetMode`` enum.
-
-    The value is returned unchanged when the key is absent, when it is already
-    an ``AutoresetMode``, when it does not match a known mode, or when
-    Gymnasium is not installed.
-    """
+    """Restore ``autoreset_mode`` to a Gymnasium ``AutoresetMode`` enum."""
     mode = metadata.get("autoreset_mode")
     if mode is None or not isinstance(mode, str):
         return metadata
     try:
         from gymnasium.vector import AutoresetMode
-    except ImportError:  # pragma: no cover - gymnasium optional
+    except ImportError:  # pragma: no cover
         return metadata
     try:
         enum_mode = AutoresetMode(mode)

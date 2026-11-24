@@ -22,33 +22,22 @@ use crate::lockstep::error::GymError;
 use crate::lockstep::session::lockstep_transport;
 use crate::model::handler::ModelHandler;
 
-/// The sessions a served model joined at its drivers' invitation, each
-/// answered with the same service.
 pub(super) struct Joins<H> {
     pub(super) name: ParticipantId,
     pub(super) service: Arc<ModelService<H>>,
     pub(super) timeout: Duration,
     pub(super) shutdown: CancellationToken,
-    /// The sessions joined, being joined or being left.
     pub(super) sessions: std::sync::Mutex<HashMap<SessionKey, Joined>>,
 }
 
-/// How long an invited model waits for the session's host to answer before
-/// it calls the session out of reach.
 const REACH: Duration = Duration::from_secs(3);
 
-/// A session as its host knows it, however its address is spelled.
 type SessionKey = (std::net::SocketAddr, TenantId, SessionId);
 
 fn session_key(address: &SessionAddress) -> SessionKey {
     (address.base, address.tenant.clone(), address.session)
 }
 
-/// One invited session: its inviters still in it, what stops answering
-/// there, the first inviter's join (`None` while it runs), which the others
-/// wait on rather than joining again under the same name, and its end. It
-/// stays until the model has left the session, so an invitation while it
-/// leaves waits for that instead of joining beside it.
 pub(super) struct Joined {
     inviters: usize,
     cancel: CancellationToken,
@@ -56,16 +45,12 @@ pub(super) struct Joined {
     left: CancellationToken,
 }
 
-/// What an invitation does about the session's entry.
 enum Invited {
-    /// Joins it, the first inviter.
     Join(
         CancellationToken,
         watch::Sender<Option<Result<(), ModelFault>>>,
     ),
-    /// Waits on the first inviter's join.
     Follow(watch::Receiver<Option<Result<(), ModelFault>>>),
-    /// Waits for the model to have left it, then joins again.
     Wait(CancellationToken),
 }
 
@@ -76,20 +61,14 @@ impl<H: ModelHandler + 'static> Joins<H> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Forgets the session at `key`, which the model has left (or never
-    /// joined).
     fn forget(&self, key: &SessionKey) {
         if let Some(joined) = self.sessions().remove(key) {
             joined.left.cancel();
         }
     }
 
-    /// Joins the session at `text` (once per session), answering there
-    /// until its inviters leave or nobody else is left.
     async fn join(self: &Arc<Self>, text: &str) -> Result<(), ModelFault> {
         let address: SessionAddress = text.parse().map_err(|e: SessionError| {
-            // A host name that does not resolve yet is out of reach, not
-            // a malformed request.
             let code = match e {
                 SessionError::Io(_) => "UNAVAILABLE",
                 _ => "INVALID_REQUEST",
@@ -101,8 +80,6 @@ impl<H: ModelHandler + 'static> Joins<H> {
             if self.shutdown.is_cancelled() {
                 return Err(fault("UNAVAILABLE", "the model is closing", false));
             }
-            // One lock decides: join here, wait on the join in progress, or
-            // wait for the last one to have left.
             let invited = {
                 let mut sessions = self.sessions();
                 match sessions.get_mut(&key) {
@@ -154,17 +131,13 @@ impl<H: ModelHandler + 'static> Joins<H> {
         }
     }
 
-    /// Joins the session at `address` and answers there until `cancel`
-    /// fires, forgetting it once the model has left.
     async fn answer_there(
         self: &Arc<Self>,
         address: SessionAddress,
         key: SessionKey,
         cancel: CancellationToken,
     ) -> Result<(), ModelFault> {
-        // A session out of the model's reach (an address only its driver's
-        // network reaches, such as its loopback) fails the invitation in
-        // seconds, before the driver's own wait for the answer runs out.
+        // A session out of the model's reach fails the invitation fast, before the driver's own wait runs out.
         if !address.reachable(REACH.min(self.timeout)).await {
             self.forget(&key);
             return Err(self.unreachable(&address, "nothing answers there"));
@@ -185,10 +158,6 @@ impl<H: ModelHandler + 'static> Joins<H> {
                 return Err(self.unreachable(&address, &e.to_string()));
             }
         };
-        // Alone in the session: every inviter is gone, whether or not it
-        // said so. Its inviters join after this answers, so it counts as
-        // alone only once someone else was there, or when nobody came
-        // within the join timeout.
         let mut roster = participant.watch();
         let (alone, me) = (cancel.clone(), self.name.clone());
         let deadline = tokio::time::Instant::now() + self.timeout;
@@ -232,7 +201,6 @@ impl<H: ModelHandler + 'static> Joins<H> {
         Ok(())
     }
 
-    /// The model could not reach the env's session at `address`, and why.
     fn unreachable(&self, address: &SessionAddress, why: &str) -> ModelFault {
         fault(
             "UNAVAILABLE",
@@ -246,8 +214,6 @@ impl<H: ModelHandler + 'static> Joins<H> {
         )
     }
 
-    /// One inviter of the session at `text` left; the last one's leaving
-    /// stops the model answering there.
     fn leave(&self, text: &str) {
         let Ok(address) = text.parse::<SessionAddress>() else {
             return;
@@ -261,10 +227,6 @@ impl<H: ModelHandler + 'static> Joins<H> {
     }
 }
 
-/// Answers on `participant`'s session (at `session`) until `cancel`
-/// fires, then leaves it, announcing `ready` once it answers. Boxed: an
-/// invitation answered there serves the invited session with this same
-/// future.
 pub(super) fn answer_in<H: ModelHandler + 'static>(
     joins: Arc<Joins<H>>,
     participant: Participant,
@@ -290,9 +252,6 @@ pub(super) fn answer_in<H: ModelHandler + 'static>(
     })
 }
 
-/// Answers the model's requests on `key` until `cancel` fires. Requests run
-/// side by side; the handler's lock orders forwards. `ready` runs once
-/// requests can arrive; what it returns lives as long as the serve.
 async fn serve_zenoh<H: ModelHandler + 'static, R>(
     session: Transport,
     key: String,
@@ -361,8 +320,6 @@ async fn serve_zenoh<H: ModelHandler + 'static, R>(
     Ok(())
 }
 
-/// Holds a model's leaving of an invited session, once, until an invitation
-/// waits on it, so a test can make the two meet.
 #[cfg(test)]
 mod leaving {
     use std::collections::HashMap;
@@ -371,7 +328,6 @@ mod leaving {
     use rlmesh_session::wire::ParticipantId;
     use tokio::sync::Notify;
 
-    /// Notified as the model leaves, and as an invitation waits on that.
     #[derive(Default)]
     pub(super) struct Hold {
         pub(super) leaving: Notify,
@@ -386,7 +342,6 @@ mod leaving {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Holds the next leaving of the model named `model`.
     pub(super) fn hold(model: &str) -> Arc<Hold> {
         Arc::clone(holds().entry(model.to_string()).or_default())
     }
@@ -446,8 +401,6 @@ mod rejoin_tests {
         let hold = leaving::hold("rejoin");
         driver.close().await;
         hold.leaving.notified().await;
-        // The model is still leaving: the invitation waits for that, then
-        // joins again and answers.
         invite("driver-again").await.unwrap().close().await;
         cancel.cancel();
         served.await.unwrap().unwrap();
@@ -490,14 +443,12 @@ mod blocking_tests {
                 CancellationToken::new(),
                 None,
             );
-            // Answering over its own lockstep session once that answers.
             tokio::select! {
                 ended = &mut answering => panic!("the model stopped answering: {ended:?}"),
                 () = host.answered(&key) => {}
             }
             (host, answering)
         });
-        // The answer is cancelled: its lockstep session goes unclosed.
         let dropped = timer_survives(async move { drop(answering) });
         assert!(
             dropped,

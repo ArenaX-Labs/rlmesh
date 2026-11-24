@@ -1,10 +1,4 @@
-"""Gymnasium <-> RLMesh space schema conversion.
-
-This module converts *space descriptions*, not runtime values. Keep runtime
-payload conversion in ``rlmesh._value_conversion`` and PyO3 ``SpaceValue``
-codecs. The Python paths here exist for Gymnasium compatibility/version quirks;
-anything outside those narrow cases should fall back to the native parser.
-"""
+"""Gymnasium <-> RLMesh space schema conversion."""
 
 from __future__ import annotations
 
@@ -182,10 +176,7 @@ def _box_from_gymnasium(space: Any) -> Box:
 
     low: Any = np.asarray(space.low)
     high: Any = np.asarray(space.high)
-    # The uniform fast path collapses the bounds through Python ``float`` — only
-    # safe for non-integer dtypes, since integer bounds beyond 2^53 (notably
-    # int64/uint64) would lose precision. Integer Boxes go through the native
-    # parser, which preserves them as exact dtype-typed bounds.
+    # Integer bounds beyond 2^53 lose precision through ``float``; integer Boxes use the native parser.
     if (
         not np.issubdtype(low.dtype, np.integer)
         and low.size > 0
@@ -219,11 +210,9 @@ def _box_to_gymnasium(gym_spaces: Any, spec: SpaceSpec) -> object:
         low = np.full(shape, details["low"], dtype=dtype)
         high = np.full(shape, details["high"], dtype=dtype)
     elif bounds_kind == "typed_uniform":
-        # A single dtype-typed scalar (decoded exactly) broadcast to the shape.
         low = np.full(shape, details["low"], dtype=dtype)
         high = np.full(shape, details["high"], dtype=dtype)
     else:
-        # "elementwise" / "typed_elementwise": one bound per element, row-major.
         low_flat: Any = np.asarray(details["low"], dtype=dtype)
         high_flat: Any = np.asarray(details["high"], dtype=dtype)
         low = low_flat.reshape(shape)
@@ -244,7 +233,6 @@ def _multi_discrete_from_gymnasium(space: Any) -> MultiDiscrete:
 
 
 def _space_from_native_gym_parser(space: object) -> Space[Value]:
-    """Parse a Gymnasium space through the native schema converter."""
     from .._rlmesh import space_spec_from_gym_space
 
     return space_from_spec(space_spec_from_gym_space(space))

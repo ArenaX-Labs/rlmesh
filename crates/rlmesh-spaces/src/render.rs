@@ -5,8 +5,7 @@ pub struct BinaryPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RenderFrame {
-    /// Rendered frame bytes. Currently PNG-encoded and experimental; the format
-    /// is carried out-of-band. A future format discriminator is additive.
+    /// Rendered frame bytes.
     pub frame: Vec<u8>,
 }
 

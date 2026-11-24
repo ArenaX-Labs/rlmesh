@@ -1,5 +1,3 @@
-//! Admit a custom input as a host-language hole, gating entrypoint trust.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 

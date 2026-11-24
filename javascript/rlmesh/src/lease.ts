@@ -1,6 +1,5 @@
 import type { LeaseState, Priority, Revocation } from './types.js';
 
-/** What a Lease needs from its session (kept narrow so the two modules do not import each other). */
 export interface LeaseHost {
   post(m: unknown): boolean;
   request(m: Record<string, unknown>): Promise<any>;
@@ -18,7 +17,7 @@ export interface LeaseHost {
  */
 export class Lease implements Disposable {
   state: LeaseState = 'held';
-  /** Time left before the local deadline (a conservative bound of the host's expiry); refreshed every 250 ms. */
+  /** Time left before the local deadline; refreshed every 250 ms. */
   remaining_ms = Number.NaN;
   /** Resolves when the lease ends without `release()`. Never rejects. */
   readonly revoked: Promise<Revocation>;

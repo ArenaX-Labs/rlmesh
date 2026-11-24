@@ -11,7 +11,6 @@ from scripts.dev.affected import (
     write_github_output,
 )
 
-# spaces <- runtime <- session <- python; viewer stands alone.
 WORKSPACE = Workspace(
     dirs={
         "rlmesh-spaces": PurePosixPath("crates/rlmesh-spaces"),
@@ -121,7 +120,6 @@ def test_ci_output_uses_broad_selection_and_appends(tmp_path: Path) -> None:
 
 
 def test_windows_wheel_check_follows_the_extension_in_ci_only() -> None:
-    # spaces reaches the extension through runtime and session; viewer does not.
     assert plan(["crates/rlmesh-spaces/src/box.rs"], WORKSPACE, ci=True).windows
     assert not plan(["crates/rlmesh-spaces/src/box.rs"], WORKSPACE).windows
     assert not plan(["crates/rlmesh-viewer/src/lib.rs"], WORKSPACE, ci=True).windows

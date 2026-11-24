@@ -1,6 +1,4 @@
-//! Facade-backed environment servers and sized serve options. A server is a
-//! session participant (`:0/env` by default), as Python's `EnvServer` is.
-#![allow(unsafe_code)] // C strings, sized options and borrowed handles.
+#![allow(unsafe_code)]
 use crate::abi::{
     sizing,
     status::{CapiError, RLMeshStatus, guard, guard_value},
@@ -134,8 +132,6 @@ impl Drop for RLMeshEnvServer {
         rlmesh::binding::env_server_join_abandoned(&self.server);
     }
 }
-/// # Safety
-/// A non-NULL handle stays live for the returned reference's lifetime.
 unsafe fn require<'a>(ptr: *const RLMeshEnvServer) -> Result<&'a RLMeshEnvServer, CapiError> {
     unsafe { ptr.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null server"))
 }
@@ -168,7 +164,6 @@ fn output(
         )
     }
 }
-/// Transfer an already-started factory server and its independent env drain.
 pub(crate) fn factory_output(
     server: EnvServer,
     drain: crate::env_factory::ServeDrain,

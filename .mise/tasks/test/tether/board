@@ -5,7 +5,6 @@
 #USAGE flag "--fqbn <fqbn>" default="arduino:renesas_uno:minima" help="The board (arduino-cli board listall): arduino:avr:nano, arduino:avr:uno, arduino:renesas_uno:minima, ..."
 #USAGE flag "--no-upload" help="Check the sketch already on the board"
 #USAGE flag "--clear-estop" help="Clear the stored e-stop latch on attach (with the button released)"
-# ARDUINO_CLI names an arduino-cli binary off PATH.
 set -euo pipefail
 
 port="${usage_port:-/dev/ttyACM0}"
@@ -22,7 +21,6 @@ if [ "${usage_no_upload:-false}" != true ]; then
   echo "==> arduino-cli: examples/Eyes to $fqbn on $port"
   "$cli" compile --fqbn "$fqbn" --library "$lib" --build-path target/tether-board \
     --upload --port "$port" "$lib/examples/Eyes"
-  # A native-USB board re-enumerates after the upload.
   for _ in $(seq 50); do [ -e "$port" ] && break; sleep 0.1; done
   sleep 1
 fi

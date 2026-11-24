@@ -1,19 +1,4 @@
 #!/bin/sh
-# Runs COMMAND twice, as a session host and as a client on another network:
-# RLMESH_TEST_ROLE=host, then RLMESH_TEST_ROLE=client, both with
-# RLMESH_TEST_HOST_IP, the host's non-loopback address. Exits with the
-# client's status once the host is stopped.
-#
-# Two network namespaces joined by a veth pair where unprivileged user
-# namespaces allow it (no root needed), so the client's packets cross an
-# interface the host does not share; else both on this machine, the host on
-# its non-loopback address (also with RLMESH_TEST_NO_NETNS=1). Exits 77
-# (skip) when it has neither.
-#
-# RLMESH_TEST_NETEM (tc netem arguments, "delay 150ms") slows the link both
-# ways; it needs the namespaces, and exits 77 without them.
-#
-# usage: scripts/test-across-netns.sh COMMAND [ARG...]
 set -eu
 
 HOST_IP=10.199.0.1
@@ -38,7 +23,6 @@ run_pair() {
 }
 
 if [ "${RLMESH_NETNS_INSIDE:-}" = 1 ]; then
-    # Root of a fresh user namespace, in the host's network namespace.
     ip link set lo up
     ip link add rlmesh-h type veth peer name rlmesh-c
     ip addr add "$HOST_IP/24" dev rlmesh-h
@@ -79,7 +63,6 @@ if [ -n "${RLMESH_TEST_NETEM:-}" ]; then
     exit 77
 fi
 
-# This machine's address on its default route (no packet is sent).
 ip=$(ip -4 route get 192.0.2.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1) || ip=
 case "$ip" in
 "" | 127.*)

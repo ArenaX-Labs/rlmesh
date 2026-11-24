@@ -1,10 +1,6 @@
 //! `rlmesh cockpit ADDRESS`: the cockpit window on one live session;
 //! `rlmesh cockpit --replay FILE` on a recorded one. The same command is the
 //! standalone `rlmesh-cockpit` binary.
-//!
-//! [`run`] is async so the `rlmesh` CLI can call it from its runtime: it
-//! joins the session there, then runs the window on the calling thread
-//! (`block_in_place`), which must be the process's main thread on macOS.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -110,7 +106,6 @@ pub fn session_address(args: &CockpitArgs, env: Option<String>) -> Result<Sessio
             }
         },
     };
-    // The session's own parse error already leaves the key out.
     text.parse::<SessionAddress>()
         .map_err(|e| format!("{from}: {e}").into())
 }
@@ -144,9 +139,6 @@ fn window(
 }
 
 fn replay(path: &Path) -> Result<(), Error> {
-    // Not a participant of the recording (its cockpit is likely `cockpit`):
-    // replayed inputs are already session time, so no clock mapping of
-    // `me` may apply to them.
     let me = ParticipantId::new("_replay")?;
     let replay = Replay::open(path, me, ModelConfig::default())?;
     let path = path.to_path_buf();
@@ -169,8 +161,6 @@ async fn live(args: &CockpitArgs, address: &SessionAddress) -> Result<(), Error>
     );
     tracing::info!(session = %address, "attached as an observer");
     let me = ParticipantId::new(&args.id)?;
-    // The window's context exists only once it opens; until then nothing
-    // needs repainting.
     let ctx: Arc<OnceLock<egui::Context>> = Arc::default();
     let wake = Arc::new({
         let ctx = ctx.clone();
@@ -219,14 +209,12 @@ mod tests {
                 .expect("args")
                 .args
         };
-        // Positional, malformed: our parse refuses it, not clap's echo.
         let args = parse(&format!("cockpit 127.0.0.1:x/s#{key}"));
         assert!(!format!("{args:?}").contains(&key));
         let err = session_address(&args, None)
             .expect_err("a bad port")
             .to_string();
         assert!(!err.contains(&key), "{err}");
-        // From the environment, when nothing else names it.
         let keyed = format!("127.0.0.1:17600/s#{key}");
         let address =
             session_address(&parse("cockpit"), Some(keyed)).expect("from the environment");

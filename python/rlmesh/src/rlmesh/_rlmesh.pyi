@@ -247,66 +247,49 @@ class AdapterPlan:
         """
     def referenced_obs_keys(self) -> builtins.list[builtins.str]:
         r"""
-        The top-level observation keys this adapter reads.
-        
-        A host wrapper should encode only these before calling
-        [`transform_obs`](Self::transform_obs), so an unused — possibly
-        unencodable — observation key never aborts a step.
+        The top-level observation keys this adapter reads. Encode only these before
+        `transform_obs`, so an unused, possibly unencodable key never aborts a step.
         """
     def custom_inputs(self) -> builtins.list[tuple[builtins.list[builtins.str | builtins.int], builtins.str]]:
         r"""
         `(segments, transform)` pairs for custom-input holes, plan order.
         
-        `segments` is the custom leaf's structured placement path: each step is a
-        `str` (`Dict` key) or `int` (`Tuple` index), built directly from the
-        native `NodePath` — no placement string for the caller to re-parse. An
-        empty segment list is the root (a bare-leaf payload).
+        `segments` is the leaf's placement path: each step a `str` (`Dict` key) or `int`
+        (`Tuple` index); an empty list is the root.
         """
     def state_layouts(self) -> builtins.list[tuple[builtins.list[builtins.str | builtins.int], builtins.list[builtins.int], builtins.int]]:
         r"""
         `(segments, part_widths, width)` per resolved state input, plan order.
         
-        `segments` is the state leaf's structured placement path (as in
-        [`custom_inputs`](Self::custom_inputs)), `part_widths` the resolved width
-        each declared part contributes in order, and `width` the assembled
-        leaf's width (its `pad_to` when it pads). A host-side custom encoding
-        reads and writes exactly its own slice of the leaf, whose offset is the
-        sum of the widths before it — env-dependent, so it is knowable only
-        here, after resolve. A state whose widths are not all statically known
-        is omitted (nothing can be addressed inside it).
+        `segments` is the leaf's placement path (as in `custom_inputs`), `part_widths` the
+        width each declared part contributes in order, and `width` the assembled leaf's width
+        (its `pad_to` when it pads). A part's offset is the sum of the widths before it. A
+        state whose widths are not all statically known is omitted.
         """
     def transform_obs(self, raw_obs: typing.Any) -> typing.Any:
         r"""
         Apply the observation plans to a canonical value-tree observation map.
         
-        Returns the assembled payload as a neutral Python object (a nested
-        dict/list/leaf — the model spec's `InputNode` shape, a Value tree);
-        custom inputs are omitted (the caller fills them from the raw host
-        observation).
+        Returns the assembled payload as a nested dict/list/leaf value tree in the model
+        spec's input shape. Custom inputs are omitted; the caller fills them from the raw
+        observation.
         """
     def history_keys(self) -> builtins.list[builtins.str]:
         r"""
         Canonical placement strings of the inputs that hold per-episode history:
-        a frame window, or a part reading the model's previous action.
-        
-        Empty means an env step that predicts nothing has no state to advance, so
-        the caller can skip [`transform_history`](Self::transform_history)
-        entirely.
+        a frame window, or a part reading the model's previous action. Empty means a step that
+        predicts nothing has no state to advance, so `transform_history` can be skipped.
         """
     def history_windows(self) -> builtins.list[tuple[builtins.str, builtins.int, builtins.int]]:
         r"""
-        `(key, span, frame_bytes)` per frame window this plan holds per live
-        episode — what a caller budgets `num_envs x sum(span x frame_bytes)`
-        from before a route runs. `frame_bytes` is `0` when the env's camera
-        resolution was not derivable.
+        `(key, span, frame_bytes)` per frame window held per live episode; `frame_bytes` is `0` when
+        the env camera resolution was not derivable.
         """
     def transform_history(self, raw_obs: typing.Any) -> None:
         r"""
-        Advance the frame windows from a raw observation, assembling nothing.
-        
-        The tick a step that replays a queued action owes its history: the frame
-        still happened, so it still goes in the window, and the local step
-        counter advances so the replayed action is recorded under its step.
+        Advance the frame windows from a raw observation, assembling nothing. Call it for a
+        step that replays a queued action: the frame still goes in the window, and the local
+        step counter advances.
         """
     def reset_history(self) -> None:
         r"""
@@ -315,10 +298,8 @@ class AdapterPlan:
         """
     def transform_action(self, raw_action: typing.Any) -> typing.Any:
         r"""
-        Apply the action plan to a canonical value-tree model action, recording
-        it as the action executed at the step last ticked when a state part
-        reads the previous action (the local half of the served engine's
-        `apply_actions`). Before any tick there is no step to record under.
+        Apply the action plan to a canonical value-tree model action, recording it as the
+        action executed at the last ticked step when a state part reads the previous action.
         """
 
 @typing.final
@@ -326,10 +307,8 @@ class Advisory:
     r"""
     One non-fatal adapter advisory: a message plus a severity tier.
     
-    `severity` is `"info"` for benign hints (an authoring nudge, an
-    explicitly-requested lossy step) and `"caution"` when the adapter
-    substituted or fabricated model-visible data (a role-rebound camera, a
-    zero-filled frame) — the tier an eval harness may want to hard-fail on.
+    `severity` is `"info"` for a benign hint and `"caution"` when the adapter substituted or
+    fabricated model-visible data (a role-rebound camera, a zero-filled frame).
     `str(advisory)` is the message.
     """
     @property
@@ -387,10 +366,8 @@ class BuildInfo:
     @property
     def supported_workflow_editions(self) -> builtins.list[builtins.str]:
         r"""
-        Every workflow edition this build can drive a session at, newest first:
-        the retained list a served peer offers on `supported_workflow_editions`
-        in its handshake, so a describe envelope advertises exactly what the
-        handshake will.
+        Every workflow edition this build can drive a session at, newest first; the list a served
+        peer offers in its handshake.
         """
     @property
     def build_cohort(self) -> builtins.str:
@@ -521,10 +498,9 @@ class PyEnvServer:
 @typing.final
 class PyEpisodeArtifacts:
     r"""
-    The Python recorder's handle on a workload's per-episode artifact tree
-    (`episodes/epNNNNNN/`, the managed evaluation-artifacts layout). A run
-    feeds it the native loop's events; the recorder reads back each closed
-    episode's record to bundle its files.
+    The Python recorder's handle on a workload's per-episode artifact tree (`episodes/epNNNNNN/`).
+    A run feeds it the loop's events; the recorder reads back each closed episode's record to
+    bundle its files.
     """
     def __new__(cls, root: builtins.str, record: builtins.str, task_id: builtins.str, workload_id: builtins.str, quality: builtins.int = ..., codec: builtins.str = ..., ffmpeg: typing.Optional[builtins.str] = None) -> PyEpisodeArtifacts:
         r"""
@@ -622,10 +598,8 @@ class PyVideoWriter:
         r"""
         Queue one contiguous HWC uint8 frame (`channels` = 1/3/4) for encoding.
         
-        `buf` is any C-contiguous uint8 buffer (bytes, a flat memoryview, a
-        numpy array) -- read through the buffer protocol, so the only Python-side
-        copy is the one that hands the frame to the encoder thread. An encode
-        failure surfaces on a later call (or at `finish`), never silently.
+        `buf` is any C-contiguous uint8 buffer. An encode failure is raised on a later call or
+        at `finish`.
         """
     def finish(self) -> tuple[builtins.int, builtins.int, builtins.int]:
         r"""
@@ -657,11 +631,10 @@ class PyViewer:
         """
     def feed_hud(self, step: builtins.int, reward: builtins.float, outcome: builtins.str, *, model_ms: builtins.float = ..., env_ms: builtins.float = ..., sps: builtins.float = ..., elapsed_s: builtins.float = ..., episode: builtins.int = ..., episodes: builtins.int = ..., seed: builtins.int = ..., width: builtins.int = ..., height: builtins.int = ..., chunk_pos: builtins.int = ..., chunk_len: builtins.int = ...) -> None:
         r"""
-        Update the HUD: step / cumulative reward / outcome (all computed by the caller)
-        plus the optional debug metrics the Session measures — model & env step timing,
-        eval throughput, episode elapsed, episode index/seed, action-chunk replay
-        position, and the selected source's frame size. The viewer fills in its own draw
-        fps; every metric defaults to a "not applicable" sentinel so old callers still work.
+        Update the HUD: step, cumulative reward and outcome, plus optional debug metrics
+        (model and env step time, throughput, episode elapsed time, episode index and seed,
+        frame size, chunk replay position). Each metric defaults to a "not applicable"
+        sentinel; the viewer measures its own draw rate.
         """
     def should_quit(self) -> builtins.bool:
         r"""
@@ -769,10 +742,9 @@ class Tensor:
         r"""
         Export the tensor as a DLPack capsule.
         
-        With `max_version` of `(1, 0)` or newer the capsule is a DLPack 1.0
-        `DLManagedTensorVersioned` flagged read-only; otherwise it is a
-        legacy `DLManagedTensor`. `copy=True` exports a fresh writable
-        buffer. Only `stream=None` and CPU `dl_device` are accepted.
+        With `max_version` of `(1, 0)` or newer the capsule is a read-only DLPack 1.0
+        `DLManagedTensorVersioned`; otherwise a legacy `DLManagedTensor`. `copy=True` exports a
+        fresh writable buffer. Only `stream=None` and a CPU `dl_device` are accepted.
         """
     def __dlpack_device__(self) -> tuple[builtins.int, builtins.int]:
         r"""
@@ -901,24 +873,23 @@ class V2Controller:
         r"""
         Runs the policy on its robot's clock, on this thread.
         
-        Wall clock: the loop until `stop()`, `duration_s` or a failure,
-        calling `predict(observation)` at the replan rate with one inference
-        in flight. `mode` is `command`, or `shadow` to predict without a
-        lease and send nothing until it holds one. `resume` is `manual` (the
-        default): a part a higher class took stays parked until `resume()`,
-        or `auto`: it is asked for again once free. If the robot or the host
-        is lost, it raises `SessionLost`.
+        Wall clock: the loop until `stop()`, `duration_s` or a failure, calling
+        `predict(observation)` at the replan rate with one inference in flight.
+        `mode` is `command`, or `shadow` to predict without a lease and send
+        nothing until it holds one. `resume` is `manual` (the default): a part a
+        higher class took stays parked until `resume()`; or `auto`: it is asked
+        for again once free. If the robot or the host is lost, it raises
+        `SessionLost`.
         
-        Lockstep: `episodes` episodes (default 1), each from a reset seeded
-        from `seed` as a model run seeds it, one `predict` per chunk, until
-        each ends or `stop()`. `duration_s`, `mode="shadow"` and `resume`
-        raise `ValueError` here, as `episodes` and `seed` do on the wall
-        clock.
+        Lockstep: `episodes` episodes (default 1), each from a reset seeded from
+        `seed` as a model run seeds it, one `predict` per chunk, until each ends
+        or `stop()`. `duration_s`, `mode="shadow"` and `resume` raise
+        `ValueError` here, as `episodes` and `seed` do on the wall clock.
         
-        `on_step(step)` gets each completed start as a dict (`shadow`,
-        `time_ns`, and per action entry its `actions` as the edge receives
-        them, `parts` and chunk `seqs`). If `predict` or `on_step` raises,
-        the leases are released and the exception propagates.
+        `on_step(step)` gets each completed start as a dict (`shadow`, `time_ns`,
+        and per action entry its `actions` as the edge receives them, `parts`
+        and chunk `seqs`). If `predict` or `on_step` raises, the leases are
+        released and the exception propagates.
         """
     def stop(self) -> None:
         r"""
@@ -1360,9 +1331,6 @@ class V2Robot:
 
 @typing.final
 class V2Samples:
-    r"""
-    [`PyRecorder::samples`]: a recording's samples, decoded as they are taken.
-    """
     def __iter__(self) -> V2Samples: ...
     def __next__(self) -> tuple[builtins.str, builtins.int, builtins.int, builtins.list[tuple[builtins.str, builtins.str, builtins.list[builtins.int], builtins.bytes]]]:
         r"""
@@ -1392,12 +1360,10 @@ def current_workflow_edition() -> builtins.str:
     The bare `YYYY.MM` workflow edition this build runs at — the value to paste
     into a declaration, on every build.
     
-    A declaration names the contract a participant was authored against, and a
-    bare base selects whichever spelling of that base both sides offer: the
-    sealed name on a release, this build's cohort (`YYYY.MM-<cohort>`, what
-    `rlmesh.build_info().workflow_edition` reports) on a prerelease or local
-    build. That cohort spelling is also accepted as a declaration, pinning to
-    that exact moving build.
+    A bare base selects whichever spelling of it both sides offer: the sealed name on a
+    release, this build's cohort (`YYYY.MM-<cohort>`, as `rlmesh.build_info().workflow_edition`
+    reports) on a prerelease or local build. The cohort spelling is also accepted as a
+    declaration, pinning that exact moving build.
     """
 
 def describe_envelope_normalize(kind: str, pieces_json: str, generated_at: str | None = None) -> str: ...
@@ -1453,11 +1419,10 @@ def resolve_execution_horizon(explicit: typing.Optional[builtins.int] = None, lo
 
 def resolve_workflow_edition_rungs(*, call: typing.Optional[builtins.str] = None, option: typing.Optional[builtins.str] = None, declared: typing.Optional[builtins.str] = None) -> tuple[typing.Optional[builtins.str], builtins.bool]:
     r"""
-    The facade resolver's rungs (COR-6): the call's value,
-    `RLMESH_WORKFLOW_EDITION`, the served peer's option, the class
-    declaration. Returns the winner (validated and trimmed) and whether
-    resolution stopped at a set-but-blank variable; `(None, False)` leaves
-    Python's `pyproject.toml` rung to the caller.
+    Resolve the workflow edition: the call's value, `RLMESH_WORKFLOW_EDITION`, the served peer's
+    option, the class declaration. Returns the winner (validated and trimmed) and whether
+    resolution stopped at a set-but-blank variable; `(None, False)` leaves the
+    `pyproject.toml` rung to the caller.
     """
 
 def run_cli(args: list[str]) -> int: ...
@@ -1491,11 +1456,5 @@ def validate_workflow_edition(edition: builtins.str) -> builtins.str:
     r"""
     Refuse a declared workflow edition this build cannot run a session at, naming
     the value and the editions it offers; return it trimmed otherwise.
-    
-    The single Python-side boundary for a declared edition: every surface that
-    takes one from a user (`ServeOptions`, `--workflow-edition`, `run`/`session`,
-    `RLMESH_WORKFLOW_EDITION`, a class declaration, `[tool.rlmesh]`) resolves
-    through it, so a name that cannot work is refused where it is typed rather
-    than as a negotiation failure on the first connection.
     """
 

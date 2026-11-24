@@ -1,10 +1,4 @@
-//! `Binding<'a>`: a model bound to one env and stepped by hand, as Python's
-//! `Model.bind(target)`.
-//!
-//! The engine's [`Binding`](crate::model::bind::Binding) drives the env over
-//! its session. A local env (or a factory's) is served in this process
-//! behind a loopback server whose lanes relay each call to the thread that
-//! drives the binding, so the env only ever runs on its caller's thread.
+//! `Binding<'a>`: a model bound to one env and stepped by hand.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,10 +17,8 @@ use crate::model::handler::ModelHandler;
 use crate::value::{meta_codec, space_codec};
 use crate::{EnvContract, EnvServer, Error, InfoDict, MadeEnv, Metadata, Result, Value};
 
-/// The env a binding serves itself, run on the caller's side.
 enum Local<'a> {
     Borrowed(LocalEnv<'a>),
-    /// Built from a factory at bind and closed with the binding.
     Made(OwnedMadeEnv),
 }
 
@@ -53,10 +45,8 @@ impl<'a> std::ops::DerefMut for HookSink<'a> {
     }
 }
 
-/// The hooks a binding feeds, with the episodes it has seen.
 struct Track<'a> {
     hooks: HookSink<'a>,
-    /// The info keys the binding's edition reads an episode's success from.
     success_keys: &'static [&'static str],
     episodes: Vec<EpisodeResult>,
     index: i64,
@@ -66,22 +56,18 @@ struct Track<'a> {
     started: Instant,
     predict_ms: Vec<f64>,
     step_ms: Vec<f64>,
-    /// The latest reset's or step's info.
     info: InfoDict,
-    /// The observation the next action is predicted from.
     last: Value,
 }
 
 /// A model bound to one env lane; see [`Model::bind`](crate::Model::bind).
 pub struct Binding<'a> {
     inner: Option<crate::model::bind::Binding>,
-    /// Set once connected.
     contract: Option<EnvContract>,
     context: Arc<LibraryContext>,
     local: Option<Local<'a>>,
     queue: CallerQueue,
     loopback: Option<EnvServer>,
-    /// A served env this binding shuts down on close (`close_env`).
     shutdown: Option<&'a EnvServer>,
     close_env: bool,
     done: Arc<std::sync::atomic::AtomicBool>,
@@ -105,9 +91,6 @@ fn closed_error() -> Error {
 }
 
 impl<'a> Binding<'a> {
-    /// Bind `model` to `env`: connects now, serving a local env in this
-    /// process for the binding's life. A vector env with more than one
-    /// lane and an open `RemoteEnv` are refused.
     pub(crate) fn create(
         model: ModelTarget<'a>,
         env: EnvTarget<'a>,
@@ -127,7 +110,6 @@ impl<'a> Binding<'a> {
             ));
         }
         let context = LibraryContext::new();
-        // A local env is served on a served model's host, which it reaches.
         let beside = match &model.0 {
             ModelKind::Remote(model) => Some(model.address().to_string()),
             _ => None,
@@ -288,8 +270,6 @@ impl<'a> Binding<'a> {
                 &beside,
             )?,
             EnvKind::Factory(mut factory) => {
-                // Refused before the factory builds anything, as serving
-                // refuses it.
                 let own = factory.local_edition(workflow_edition.as_deref())?;
                 let made = OwnedMadeEnv(Some(factory.make()?), false);
                 let served = own.or_else(|| edition.clone());
@@ -313,7 +293,6 @@ impl<'a> Binding<'a> {
         Ok(binding)
     }
 
-    /// Install an owned binding observer, without a self-referential host borrow.
     #[doc(hidden)]
     pub(crate) fn observe(
         &mut self,
@@ -349,8 +328,6 @@ impl<'a> Binding<'a> {
         Ok(())
     }
 
-    /// Serve `local` behind a loopback server relaying to this thread, on
-    /// the host of the served model at `beside` when there is one.
     fn serve(
         &mut self,
         local: Local<'a>,
@@ -375,7 +352,6 @@ impl<'a> Binding<'a> {
         Ok(address)
     }
 
-    /// What the loopback's lanes reach on this thread.
     fn side(&mut self) -> CallerSide<'_> {
         let env = match &mut self.local {
             Some(Local::Borrowed(LocalEnv::Env(env))) => Some(LocalEnv::Env(&mut **env)),
@@ -391,8 +367,6 @@ impl<'a> Binding<'a> {
         CallerSide { env, hooks: None }
     }
 
-    /// Start one host operation; its token spans every internal driver call
-    /// (for example ending a live episode and then resetting its env).
     #[doc(hidden)]
     pub(crate) fn cancellation(&mut self) -> tokio_util::sync::CancellationToken {
         self.cancel = tokio_util::sync::CancellationToken::new();
@@ -470,9 +444,7 @@ impl<'a> Binding<'a> {
 
     /// One env step under `action`, or the model's when `None`:
     /// `(observation, reward, terminated, truncated, info)`.
-    // TODO: the hooks' transform_observation / transform_action apply to runs
-    // only; apply them in the bind engine's predict/step once a binding user
-    // needs perturbations.
+    // TODO: apply the hooks' transform_observation / transform_action in the bind engine.
     pub fn step(&mut self, action: Option<Value>) -> Result<(Value, f64, bool, bool, InfoDict)> {
         if self.done() {
             return Err(Error::Runtime(
@@ -560,13 +532,10 @@ impl<'a> Binding<'a> {
         Ok((observation, step.reward, step.terminated, truncated, info))
     }
 
-    /// Record the episode in flight as ended, once, for the hooks.
     fn end_episode(&mut self, terminated: bool, truncated: bool) -> Result<()> {
         if self.done.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return Ok(());
         }
-        // Directives and reset-over-live episodes evict model state at the
-        // same edge as a natural terminal step; the engine's end is idempotent.
         let mut inner = self.engine()?;
         let ended = self.drive(inner.end());
         self.inner = Some(inner);
@@ -604,7 +573,6 @@ impl<'a> Binding<'a> {
         self.done.clone()
     }
 
-    /// A renderer independent of a mutable binding borrow, for hook observers.
     #[doc(hidden)]
     pub(crate) fn renderer(&self) -> Result<Arc<dyn Fn() -> Result<Value> + Send + Sync>> {
         Ok(self.inner.as_ref().ok_or_else(closed_error)?.renderer())
@@ -675,7 +643,6 @@ impl<'a> Binding<'a> {
         let inner = self.inner.take().ok_or_else(closed_error)?;
         self.context.close();
         let mut result = ended.and(self.drive(inner.close()));
-        // A lane still waiting on a relayed call fails at once.
         self.queue = caller_channel().1;
         if let Some(server) = self.loopback.take() {
             result = result.and(server.shutdown());
@@ -718,7 +685,6 @@ impl Drop for Binding<'_> {
             return;
         }
         if super::drive::in_async_context() {
-            // The engine's close needs this thread; the env's lane fails.
             if let Some(inner) = self.inner.take() {
                 super::drive::runtime().spawn(async move {
                     let _ = inner.close().await;
@@ -730,9 +696,6 @@ impl Drop for Binding<'_> {
     }
 }
 
-/// The task outcome in an episode's last info, read as the native loop reads
-/// it: the first of `keys` holding a bool, integer or number decides
-/// (numbers by non-zero); `None` when none does.
 fn info_success(keys: &[&str], info: &InfoDict) -> Option<bool> {
     keys.iter().find_map(|key| match info.get(key)? {
         Value::Bool(flag) => Some(*flag),
@@ -742,8 +705,6 @@ fn info_success(keys: &[&str], info: &InfoDict) -> Option<bool> {
     })
 }
 
-/// The edition a model with no declaration of its own (served, or the random
-/// baseline) binds under.
 fn call_edition(call: Option<&str>) -> Result<Option<String>> {
     crate::editions::resolve_native(crate::editions::EditionSources {
         call,

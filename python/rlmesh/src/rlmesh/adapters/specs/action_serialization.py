@@ -30,18 +30,12 @@ def action_to_dict(action: Action) -> dict[str, Any]:
 
 def _actuator_to_dict(component: Actuator) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    # A role-less (opaque) actuator omits role on the wire (mirrors the Rust
-    # skip_serializing_if); a present role is emitted first as before.
     if component.role is not None:
         out["role"] = component.role
     out["dim"] = component.dim
     out["encoding"] = encoding_to_wire(component.encoding)
     out["range"] = list(component.range) if component.range else None
     out["binary"] = component.binary
-    # scale/offset/invert/threshold/clip/fill are additive: emit only when set,
-    # so layouts that do not use them serialize byte-identically to before. A
-    # per-axis sequence goes under its own `axis_*` key; the scalar key never
-    # changes type.
     for name in ("scale", "offset"):
         value = getattr(component, name)
         if isinstance(value, tuple):

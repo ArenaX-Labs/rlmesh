@@ -1,5 +1,3 @@
-//! Tests of the address grammar, the hosting rule and placement.
-
 use super::*;
 use crate::host::HostConfig;
 use crate::host::SessionHost;
@@ -217,13 +215,11 @@ fn a_keyed_address_carries_its_key_through_a_participant_name() {
         assert!(text.ends_with(&format!("#{key}")), "{text}");
         assert!(is_v2_address(&text), "{text}");
         assert_eq!(text.parse::<SessionAddress>().expect("parse"), session);
-        // Scripts append the participant: the key stays with its session.
         let invite = session.participant_invite("arm1");
         let participant = Address::participant(&invite).expect("parse");
         assert_eq!(participant.participant.as_deref(), Some("arm1"));
         assert_eq!(participant.joining().expect("joining"), session);
         assert_eq!(participant.invite(), invite);
-        // Display and Debug, for logs, titles and errors, leave it out.
         let secret = key.to_string();
         let secret = secret.split('.').next().expect("secret");
         for shown in [
@@ -235,7 +231,6 @@ fn a_keyed_address_carries_its_key_through_a_participant_name() {
             assert!(!shown.contains(secret) && shown.contains("#…"), "{shown}");
         }
     }
-    // A launcher's keys: the host it starts hosts under them.
     let (text, launched) = launch_identity().expect("keys");
     let mut parts = text.split('.').map(|p| unbase32(p).expect("base32"));
     let (mut a, mut b, mut c) = (
@@ -249,26 +244,21 @@ fn a_keyed_address_carries_its_key_through_a_participant_name() {
     );
     let err = Address::session("127.0.0.1:7447#nope").expect_err("bad key");
     assert!(err.to_string().contains("#"), "{err}");
-    // Errors never show a key, well-formed or not.
     let secret = key.to_string();
     let secret = secret.split('.').next().expect("secret");
     let malformed = format!("127.0.0.1:7447/bench 3#{key}");
     let err = Address::session(&malformed).expect_err("a bad name");
     assert!(!err.to_string().contains(secret), "{err}");
-    // Nor in the address an upgrade error suggests.
     let old = format!("lockstep://127.0.0.1:7447/local/bench#{key}/env");
     let err = Address::participant(&old).expect_err("an old address");
     assert!(err.to_string().contains("127.0.0.1:7447/bench#"), "{err}");
     assert!(!err.to_string().contains(secret), "{err}");
 }
 
-/// A port that accepts and never answers (a forwarder whose host never comes
-/// up) is a timeout a retry may get past, not a refusal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_port_that_accepts_and_never_answers_times_out() {
     let base = crate::transport::free_local_base(Ipv4Addr::LOCALHOST.into()).expect("port");
     let listener = tokio::net::TcpListener::bind(base).await.expect("base");
-    // Holds each connection open and says nothing.
     let accepting = tokio::spawn(async move {
         let mut held = Vec::new();
         while let Ok((stream, _)) = listener.accept().await {
@@ -286,8 +276,6 @@ async fn a_port_that_accepts_and_never_answers_times_out() {
     );
 }
 
-/// A port that accepts and closes at once (a container runtime's proxy in
-/// front of a host still starting) is a host not up yet, never a refused key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_forwarder_that_drops_every_link_is_no_refusal() {
     let base = crate::transport::free_local_base(Ipv4Addr::LOCALHOST.into()).expect("port");
@@ -329,7 +317,6 @@ async fn an_embedded_host_stays_on_loopback_and_links_only_with_its_key() {
         };
         TransportConfig::per_class_tcp(base).with_tuning(tuning)
     };
-    // Another local user's process, without the key: no link at all.
     let wrong = Some(LinkAuth {
         password: zeroize::Zeroizing::new("guess".into()),
         dictionary: None,
@@ -341,8 +328,6 @@ async fn an_embedded_host_stays_on_loopback_and_links_only_with_its_key() {
                 .is_err()
         );
     }
-    // Joined through the hosting rule, the wrong key is a refusal, final and
-    // soon, not a timeout like a host that does not listen yet.
     let started = std::time::Instant::now();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let refused = open_client(placed.address.base, wrong.clone(), deadline)
@@ -360,9 +345,6 @@ async fn an_embedded_host_stays_on_loopback_and_links_only_with_its_key() {
     linked.close().await.expect("close");
     placed.close().await.expect("close");
 
-    // Bound beyond loopback, it gates no link (a board's zenoh-pico has
-    // no usrpwd), and a join that offers a password links without one;
-    // the handshake still refuses a device it never enrolled.
     let mut lan = host_at(wide, "lan", grace, true).await.expect("insecure");
     let base = lan.address.base;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -413,8 +395,6 @@ async fn an_explicit_local_port_hosts_and_a_second_placement_joins_it() {
 
 #[test]
 fn a_host_name_that_does_not_resolve_is_a_lookup_failure_not_a_bad_address() {
-    // A container's peer may not resolve until it starts: that is I/O a
-    // retry may get past, where a malformed address is configuration.
     let (_, key) = launch_identity().expect("identity");
     let err = Address::session(&format!("nowhere.invalid:7447#{key}"))
         .expect("parse")
@@ -427,8 +407,6 @@ fn a_host_name_that_does_not_resolve_is_a_lookup_failure_not_a_bad_address() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_participant_of_a_host_in_this_process_rides_its_sessions() {
-    // No loopback link between a process and itself: no lease a starved
-    // process could let lapse, losing the host it runs.
     let mut host = place(
         &Address::session(":0").expect("parse"),
         Duration::from_secs(1),
@@ -460,7 +438,6 @@ async fn one_host_serves_many_named_sessions_stops_empty_ones_and_refuses_fast_w
     let mut host = place(&Address::session(":0").expect("parse"), grace)
         .await
         .expect("host");
-    // A host this process placed needs no key in the address.
     let join = |base: SocketAddr, name: &str, key: Option<AddressKey>| {
         let session = SessionAddress {
             key,
@@ -487,7 +464,6 @@ async fn one_host_serves_many_named_sessions_stops_empty_ones_and_refuses_fast_w
     let server = &host.hosted.as_ref().expect("hosted here").0;
     let running = server.sessions().await;
     assert!(running.contains(&session_id("bench-3")) && running.contains(&session_id("robot-lab")));
-    // A session stops when its last participant leaves.
     bench.close().await;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while server.sessions().await.contains(&session_id("bench-3")) {
@@ -501,7 +477,6 @@ async fn one_host_serves_many_named_sessions_stops_empty_ones_and_refuses_fast_w
     drop(lab);
     host.close().await.expect("close");
 
-    // A plain single-session host cannot start sessions: refused at once.
     let tenant = TenantId::new(TENANT).expect("tenant");
     let config = HostConfig::new(tenant, session_id("only"));
     let local = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
@@ -560,13 +535,8 @@ fn a_launch_identity_gives_back_its_key_and_keyed_address() {
     assert!(launched_address(&identity, &format!("10.0.0.5:7447#{other}")).is_err());
 }
 
-/// The scratch directory of [`a_launched_host_is_joined_from_another_machine`]'s
-/// processes, set in them only: the identities and keys (0600 files, never
-/// argv) and the ports the host listens on.
 const ACROSS: &str = "RLMESH_TEST_ACROSS_DIR";
 
-/// The host and the client of [`a_launched_host_is_joined_from_another_machine`],
-/// each in a process of its own, so nothing in-process supplies the key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn across_role() {
     let Some(dir) = std::env::var_os(ACROSS).map(std::path::PathBuf::from) else {
@@ -585,11 +555,9 @@ async fn across_role() {
 
 async fn across_host(dir: &std::path::Path, ip: std::net::IpAddr) {
     let grace = Duration::from_secs(1);
-    // Launched (its identity in HOST_IDENTITY_VAR): every link gated.
     let gated = host_at(SocketAddr::new(ip, 0), "across", grace, false)
         .await
         .expect("a launched host beyond loopback");
-    // A host that gates no link, as `rlmesh host` or an insecure one.
     let identity = std::fs::read_to_string(dir.join("lan-identity")).expect("identity");
     let mut config = HostConfig::new(TenantId::new(TENANT).expect("tenant"), session_id("across"));
     config.identity = std::sync::Arc::new(host_identity(&identity).expect("identity"));
@@ -601,7 +569,6 @@ async fn across_host(dir: &std::path::Path, ip: std::net::IpAddr) {
     let ports = format!("{} {}", gated.address.base.port(), lan.port());
     std::fs::write(dir.join("ports.partial"), ports).expect("write");
     std::fs::rename(dir.join("ports.partial"), dir.join("ports")).expect("rename");
-    // Until the script stops this process.
     std::future::pending::<()>().await;
 }
 
@@ -621,7 +588,6 @@ async fn across_client(dir: &std::path::Path, ip: std::net::IpAddr) {
     let key = |name: &str| std::fs::read_to_string(dir.join(name)).expect("key");
     let (_, wrong) = launch_identity().expect("identity");
     let wrong = wrong.to_string();
-    // A slowed link (RLMESH_TEST_NETEM): every Zenoh open takes seconds.
     let slow = std::env::var_os("RLMESH_TEST_NETEM").is_some();
     let timeout = Duration::from_secs(if slow { 40 } else { 10 });
     let join = |port: &str, key: Option<&str>| {
@@ -645,7 +611,6 @@ async fn across_client(dir: &std::path::Path, ip: std::net::IpAddr) {
     };
 
     if slow {
-        // A host that gates nothing, slow to open a link: not a refusal.
         let (joined, took) = join(lan, Some(&key("lan-key"))).await;
         let joined = joined.expect("a slow host that gates nothing admits a keyed address");
         eprintln!("ACROSS slowed link, ungated host, its key: joined in {took:?}");
@@ -706,13 +671,9 @@ fn a_launched_host_is_joined_from_another_machine() {
 
 #[test]
 fn a_slow_link_to_a_host_is_no_refusal() {
-    // A 0.3 s round trip: a TCP connect outlasts a short probe, and a
-    // link's four Zenoh opens take seconds, refused or not.
     across(Some("delay 150ms"));
 }
 
-/// Runs [`across_role`]'s host and client on two networks, the link between
-/// them slowed by `netem` (tc netem arguments).
 fn across(netem: Option<&str>) {
     let dir = tempfile::tempdir().expect("scratch");
     let (identity, key) = launch_identity().expect("identity");
@@ -727,7 +688,6 @@ fn across(netem: Option<&str>) {
     }
     let script =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/test-across-netns.sh");
-    // The host alone gets the identity, in its environment.
     let dispatch = format!(
         "if [ \"$RLMESH_TEST_ROLE\" = host ]; then \
          {HOST_IDENTITY_VAR}=$(cat \"${ACROSS}/identity\"); export {HOST_IDENTITY_VAR}; fi; \
@@ -802,7 +762,6 @@ fn no_parse_error_repeats_the_key() {
             error.replace(&key, "<KEY>")
         );
     }
-    // What parses prints without it too.
     let parsed = Address::participant(&format!("h:1#{key}/s/p")).expect("parses");
     let joined: SessionAddress = format!("127.0.0.1:1/s#{key}").parse().expect("parses");
     for shown in [
@@ -831,7 +790,6 @@ fn redact_text_leaves_every_launch_secret_out_of_log_lines() {
         shown.contains(&format!("{HOST_IDENTITY_VAR}=…\n")),
         "{shown}"
     );
-    // Ordinary text, hashes and paths survive.
     assert!(
         shown.ends_with("import error: libvulkan.so.1 not found"),
         "{shown}"
@@ -852,7 +810,6 @@ fn a_lone_host_and_port_is_short_for_its_default_participant() {
     ] {
         assert_eq!(defaulting_participant(short, DEFAULT_ENV), full, "{short}");
     }
-    // Named, session-named, or not a host with a port: as given.
     for given in [
         "127.0.0.1:5555/env",
         "127.0.0.1:5555/bench/arm",
@@ -875,7 +832,6 @@ fn a_lone_host_and_port_is_short_for_its_default_participant() {
         short,
         Address::participant("127.0.0.1:5555/policy").expect("parse")
     );
-    // A session address keeps reading host:port as that host's session.
     let session = Address::session("127.0.0.1:5555").expect("session");
     assert_eq!(session.participant, None);
     assert_eq!(session.session_name(), DEFAULT_SESSION);
@@ -884,7 +840,6 @@ fn a_lone_host_and_port_is_short_for_its_default_participant() {
 #[test]
 fn an_http2_servers_first_frame_reads_as_one() {
     use super::hosting::{Foreign, foreign};
-    // An empty SETTINGS frame on stream 0, and one with a setting.
     assert_eq!(foreign(&[0, 0, 0, 4, 0, 0, 0, 0, 0]), Foreign::Http2);
     assert_eq!(foreign(&[0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 3]), Foreign::Http2);
     assert_eq!(foreign(b"HTTP/1.1 400 Bad Request"), Foreign::Other);

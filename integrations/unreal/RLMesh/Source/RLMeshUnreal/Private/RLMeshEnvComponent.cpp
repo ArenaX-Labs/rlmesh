@@ -15,7 +15,6 @@ void URLMeshEnvComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Unreal code runs without exceptions, so none may leave this function.
 	GameThread = std::make_shared<FRLMeshGameThread>();
 	try
 	{
@@ -33,14 +32,12 @@ void URLMeshEnvComponent::BeginPlay()
 		Server = std::make_unique<rlmesh::EnvServer>(std::move(Env), std::move(Options));
 		Server->start();
 		ServedAddress = UTF8_TO_TCHAR(Server->address().c_str());
-		// to_string() leaves the address's key out; ServedAddress keeps it.
 		UE_LOG(LogRLMesh, Log, TEXT("Serving %s: %s"), *EnvId, UTF8_TO_TCHAR(Server->to_string().c_str()));
 	}
 	catch (const std::exception& Error)
 	{
 		Server.reset();
 		GameThread.reset();
-		// Address may carry its key; the error names the address without it.
 		UE_LOG(LogRLMesh, Error, TEXT("Could not serve %s: %s"), *EnvId, UTF8_TO_TCHAR(Error.what()));
 	}
 }
@@ -57,7 +54,6 @@ void URLMeshEnvComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 
 void URLMeshEnvComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	// Fail any request waiting for a tick first, so shutdown does not wait on one.
 	if (GameThread)
 	{
 		GameThread->Close();

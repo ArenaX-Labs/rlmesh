@@ -1,14 +1,9 @@
-//! PyO3 bindings for real-time sessions (protocol v2): an
-//! embedded session host, a robot ([`rlmesh_session::edge::Robot`]), a bound
-//! policy ([`rlmesh_session::Controller`]) and an MCAP recorder
-//! ([`rlmesh_session::record::Recorder`]). The `rlmesh.realtime` package wraps
-//! them; every rule (packing, binding, the edge, leases, the run loop)
-//! stays in the Rust crates.
+//! PyO3 bindings for real-time sessions: an embedded session host, a robot, a
+//! bound policy and an MCAP recorder. Every rule stays in the Rust crates.
 //!
-//! The GIL is released around every blocking wait and every network call.
-//! Edge ticks and transport callbacks never take it: the robot's own loop
-//! ticks its edge (`due`), and the run loop attaches only to call
-//! `predict` (and, between starts, to check for signals).
+//! The GIL is released around every blocking wait and every network call. Edge
+//! ticks and transport callbacks never take it: the run loop attaches only to
+//! call `predict` (and, between starts, to check for signals).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -223,7 +218,6 @@ fn run_session(model: Option<&str>) -> PyResult<String> {
     rlmesh::lockstep::run_session(model).map_err(crate::lockstep::gym_err)
 }
 
-/// An address refused as the ValueError class, without the error's kind.
 fn address_err(err: SessionError) -> PyErr {
     match err {
         SessionError::Config(why) => PyValueError::new_err(why),
@@ -305,7 +299,6 @@ fn controller_err(err: ControllerError) -> PyErr {
     match err {
         ControllerError::Bind(err) => bind_err(err),
         ControllerError::Session(err) => session_err(err),
-        // `realtime::bind` takes a lockstep robot through its exchange.
         err @ ControllerError::Lockstep(_) => BindingRefused::new_err(err.to_string()),
     }
 }
@@ -363,10 +356,6 @@ fn observe_err(err: ObserveError) -> PyErr {
     }
 }
 
-/// The session a session address (`[host/][session]`) names, placed by the
-/// hosting rule: joined, or hosted in this process when no host answers.
-/// Joining it puts capture times on `CLOCK_MONOTONIC`,
-/// `time.monotonic_ns()`'s clock.
 fn place(
     py: Python<'_>,
     text: &str,
@@ -391,7 +380,6 @@ pub(crate) fn timeout(seconds: f64) -> PyResult<Duration> {
         .map_err(|_| PyValueError::new_err(format!("timeout {seconds} is not a duration")))
 }
 
-/// A timeout that may have no limit: `None` waits for as long as it takes.
 fn limit(seconds: Option<f64>) -> PyResult<Duration> {
     seconds.map_or(Ok(Duration::MAX), timeout)
 }
@@ -400,8 +388,6 @@ fn priority(name: &str) -> PyResult<PriorityClass> {
     sdk::priority(name).map_err(PyValueError::new_err)
 }
 
-/// The host's health as `participant` reads it (the newest, or with `wait`
-/// the next), as the dict `health()` documents.
 fn health_dict<'py>(
     py: Python<'py>,
     participant: &rlmesh_session::Participant,
@@ -638,8 +624,6 @@ impl PyHost {
     }
 }
 
-/// A sample's fields as owned bytes: UTF-8 for a `str`, else a
-/// C-contiguous buffer's bytes.
 fn field_bytes(py: Python<'_>, path: &str, fields: &[Bound<'_, PyAny>]) -> PyResult<Vec<Vec<u8>>> {
     let mut owned: Vec<Vec<u8>> = Vec::with_capacity(fields.len());
     for field in fields {
@@ -657,7 +641,6 @@ fn field_bytes(py: Python<'_>, path: &str, fields: &[Bound<'_, PyAny>]) -> PyRes
     Ok(owned)
 }
 
-/// One field of a part, for the Python layer: `(name, dtype, shape)`.
 type FieldInfo = (String, String, Vec<u32>);
 
 fn fields_info(fields: &[rlmesh_session::wire::FieldSpec]) -> Vec<FieldInfo> {
@@ -1125,7 +1108,6 @@ impl PyRobot {
             modes.set_item(sdk::mode_name(mode), (m.ticks, m.entries))?;
         }
         d.set_item("modes", modes)?;
-        // How this part's chunks arrived: on whichever path they rode.
         let robot = self.robot()?;
         let timing = robot
             .part(path)
@@ -1154,7 +1136,6 @@ impl PyRobot {
     }
 }
 
-/// The robots `state` holds, as dicts for `held`.
 fn held_list<'py>(
     py: Python<'py>,
     state: Option<&rlmesh_session::wire::AuthoritySnapshot>,
@@ -1176,8 +1157,6 @@ fn held_list<'py>(
 }
 
 #[cfg(feature = "fleet")]
-/// A run's state as a dict: `run`, `version`, `stage`, `members` (each
-/// `name`, `stage`, `error`) and `error` (each error `status`, `message`).
 fn run_state<'py>(
     py: Python<'py>,
     state: &rlmesh_session::wire::RunState,
@@ -1536,7 +1515,6 @@ impl PyObservation {
     }
 }
 
-/// `predict`, called from the run loop, and `on_step` after each start.
 struct PyPredictor<'a> {
     predict: &'a Py<PyAny>,
     on_step: Option<&'a Py<PyAny>>,
@@ -1587,8 +1565,6 @@ impl Predictor for PyPredictor<'_> {
     }
 }
 
-/// What a policy is bound through: the controller of wall-clock robots,
-/// or one lockstep robot's exchange.
 #[derive(Clone)]
 enum Driving {
     Wall(Arc<Controller>),
@@ -1616,8 +1592,6 @@ impl PyController {
             .ok_or_else(|| SessionException::new_err(format!("policy {} is closed", self.name)))
     }
 
-    /// The wall clock's controller: a verb only it has (leases, sends,
-    /// health) is refused for a lockstep robot.
     fn controller(&self) -> PyResult<Arc<Controller>> {
         match self.bound()? {
             Driving::Wall(controller) => Ok(controller),
@@ -1744,7 +1718,6 @@ impl PyController {
                 Ok((controller, published)) => {
                     Ok((BoundPolicy::Wall(controller), published.map(Arc::new)))
                 }
-                // Annotations ride the wall clock's session streams.
                 Err(BindPolicyError::Controller(ControllerError::Lockstep(robot))) => {
                     Err(BindingRefused::new_err(format!(
                         "binding refused: robot {robot} runs in lockstep, and a policy that \
@@ -1992,24 +1965,23 @@ impl PyController {
 
     /// Runs the policy on its robot's clock, on this thread.
     ///
-    /// Wall clock: the loop until `stop()`, `duration_s` or a failure,
-    /// calling `predict(observation)` at the replan rate with one inference
-    /// in flight. `mode` is `command`, or `shadow` to predict without a
-    /// lease and send nothing until it holds one. `resume` is `manual` (the
-    /// default): a part a higher class took stays parked until `resume()`,
-    /// or `auto`: it is asked for again once free. If the robot or the host
-    /// is lost, it raises `SessionLost`.
+    /// Wall clock: the loop until `stop()`, `duration_s` or a failure, calling
+    /// `predict(observation)` at the replan rate with one inference in flight.
+    /// `mode` is `command`, or `shadow` to predict without a lease and send
+    /// nothing until it holds one. `resume` is `manual` (the default): a part a
+    /// higher class took stays parked until `resume()`; or `auto`: it is asked
+    /// for again once free. If the robot or the host is lost, it raises
+    /// `SessionLost`.
     ///
-    /// Lockstep: `episodes` episodes (default 1), each from a reset seeded
-    /// from `seed` as a model run seeds it, one `predict` per chunk, until
-    /// each ends or `stop()`. `duration_s`, `mode="shadow"` and `resume`
-    /// raise `ValueError` here, as `episodes` and `seed` do on the wall
-    /// clock.
+    /// Lockstep: `episodes` episodes (default 1), each from a reset seeded from
+    /// `seed` as a model run seeds it, one `predict` per chunk, until each ends
+    /// or `stop()`. `duration_s`, `mode="shadow"` and `resume` raise
+    /// `ValueError` here, as `episodes` and `seed` do on the wall clock.
     ///
-    /// `on_step(step)` gets each completed start as a dict (`shadow`,
-    /// `time_ns`, and per action entry its `actions` as the edge receives
-    /// them, `parts` and chunk `seqs`). If `predict` or `on_step` raises,
-    /// the leases are released and the exception propagates.
+    /// `on_step(step)` gets each completed start as a dict (`shadow`, `time_ns`,
+    /// and per action entry its `actions` as the edge receives them, `parts`
+    /// and chunk `seqs`). If `predict` or `on_step` raises, the leases are
+    /// released and the exception propagates.
     #[pyo3(signature = (
         predict, duration_s=None, mode="command", on_step=None, resume=None, episodes=None,
         seed=None
@@ -2184,7 +2156,6 @@ impl PyController {
     fn events<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let events = match self.bound()? {
             Driving::Wall(controller) => controller.drain_events(),
-            // A lockstep run waits on nothing and nobody takes its lease.
             Driving::Lockstep(_) => Vec::new(),
         };
         let list = PyList::empty(py);
@@ -2256,7 +2227,6 @@ impl PyController {
     }
 }
 
-/// A lockstep run's counters: what `stats()` returns for a lockstep robot.
 fn lockstep_stats<'py>(py: Python<'py>, stats: &LockstepStats) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("clock", "lockstep")?;
@@ -2451,7 +2421,6 @@ impl PyRecorder {
     }
 }
 
-/// [`PyRecorder::samples`]: a recording's samples, decoded as they are taken.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "V2Samples", frozen)]
 pub struct PySamples {

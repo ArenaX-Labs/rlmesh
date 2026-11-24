@@ -1,6 +1,3 @@
-// The Unreal plugin's gate program of python/rlmesh/tests/conformance/native_gate.py:
-// the C++ echo env served as URLMeshEnvComponent serves a world, every call run
-// by a game thread that pumps like a tick. The plugin serves envs only.
 #include <atomic>
 #include <chrono>
 #include <thread>

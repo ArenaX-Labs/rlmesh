@@ -25,10 +25,9 @@ pub enum MetaValue {
 pub type MetaMap = BTreeMap<String, MetaValue>;
 
 impl MetaValue {
-    /// This value with every array as nested lists by shape (a shape-`[]`
-    /// array as its bare element), for a reader that carries no arrays (the
-    /// v1 wire, the Rust facade's `Value`). A `uint64` element above
-    /// `i64::MAX` lowers to a float.
+    /// This value with every array as nested lists by shape (a shape-`[]` array as
+    /// its bare element), for a reader that carries no arrays (the v1 wire, the
+    /// Rust facade's `Value`).
     pub fn lowered(&self) -> MetaValue {
         match self {
             Self::Tensor(tensor) => {
@@ -70,7 +69,6 @@ impl MetaValue {
     }
 }
 
-/// `elements` nested by `shape` (C order); shape `[]` is the bare element.
 fn nested(elements: Vec<MetaValue>, shape: &[i64]) -> MetaValue {
     fn nest(elements: &mut impl Iterator<Item = MetaValue>, shape: &[i64]) -> MetaValue {
         let (&len, rest) = shape.split_first().unwrap_or((&0, &[]));

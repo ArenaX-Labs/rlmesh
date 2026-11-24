@@ -23,7 +23,6 @@ fn conjugate([x, y, z, w]: [f64; 4]) -> [f64; 4] {
     [-x, -y, -z, w]
 }
 
-/// `v` rotated by the unit quaternion `q`.
 fn rotate(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
     let [x, y, z, _] = hamilton(hamilton(q, [v[0], v[1], v[2], 0.0]), conjugate(q));
     [x, y, z]
@@ -55,10 +54,6 @@ mod tests {
 
     #[test]
     fn between_composes_two_world_poses() {
-        // The rig: eye-l unrotated, the arm turned 90°
-        // about z. In the arm's frame eye-l's frame is turned -90°, and
-        // its origin, (-0.365, 0.2, 0.3) from the arm in world, reads
-        // (0.2, 0.365, 0.3).
         let eye = Pose {
             xyz: [0.035, 0.0, 0.30],
             quat_xyzw: [0.0, 0.0, 0.0, 1.0],
@@ -80,8 +75,6 @@ mod tests {
         {
             assert!((got - want).abs() < 1e-9, "{t:?}");
         }
-        // Back again (eye-l's frame is world's), and a frame to itself is
-        // the identity.
         let back = between(&arm, &eye);
         assert!(
             (back.xyz[0] - 0.365).abs() < 1e-9 && (back.xyz[1] + 0.2).abs() < 1e-9,

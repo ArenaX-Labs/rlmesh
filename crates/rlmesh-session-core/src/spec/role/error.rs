@@ -1,5 +1,3 @@
-//! What a Gym binding refuses with, and the notes it binds with.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -31,55 +29,34 @@ pub enum ErrorCode {
     Unsupported,
     /// A custom-input entrypoint was referenced without trust.
     UntrustedEntrypoint,
-    /// The two sides disagree about a geometry attribute, or one of them
-    /// declares a value outside its vocabulary: an absolute pose in a frame the
-    /// model was not trained on (`frame`), or a delta integrated against the
-    /// other reference pose (`reference`). One code covers both attributes --
-    /// they are one rule with two vocabularies, and a caller matching "the
-    /// declared geometry disagrees" should not have to match two names; the
-    /// message says which attribute and which role.
+    /// The two sides disagree about a geometry attribute (`frame` or `reference`), or one declares a
+    /// value outside its vocabulary.
     FrameMismatch,
-    /// A model image asserts a `render` size the camera it bound does not
-    /// render at — the env's camera dial was never moved to the resolution the
-    /// model was trained on.
+    /// A model image asserts a `render` size the bound camera does not render at.
     RenderMismatch,
-    /// A leaf declares a *kind* this core does not define: a model input of an
-    /// unrecognized kind, or a model input whose role the env offers only as an
-    /// unrecognized observation kind. The fix is to upgrade the runtime, not to
-    /// edit the spec — distinct from [`MissingRole`](Self::MissingRole), which
-    /// asks the author to add a role.
+    /// A leaf declares a kind this core does not define; the fix is to upgrade the runtime, unlike
+    /// [`MissingRole`](Self::MissingRole).
     UnsupportedKind,
-    /// The two sides' axis labels cannot be aligned: the model names labels
-    /// and the other side declares none, or the two tuples do not name the
-    /// same set. Structural, never a caution: a joint vector bound on hope
-    /// is the bug labels exist to catch.
+    /// The two sides' axis labels cannot be aligned: one names labels and the other none, or the sets differ.
+    /// Always an error, never a caution.
     LabelMismatch,
-    /// The two sides disagree about where a state leaf's numbers come from
-    /// (`sensed`, `estimated`, `privileged`), or one of them declares a value
-    /// outside that vocabulary: a checkpoint trained on privileged simulator
-    /// state bound to an estimate on the robot is the pairing this refuses.
+    /// The two sides disagree about where a state leaf's numbers come from (`sensed`, `estimated`,
+    /// `privileged`), or one declares a value outside that vocabulary.
     ProvenanceMismatch,
-    /// A seeker that pins no provenance found the role under several: a sim
-    /// that publishes its truth beside its estimate leaves nothing to guess
-    /// through, so the model must declare `provenance=`.
+    /// A seeker that pins no provenance found the role under several; the model must declare `provenance=`.
     Ambiguous,
-    /// An env observation tag declares a role under `action/`: a command is
-    /// what an actuator carries, and a model reads its own previous command
-    /// with `source="action"`, never from an env observation.
+    /// An env observation tag declares a role under `action/`; a model reads its own previous command
+    /// with `source="action"`.
     ActionRoleOnObservation,
-    /// The two sides declare a different gripper `polarity` or delta `unit`
-    /// and the model spec allows no conversion (`flip_gripper`,
-    /// `convert_units`): an "open" that closes, or a 5 cm step read as a metre.
+    /// The two sides declare a different gripper `polarity` or delta `unit` and the model spec allows no
+    /// conversion (`flip_gripper`, `convert_units`).
     ConventionMismatch,
 }
 
-/// A model input or action component has no usable counterpart in the env
-/// spec (or a spec declares something definitionally impossible).
+/// A model input or action component has no usable counterpart in the env spec, or a spec declares
+/// something impossible.
 ///
-/// The [`message`](Self::message) is a human-readable *reference snapshot*: the
-/// conformance vectors pin substrings so implementations stay consistent, but
-/// it is not a stable cross-language contract. Match on [`code`](Self::code)
-/// instead (other-language bindings should too).
+/// The [`message`](Self::message) wording is not a stable contract; match on [`code`](Self::code) instead.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct Error {
@@ -101,8 +78,7 @@ impl Error {
 pub enum Severity {
     /// A benign note: an authoring nudge or an explicitly-requested lossy step.
     Info,
-    /// The binding substituted or fabricated data the model consumes; the run
-    /// proceeds, but the model may not be seeing what its author expects.
+    /// The binding substituted or fabricated data the model consumes; the run proceeds.
     Caution,
 }
 

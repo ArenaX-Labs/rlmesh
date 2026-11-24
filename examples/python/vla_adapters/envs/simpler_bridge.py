@@ -51,7 +51,6 @@ ACTION_SPACE = gym.spaces.Box(-1.0, 1.0, (7,), np.float32)
 
 
 def sample_obs() -> dict[str, Any]:
-    """Synthetic observation shaped like a real Bridge obs, for dry runs."""
     rng = np.random.default_rng(1)
     quat = rng.normal(size=4).astype(np.float32)
     quat /= np.linalg.norm(quat)

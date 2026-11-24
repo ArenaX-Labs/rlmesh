@@ -1,22 +1,18 @@
 //! Parts and streams: what the host makes of a robot's
 //! declaration, and the payload layout every sample and action follows.
 //!
-//! An embodiment sends its authored robot map; the host normalises each part
-//! to a [`PartSpec`] with host-assigned, never-reused channel ids. The
-//! generic core (transport, edge queue, history store) only sees
-//! [`StreamSpec`]s: a channel id, an owner, a key path and a typed
-//! [`Layout`]. It never interprets kinds.
+//! The host normalises each authored part to a [`PartSpec`] with host-assigned, never-reused
+//! channel ids. The generic core only sees [`StreamSpec`]s (a channel id, an owner, a key path
+//! and a typed [`Layout`]) and never interprets kinds.
 //!
 //! # Packing
 //!
-//! A sample's fields go in [`FieldSpec`] order, each C-contiguous and
-//! little-endian, each starting at a multiple of 8 bytes from the start of
-//! the sample (zero padding). The **stride** is the packed size rounded up
-//! to a multiple of 8, so every sample of a batch, and every action of a
-//! chunk, is 8-aligned relative to the payload start. `bool` is one byte, 0
-//! or 1. A `utf8` field is allowed only as the single field of a part: its
-//! payload is the raw UTF-8 and cannot be batched. An encoded (JPEG) image
-//! is the sole payload of its sample, at most raw size + 16 KiB.
+//! A sample's fields go in [`FieldSpec`] order, each C-contiguous and little-endian, each
+//! starting at a multiple of 8 bytes from the start of the sample (zero padding). The stride is
+//! the packed size rounded up to a multiple of 8, so every sample of a batch and every action
+//! of a chunk is 8-aligned. `bool` is one byte, 0 or 1. A `utf8` field must be the only field
+//! of its part and cannot be batched. An encoded (JPEG) image is the sole payload of its
+//! sample, at most raw size + 16 KiB.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -698,9 +694,8 @@ impl StreamSpec {
         self.encoding == Encoding::Raw && matches!(self.layout, Layout::Packed { .. })
     }
 
-    /// The check every sample payload gets before any view of it:
-    /// the length, valid booleans and valid UTF-8. An applied sample with
-    /// nothing dispatched has no payload.
+    /// The check every sample payload gets before any view of it: the length, valid
+    /// booleans and valid UTF-8.
     pub fn check_payload(&self, payload: &[u8]) -> Result<(), String> {
         match (&self.layout, self.encoding) {
             (Layout::Text, _) => {
@@ -766,7 +761,6 @@ pub(crate) mod tests {
         ParticipantId::new(id).expect("id")
     }
 
-    /// A UR-style arm: joint positions in, positions and velocities out.
     pub(crate) fn arm() -> PartSpec {
         PartSpec {
             path: PartPath::new("arm").expect("path"),
@@ -812,7 +806,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// A JPEG wrist camera.
     pub(crate) fn camera() -> PartSpec {
         PartSpec {
             path: PartPath::new("wrist/cam").expect("path"),
@@ -848,7 +841,6 @@ pub(crate) mod tests {
         assert_eq!(layout.field(1), Some(16..17));
         assert_eq!(layout.field(2), Some(24..40));
         assert_eq!(layout.stride(), Some(40));
-        // An odd-sized float32 field still strides by 8.
         let one = Layout::of(&[FieldSpec::new("x", DType::F32, &[])]).expect("layout");
         assert_eq!(one.stride(), Some(8));
         let packed = layout.pack(&[&[1; 12], &[1], &[2; 16]]).expect("pack");
@@ -884,7 +876,6 @@ pub(crate) mod tests {
             Layout::of(&[field("big", DType::U8, &[4096, 4096, 3])]).is_err(),
             "over 32 MiB"
         );
-        // Every cap is inclusive.
         for ok in [
             (0..MAX_FIELDS)
                 .map(|i| field(&format!("f{i}"), DType::U8, &[]))

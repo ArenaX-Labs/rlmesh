@@ -2,28 +2,19 @@
 //! host side of binding them.
 //!
 //! Environments and models describe their IO formats once as versioned,
-//! pure-data specs ([`v1::EnvTags`], [`v1::ModelSpec`]). [`v1::resolve`]
-//! joins an env's tags against its spaces, lowers both declarations into
-//! the binder's input and binds them with the binder's Gym door
+//! pure-data specs ([`v1::EnvTags`], [`v1::ModelSpec`]): recursive trees
+//! (`ObsNode`, `InputNode`) whose containers mirror the runtime's, addressed
+//! by structured paths (`NodePath`). [`v1::resolve`] joins an env's tags
+//! against its spaces and binds both declarations with the binder's Gym door
 //! ([`rlmesh_session_core::spec::role`]), which decides every conversion and
-//! runs it; this crate walks the host values (observation trees, Gym
-//! spaces, frame windows) around it. No code is ever evaluated from spec
-//! data: custom transforms resolve to host-language callbacks that bindings
-//! materialize themselves.
+//! runs it; this crate walks the host values (observation trees, Gym spaces,
+//! frame windows) around it. No code is ever evaluated from spec data: custom
+//! transforms resolve to host-language callbacks that bindings materialize.
 //!
-//! The JSON wire format and resolution semantics are frozen per version by
-//! the conformance vectors under this crate's `conformance/` directory;
-//! every implementation and binding must pass them.
-//!
-//! The `rlmesh.adapters.v1.*` metadata key names the wire version, not the
-//! source layout. As a pre-1.0 breaking wave, the v1 spec format has been
-//! **redefined in place**: the two specs are now recursive trees (`ObsNode`,
-//! `InputNode`) whose container type = the runtime container type, addressed by
-//! structured paths (`NodePath`) rather than dotted strings, with the assembled
-//! obs payload a `Value` tree. This redefinition sets the v1 *tree* contract;
-//! within it the format then evolves additively only (new optional fields with
-//! defaults), and a later breaking change bumps the key to v2. The [`v1`] facade
-//! is only a stable import path; the implementation sits flat at the crate root.
+//! The JSON wire format and resolution semantics are pinned per version by the
+//! conformance vectors under this crate's `conformance/` directory; every
+//! implementation and binding must pass them. Within a version the format
+//! evolves additively only (new optional fields with defaults).
 
 mod apply;
 mod envelope;

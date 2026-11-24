@@ -30,10 +30,6 @@ impl PyServeOptions {
         Ok(PyServeOptions {
             options: ServeOptions {
                 close_timeout: optional_duration("close_timeout_seconds", close_timeout_seconds)?,
-                // The Python model client wrapper is inherently single-flight
-                // (its `block_on` predict API serializes by construction), so the
-                // server-side concurrency cap is left at the default here. A
-                // future Python knob can surface it without a wire change.
                 workflow_edition: checked_workflow_edition(workflow_edition)?,
             },
         })
@@ -53,12 +49,10 @@ impl PyServeOptions {
 /// The bare `YYYY.MM` workflow edition this build runs at — the value to paste
 /// into a declaration, on every build.
 ///
-/// A declaration names the contract a participant was authored against, and a
-/// bare base selects whichever spelling of that base both sides offer: the
-/// sealed name on a release, this build's cohort (`YYYY.MM-<cohort>`, what
-/// `rlmesh.build_info().workflow_edition` reports) on a prerelease or local
-/// build. That cohort spelling is also accepted as a declaration, pinning to
-/// that exact moving build.
+/// A bare base selects whichever spelling of it both sides offer: the sealed name on a
+/// release, this build's cohort (`YYYY.MM-<cohort>`, as `rlmesh.build_info().workflow_edition`
+/// reports) on a prerelease or local build. The cohort spelling is also accepted as a
+/// declaration, pinning that exact moving build.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 pub fn current_workflow_edition() -> &'static str {
@@ -110,10 +104,8 @@ impl PyBuildInfo {
         rlmesh::build_info().workflow_edition_base
     }
 
-    /// Every workflow edition this build can drive a session at, newest first:
-    /// the retained list a served peer offers on `supported_workflow_editions`
-    /// in its handshake, so a describe envelope advertises exactly what the
-    /// handshake will.
+    /// Every workflow edition this build can drive a session at, newest first; the list a served
+    /// peer offers in its handshake.
     #[getter]
     fn supported_workflow_editions(&self) -> Vec<String> {
         rlmesh::build_info()
@@ -162,23 +154,16 @@ pub fn build_info() -> PyBuildInfo {
 
 /// Refuse a declared workflow edition this build cannot run a session at, naming
 /// the value and the editions it offers; return it trimmed otherwise.
-///
-/// The single Python-side boundary for a declared edition: every surface that
-/// takes one from a user (`ServeOptions`, `--workflow-edition`, `run`/`session`,
-/// `RLMESH_WORKFLOW_EDITION`, a class declaration, `[tool.rlmesh]`) resolves
-/// through it, so a name that cannot work is refused where it is typed rather
-/// than as a negotiation failure on the first connection.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 pub fn validate_workflow_edition(edition: &str) -> PyResult<String> {
     rlmesh::binding::validate_workflow_edition(edition).map_err(crate::types::to_py_err)
 }
 
-/// The facade resolver's rungs (COR-6): the call's value,
-/// `RLMESH_WORKFLOW_EDITION`, the served peer's option, the class
-/// declaration. Returns the winner (validated and trimmed) and whether
-/// resolution stopped at a set-but-blank variable; `(None, False)` leaves
-/// Python's `pyproject.toml` rung to the caller.
+/// Resolve the workflow edition: the call's value, `RLMESH_WORKFLOW_EDITION`, the served peer's
+/// option, the class declaration. Returns the winner (validated and trimmed) and whether
+/// resolution stopped at a set-but-blank variable; `(None, False)` leaves the
+/// `pyproject.toml` rung to the caller.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 #[pyo3(signature = (*, call=None, option=None, declared=None))]
@@ -222,9 +207,7 @@ pub fn set_ready_hook(hook: Option<Py<PyAny>>) {
                     Ok(())
                 };
                 let Err(err) = call() else { return };
-                // The serve polls for Ctrl-C and drains on it, and the hook
-                // runs on the serve's thread, the main one, where Python
-                // raises a SIGINT that lands mid-hook: hand it to the poll.
+                // The hook runs on the serve's (main) thread, where Python can raise SIGINT mid-hook: hand it to the serve's poll.
                 if err.is_instance_of::<PyKeyboardInterrupt>(py) {
                     crate::client::defer_interrupt(err);
                 } else {

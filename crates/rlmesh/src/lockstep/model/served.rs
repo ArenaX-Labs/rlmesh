@@ -20,25 +20,18 @@ use crate::model::types::{EpisodeInfo, ModelObservation};
 
 /// A served model as a [`ModelHandler`]: drives the model at a participant
 /// address through `m/{model}`, connecting on first use. What a run, a
-/// binding or a relay drives a `Model(address)` with.
 pub struct ServedModel {
     remote: Arc<Remote>,
 }
 
 struct Remote {
     address: String,
-    /// How long joining the model's session may take.
     timeout: Duration,
-    /// How long each request may wait for the model's answer once joined.
     deadline: std::sync::Mutex<Duration>,
-    /// The session the run drives in, which the model is invited into.
     target: std::sync::Mutex<Option<String>>,
     connection: Mutex<Option<ModelConnection>>,
-    /// Each resolved route's action space, to decode its frames.
     spaces: std::sync::Mutex<HashMap<String, SpaceSpec>>,
-    /// What the model measured answering the last predict.
     last: std::sync::Mutex<EndpointTiming>,
-    /// A resolved route said the model adds reset options.
     reset_options: std::sync::atomic::AtomicBool,
 }
 
@@ -55,8 +48,6 @@ impl Remote {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            // A model already in the run's session (an env served into the
-            // model's own) answers there as it is.
             if let Some(session) = target.filter(|session| !connected.answers_in(session)) {
                 connected = connected
                     .invite(&session, &id, self.timeout)
@@ -89,9 +80,6 @@ impl Remote {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let called = self.link().await?.call(&request, Some(deadline)).await;
         if let Err(GymError::Closed(_)) = &called {
-            // The model or the link to it is gone: the next call joins again
-            // rather than meet the same dead link, which is what makes the
-            // failure worth retrying.
             self.connection.lock().await.take();
         }
         let (reply, timing) = called.map_err(link_error)?;
@@ -117,10 +105,6 @@ impl Remote {
 impl ServedModel {
     /// The model at the participant address `address`; connecting (joining
     /// its session and waiting for it to answer) waits up to `timeout` for
-    /// it. Each request after that waits up to [`DEFAULT_TIMEOUT`] for its
-    /// answer ([`Self::with_request_timeout`]).
-    ///
-    /// [`DEFAULT_TIMEOUT`]: super::DEFAULT_TIMEOUT
     pub fn new(address: impl Into<String>, timeout: Duration) -> Self {
         Self {
             remote: Arc::new(Remote {
@@ -138,9 +122,9 @@ impl ServedModel {
 
     /// Bounds each request to the model once joined (a predict, a route's
     /// resolve, reset or release, a describe) by `deadline`, apart from the
-    /// join's timeout: a model that has not answered by then fails the
-    /// request with [`Error::Timeout`], which a retry may get past. A model
-    /// or link that goes away fails it at once, with [`Error::Connection`].
+    /// join's timeout: a model that has not answered by then fails the request
+    /// with [`Error::Timeout`], which a retry may get past. A model or link that
+    /// goes away fails it at once, with [`Error::Connection`].
     #[must_use]
     pub fn with_request_timeout(self, deadline: Duration) -> Self {
         *self
@@ -161,8 +145,6 @@ impl ServedModel {
 
     /// The execution horizon the model at `address` runs at when a run names
     /// none, read once from its describe envelope over a connection of its
-    /// own: the horizon its `load()` chose, else its spec's
-    /// `timing.execution`; `None` when it declares neither.
     pub async fn default_execution_horizon(
         address: &str,
         timeout: Duration,
@@ -174,8 +156,6 @@ impl ServedModel {
     }
 }
 
-/// The horizon a describe envelope declares: its `execution_horizon`, else
-/// its model spec's `timing.execution` (an empty envelope declares none).
 pub(crate) fn envelope_execution_horizon(envelope: &str) -> Result<Option<u32>, Error> {
     if envelope.trim().is_empty() {
         return Ok(None);
@@ -207,7 +187,6 @@ fn unexpected(reply: &ModelReply) -> Error {
     Error::Protocol(format!("unexpected model reply: {reply:?}"))
 }
 
-/// One observation as a predict group.
 fn group_of(observation: ModelObservation) -> ModelGroup {
     let episodes = |rows: Vec<EpisodeInfo>| -> Vec<rlmesh_session::wire::ModelEpisode> {
         rows.into_iter()
@@ -271,8 +250,6 @@ impl ModelHandler for ServedModel {
                     .map(|_| Err(Error::Protocol(error.to_string())))
                     .collect();
             }
-            // Each row fails as the call did: a refusal stays final, a lost
-            // link or a deadline stays worth retrying.
             Err(error) => {
                 return rows.iter().map(|_| Err(error.clone())).collect();
             }
@@ -306,7 +283,6 @@ impl ModelHandler for ServedModel {
             .collect()
     }
 
-    /// The model's held frame windows, as its last predict reported them.
     fn held_state(&self) -> Option<crate::model::handler::HeldState> {
         let last = *self
             .remote
@@ -319,7 +295,6 @@ impl ModelHandler for ServedModel {
         })
     }
 
-    /// The adapter share of the last predict, as the model reported it.
     fn take_adapter_ns(&mut self) -> u64 {
         self.remote
             .last
@@ -330,7 +305,6 @@ impl ModelHandler for ServedModel {
             .unwrap_or(0)
     }
 
-    /// The model's own timing of the last predict, as it reported it.
     fn take_endpoint_timing(&mut self) -> Option<(Option<u64>, rlmesh_proto::EndpointPhases)> {
         let timing = std::mem::take(
             &mut *self
@@ -361,8 +335,6 @@ impl ModelHandler for ServedModel {
         Ok(())
     }
 
-    /// Invites the model into `session` at the next connect, leaving its
-    /// own session (a connection made before closes).
     async fn join(&mut self, session: &str) -> crate::Result<()> {
         *self
             .remote
@@ -410,7 +382,6 @@ impl ModelResetOptions for ServedRoutes {
     }
 }
 
-/// A served model's routes: resolved, reset and released on the model.
 struct ServedRoutes(Arc<Remote>);
 
 #[async_trait::async_trait]

@@ -1,5 +1,3 @@
-"""High-level EnvServer wrapper for serving gymnasium environments."""
-
 from __future__ import annotations
 
 import contextvars
@@ -31,23 +29,11 @@ VectorServerEnvLike = VectorEnvLike[Any, Any, Any]
 
 
 def _bridge_wraps(bridge: ValueBridge | None) -> bool:
-    """Whether ``bridge`` needs the native ``BridgedEnv`` wrapper.
-
-    numpy (and the identity ``rlmesh`` bridge) are served by the default
-    ``ValueBackend::Auto`` path, which already reads numpy/dlpack leaves -- only a
-    non-numpy framework (torch, jax) needs the Python bridge + ``Native`` backend.
-    """
+    """Whether ``bridge`` needs the native ``BridgedEnv`` wrapper."""
     return bridge is not None and bridge.name not in ("numpy", "rlmesh")
 
 
 def _is_vector_env(env: object) -> bool:
-    """Whether ``env`` has the vectorized (VectorEnvLike) shape.
-
-    A vectorized env exposes ``num_envs`` and per-lane ``single_*`` spaces; a single
-    env has none of these. A one-lane vector is served as a scalar env
-    (:class:`~rlmesh._single_lane.SingleLaneEnv`); the native vector server
-    takes ``num_envs >= 2``.
-    """
     return (
         hasattr(env, "num_envs")
         or hasattr(env, "single_observation_space")
@@ -55,41 +41,25 @@ def _is_vector_env(env: object) -> bool:
     )
 
 
-#: Seconds a finalizer waits for a still-running server to stop. The serve loop
-#: bounds its own drain and close at 5 s each, so this only has to outlast them.
+#: Seconds a finalizer waits for a running server to stop; must outlast the serve loop's 5 s drain and close.
 _FINALIZE_JOIN_SECONDS = 15.0
 
 
 def _stop_server(server: PyEnvServer | PyVectorEnvServer) -> None:
-    """Stop a server whose wrapper died without an explicit ``shutdown()``.
-
-    Registered with :func:`weakref.finalize`, which runs pending finalizers from
-    its own ``atexit`` hook -- i.e. while the interpreter is still alive. Both
-    calls matter: ``shutdown()`` triggers the drain and ``env.close()``, and
-    ``wait()`` joins the serve and lane threads, so no thread is left calling
-    into a finalizing interpreter (which kills the process with a signal).
-    """
     server.shutdown()
     server.wait(_FINALIZE_JOIN_SECONDS)
 
 
-#: Set while a run stands up its own server in front of a local env: that
-#: server is no participant a launcher waits on, so it announces nothing.
+#: Set while a run stands up its own server in front of a local env; that server announces nothing.
 loopback: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "rlmesh_env_server_loopback", default=False
 )
 
-#: Env var the platform sets to the contract branch it expects this env to serve,
-#: as a JSON object of discriminant bindings. Unset asserts nothing.
+#: Env var naming the contract branch the platform expects, as JSON discriminant bindings.
 EXPECTED_ENV_BRANCH_VAR = "RLMESH_EXPECTED_ENV_BRANCH"
 
 
 def _check_spaces(env: object, *, vector: bool) -> None:
-    """Refuse an env without its two spaces with ``TypeError``.
-
-    A missing ``reset``/``step``/``close`` is refused the same way, and this
-    runs before anything reads the spaces (the one-lane view, ``tag``).
-    """
     names = (
         ("single_observation_space", "single_action_space")
         if vector
@@ -101,14 +71,7 @@ def _check_spaces(env: object, *, vector: bool) -> None:
 
 
 def _check_expected_branch(env: object) -> None:
-    """Refuse to serve a contract branch the caller did not ask for.
-
-    The tag validation above runs ``join``, which reconciles widths, dim laws and
-    ranges but never role *names* against bounds -- so a same-width contract swap
-    (end-effector deltas for absolute targets) passes it silently. When the
-    platform pins the branch it resolved the pairing against, compare it with the
-    one ``make()`` actually stamped, here, before a model can connect.
-    """
+    """Refuse to serve a contract branch the caller did not ask for."""
     expected = os.environ.get(EXPECTED_ENV_BRANCH_VAR)
     if not expected:
         return
@@ -208,11 +171,7 @@ class EnvServer:
         device: object | None = None,
         close_env_on_shutdown: bool = True,
     ) -> None:
-        # A list is the lanes of one endpoint (each a scalar env); anything else
-        # is one env. The env is self-describing: a vectorized env (the
-        # VectorEnvLike shape) is served by the native vector server, a scalar
-        # env by the lane server as its single lane. Detect on the RAW env,
-        # before any wrapping.
+        # Detect vectorization on the raw env, before any wrapping.
         lanes: list[Any] | None = (
             list(cast("Sequence[Any]", env)) if isinstance(env, (list, tuple)) else None
         )
@@ -235,12 +194,7 @@ class EnvServer:
 
                 env, is_vector = SingleLaneEnv(env), False
 
-        # The framework is a value the author sets on the env side -- here, the
-        # framework= kwarg (an EnvFactory passes its declared framework through it).
-        # torch/jax wrap the env in a Python bridge + native value backend; numpy
-        # (and the default) keep the Auto backend unchanged. The wire stays neutral
-        # rlmesh-native either way, so the env's framework is independent of any
-        # consuming model's framework.
+        # torch/jax wrap the env in a Python bridge; the wire stays framework-neutral.
         bridge = resolve_bridge(framework) if framework is not None else None
         native_values = _bridge_wraps(bridge)
         if device is not None and not (
@@ -252,24 +206,13 @@ class EnvServer:
             )
 
         def prepare(one: Any) -> Any:
-            """Stamp tags and the framework bridge onto one served env."""
             if tags is not None:
-                # Imported lazily so the common (un-tagged) serve path does not
-                # pull in the adapters/numpy stack. A vector env's served spaces
-                # are batched while tags describe one lane, so per-lane space
-                # validation is deferred to resolve time there (mirroring the
-                # factory stamp).
+                # Per-lane space validation is deferred for vector envs: served spaces are batched while tags describe one lane.
                 from .adapters import tag
 
                 one = tag(one, tags, validate=not is_vector)
             elif not is_vector:
-                # A prebuilt or EnvFactory-stamped env can carry tags in its
-                # metadata that were never validated against its spaces (the
-                # factory stamp uses validate=False, because a vectorized
-                # make()'s per-lane spaces differ from the served shape). For a
-                # scalar env the spaces are real, so validate the published tags
-                # now -- surfacing a bad tag at startup instead of when a model
-                # first connects. (Vector envs keep the deferred check.)
+                # Factory stamps use validate=False; validate a scalar env's published tags now to fail at startup.
                 from collections.abc import Mapping
 
                 metadata = getattr(one, "metadata", None)
@@ -280,15 +223,12 @@ class EnvServer:
                         cast("Mapping[str, Any]", metadata)
                     )
                     if published is not None:
-                        one = tag(one, published)  # idempotent re-stamp + validate
+                        one = tag(one, published)
             _check_expected_branch(one)
             if native_values:
-                # Lazy import keeps the un-bridged serve path light.
                 from ._server_bridge import BridgedEnv
 
                 assert bridge is not None
-                # BridgedEnv duck-types as the env (delegates every other
-                # attribute).
                 one = BridgedEnv(one, bridge, device)
             return one
 
@@ -301,13 +241,6 @@ class EnvServer:
         refuse_v1_address("EnvServer", normalized_address)
         server_cls = load_native("PyVectorEnvServer" if is_vector else "PyEnvServer")
         if options is None or options.workflow_edition is None:
-            # A served env declares an edition like any other participant.
-            # There is no class here to read one off -- the env is an object --
-            # so this picks up the process and working directory's project
-            # surfaces, quietly. Options that
-            # already carry a declaration are the caller's resolved answer
-            # (`serve_env`, the loopback server `run()` stands up) and are
-            # adopted verbatim.
             options = serve_options_declaring(options)
         self._server: PyEnvServer | PyVectorEnvServer = server_cls(
             env=env,
@@ -317,9 +250,8 @@ class EnvServer:
             close_env_on_shutdown=close_env_on_shutdown,
             announce=not loopback.get(),
         )
-        # A server still running when CPython finalizes is fatal: its serve and
-        # lane threads call into the interpreter as it tears down. Stop it from
-        # a finalizer (detached by an explicit shutdown()) instead.
+        # A server still running at CPython finalization is fatal (its threads call into a tearing-down
+        # interpreter); stop it from a finalizer.
         self._finalizer = weakref.finalize(self, _stop_server, self._server)
 
     @property

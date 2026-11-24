@@ -1,5 +1,3 @@
-//! Artifact layout checks: names, columns and record keys of saved episodes.
-
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -15,7 +13,6 @@ use crate::{RunContext, RunResult, StepEvent, Value};
 
 const SIDE: usize = 16;
 
-/// A camera plus a state leaf; four steps an episode, odd episodes succeed.
 struct Scene {
     episode: i64,
     step: u8,
@@ -80,8 +77,6 @@ impl Scene {
     }
 }
 
-/// The recorder's hooks under a perturbation that inverts the camera, so
-/// the raw and perturbed streams differ.
 struct Inverted(Box<dyn RunHooks>);
 impl RunHooks for Inverted {
     fn on_run_start(&mut self, context: std::sync::Arc<dyn RunContext>) -> Result<()> {
@@ -216,8 +211,6 @@ fn a_recorded_run_writes_the_managed_episode_layout() {
     assert_eq!(result["stamp"]["runnerVersion"], crate::VERSION);
     let root = bundle.join("workloads/c0001/attempts/a001");
 
-    // every=2 records video for episodes 1 and 3; when=failures keeps only
-    // episode 2's trajectory. A transformed camera is encoded twice.
     assert_eq!(
         files(&root),
         [
@@ -235,7 +228,6 @@ fn a_recorded_run_writes_the_managed_episode_layout() {
         .into(),
     );
 
-    // episode.json keys: `EpisodeJson` fields.
     let episode = read_json(&root.join("episodes/ep000001/episode.json"));
     assert_eq!(
         keys(&episode),
@@ -279,8 +271,6 @@ fn a_recorded_run_writes_the_managed_episode_layout() {
             .unwrap()
             .clone()
     };
-    // Frame N is the observation step N acted on (frame 0 the reset one),
-    // so frames pair with trajectory rows; the terminal one is never seen.
     assert_eq!(
         recording("raw"),
         json!({"camera": "primary", "stream": "raw", "path": "episodes/ep000001/video/primary.raw.mp4", "frames": 4, "fps": 30, "width": 16, "height": 16})
@@ -301,7 +291,6 @@ fn a_recorded_run_writes_the_managed_episode_layout() {
     assert_eq!(failed["files"][0]["kind"], "trajectory");
     assert_eq!(failed["recordings"], json!([]));
 
-    // trajectory.parquet: columns and types in the saved order.
     let trajectory =
         std::fs::File::open(root.join("episodes/ep000002/trajectory.parquet")).unwrap();
     let reader =
@@ -352,14 +341,11 @@ fn a_recorded_run_writes_the_managed_episode_layout() {
             "eef": {"shape": [3], "data": [0.25, -0.5, 1.0]},
         })
     );
-    // The raw stream is what the env rendered, the perturbed one what the
-    // model saw.
     assert_eq!(column("obs_raw_images"), vec![0; 768]);
     assert_eq!(column("obs_perturbed_images"), vec![255; 768]);
     let action: Json = serde_json::from_slice(&column("action_raw")).unwrap();
     assert_eq!(action, json!({"shape": [1], "data": [0.0]}));
 
-    // windows.jsonl rows carry telemetry snapshots.
     let windows = std::fs::read_to_string(root.join("telemetry/windows.jsonl")).unwrap();
     let session = windows
         .lines()
@@ -374,7 +360,6 @@ fn a_recorded_run_writes_the_managed_episode_layout() {
         }))
     );
 
-    // The bundle's episodes point at the tree's videos.
     let media = &workload["episodes"][0]["media"];
     assert_eq!(
         media[0]["path"],
@@ -403,8 +388,6 @@ fn selection_and_when_rules() {
     );
 }
 
-/// Two lanes under `NEXT_STEP` autoreset: lane 0's episodes end on their
-/// first step, lane 1's on their third, and each restarts on the next.
 struct Staggered {
     counts: [u32; 2],
     ended: [bool; 2],
@@ -460,7 +443,6 @@ impl crate::VectorEnv for Staggered {
     }
 }
 
-/// `count` lanes of a `float32 [1]` zero.
 fn lanes(count: usize) -> Value {
     Value::Tensor(Tensor::new(&vec![0; 4 * count], &[count, 1], DType::Float32).unwrap())
 }
@@ -532,20 +514,17 @@ fn a_next_step_autoreset_roll_is_not_a_trajectory_row() {
             .collect();
         rows.insert((episode["envIndex"].as_i64().unwrap(), steps));
     }
-    // One row per step, numbered within its episode.
     assert_eq!(
         rows,
         [(0, vec![1]), (1, vec![1, 2, 3])].into_iter().collect()
     );
 }
 
-/// `(envIndex, trajectory rows)` per recorded episode under `root`.
 fn episode_rows(root: &Path) -> Vec<(i64, usize)> {
     let mut rows = Vec::new();
     for dir in std::fs::read_dir(root.join("episodes")).unwrap() {
         let dir = dir.unwrap().path();
         let episode = read_json(&dir.join("episode.json"));
-        // An episode that closed no step writes no trajectory.
         let count = std::fs::File::open(dir.join("trajectory.parquet")).map_or(0, |file| {
             parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
                 .unwrap()
@@ -560,9 +539,6 @@ fn episode_rows(root: &Path) -> Vec<(i64, usize)> {
     rows
 }
 
-/// A [`Scene`] whose every reset waits for the other lane's: lanes claim
-/// episodes first come, first served, so left to themselves a faster lane
-/// takes more of them.
 struct PairedScene {
     scene: Scene,
     resets: std::sync::Arc<std::sync::Barrier>,
@@ -644,7 +620,6 @@ fn episodes_of_a_lane_endpoint_record_their_own_lane() {
     let bundle = recorder
         .export_(out.path().join("bundle"), RecorderExportOptions::default())
         .unwrap();
-    // Four steps an episode, two episodes a lane.
     assert_eq!(
         episode_rows(&bundle.join("workloads/c0001/attempts/a001")),
         [(0, 4), (0, 4), (1, 4), (1, 4)]

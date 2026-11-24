@@ -68,7 +68,6 @@ internal sealed class TrackedPool
             lock (sync) idle++;
         }
     }
-    // Called only by the tracked barrier coordinator, never by its caller.
     internal void StopAndJoin()
     {
         Thread[] snapshot;

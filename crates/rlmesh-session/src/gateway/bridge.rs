@@ -1,47 +1,29 @@
 //! The session side of the gateway: real `rlmesh-session` participants on
 //! the real v2 keyspace.
 //!
-//! - The [`Gateway`] attaches one observer participant of its own, with the
-//!   session address's key, for the declarations and to watch the host, and
-//!   relays the host's authority updates (`host/state`) as they were
-//!   published, once their signature verifies (the browser gets the plain
-//!   snapshot: the wasm holds no keys).
-//! - Every browser socket is a participant attached with its token's
-//!   credential ([`Bearer`]): a paired browser token's own
-//!   device key, so the host applies that device's cap, parts and verbs,
-//!   or, for this machine's page token, the gateway's. Each runs its own
-//!   handshake, and the gateway seals and opens for it (it holds that
-//!   participant's keys and lease keys), so the wasm needs no crypto.
-//! - Every browser control connection is a [`BrowserLink`]: a controller
-//!   at the class the browser asked for (capped by `--max-priority`, and by
-//!   the host at its device's cap), with an identity binding over every
-//!   commandable part so it can be granted leases, or an observer. The host
-//!   is the only authority: lease grants, releases and the session verbs go
-//!   to it through the participant, and its replies come back as
-//!   `CtlReply`s.
-//! - **Heartbeats are the browser's own.** The participant relays them
-//!   instead of its own: each browser heartbeat (with its four-timestamp
-//!   exchange, in the browser's clock) is sealed under the participant's
-//!   keys and forwarded, and the host's echoes come back opened. The host therefore renews leases only while
-//!   the browser itself is alive, maps the browser's clock (not the
-//!   gateway's), and lapses the lease when the browser stops.
-//! - **Chunks are the browser's own**, sealed under the browser
-//!   participant's `k_cmd` (the gateway holds the lease's keys for it) and
-//!   forwarded to the part's command key on its class; the edge fences them.
-//!   The gateway refuses a chunk that names another source or a part that is
-//!   not commandable, and reports (but still forwards) one the current
+//! - The [`Gateway`] attaches one observer participant of its own, with the session address's
+//!   key, for the declarations and to watch the host, and relays the host's authority updates
+//!   (`host/state`) once their signature verifies; the browser gets the plain snapshot and holds
+//!   no keys.
+//! - Every browser socket is a participant attached with its token's credential ([`Bearer`]): a
+//!   paired browser's own device key, so the host applies that device's cap, parts and verbs, or
+//!   the gateway's for this machine's page token. The gateway seals and opens for it.
+//! - Every browser control connection is a [`BrowserLink`]: a controller at the class the
+//!   browser asked for (capped by `--max-priority`, and by the host at its device's cap), or an
+//!   observer. The host is the only authority; its replies come back as `CtlReply`s.
+//! - **Heartbeats are the browser's own**, sealed and forwarded by the participant, so the host
+//!   renews leases only while the browser itself is alive, maps the browser's clock, and lapses
+//!   the lease when the browser stops.
+//! - **Chunks are the browser's own**, sealed under the participant's `k_cmd` and forwarded to
+//!   the part's command key; the edge fences them. The gateway refuses a chunk that names another
+//!   source or a part that is not commandable, and reports (but still forwards) one the current
 //!   snapshot would fence.
-//! - Every data connection reads through an observer of its own
-//!   ([`Gateway::reader`]), so the host gives it only the stream keys its
-//!   device may read. Samples are opened under them, each subscription with
-//!   its own replay windows, and forwarded as plain samples: the gateway
-//!   subscribes on the stream's class and prepends the subscription id.
+//! - Every data connection reads through an observer of its own ([`Gateway::reader`]), so it
+//!   gets only the stream keys its device may read; samples are opened and forwarded plain.
 //!
-//! Dropping a link drops its participant: its heartbeats stop, so the host
-//! ends its leases (the edge holds, then goes safe) and nothing is
-//! resumed by a reconnect, which attaches a new participant. A participant
-//! the host detaches (its device revoked or its entry changed) closes its socket
-//! ([`detached`]).
+//! Dropping a link drops its participant: its heartbeats stop, so the host ends its leases (the
+//! edge holds, then goes safe), and a reconnect attaches a new participant that resumes nothing.
+//! A participant the host detaches closes its socket ([`detached`]).
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -116,8 +98,6 @@ fn random_id(prefix: &str) -> Result<ParticipantId, SessionError> {
     Ok(ParticipantId::new(format!("{prefix}-{:08x}", bits as u32))?)
 }
 
-/// Marks the session ended once the host's liveliness token has been gone
-/// for [`HOST_GONE_GRACE`].
 async fn watch_host(mut present: watch::Receiver<bool>, end: watch::Sender<bool>) {
     loop {
         if present.wait_for(|p| !*p).await.is_err() {
@@ -176,7 +156,6 @@ impl Gateway {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     match auth::open_state(&mut verifier, &key, &signed) {
-                        // No receivers is fine.
                         Ok(snapshot) => {
                             let _ = state.send(Bytes::from(codec::encode_state(&snapshot)));
                         }
@@ -241,11 +220,10 @@ impl Gateway {
     }
 
     /// Subscribes `sink` to the stream at `path` (`{robot}/{part}` or
-    /// `{robot}/{part}/_applied`) for a `socket` (`state` or `bulk`)
-    /// connection reading through `reader`: every sample its publisher
-    /// sends, as [`frame::SAMPLE`] frames for subscription `id`. A full sink
-    /// drops the frame, and a stream `reader` holds no key for (its device
-    /// may not read it) sends none.
+    /// `{robot}/{part}/_applied`) for a `socket` (`state` or `bulk`) connection
+    /// reading through `reader`, as [`frame::SAMPLE`] frames for subscription
+    /// `id`. A full sink drops the frame, and a stream `reader` holds no key for
+    /// sends none.
     pub async fn subscribe(
         self: &Arc<Self>,
         reader: &Participant,
@@ -291,7 +269,6 @@ impl Gateway {
             .declare_subscriber(key.clone())
             .callback(move |sample| {
                 let bytes = sample.payload().to_bytes().into_owned();
-                // The body as its robot encoded it.
                 let opened = sealer.open_stream(&key, bytes, &robot, channel, applied, &windows);
                 let body = match opened {
                     Ok((_, body, _)) => body,
@@ -345,9 +322,8 @@ impl Gateway {
             ParticipantConfig::new(self.tenant.clone(), self.session, id.clone(), roles, class);
         config.name = format!("browser via {}", self.observer.id());
         config.credential = Some(self.credential_of(bearer));
-        // The participant's own heartbeats would renew leases on the
-        // gateway's account: it relays the browser's instead (one of its own
-        // may leave before the switch below; it carries no timing sample).
+        // The participant's own heartbeats would renew leases on the gateway's account; it relays the
+        // browser's instead.
         config.heartbeat_period = Duration::from_secs(3600);
         config.clock = MonotonicClock::new().shared();
         let participant = Participant::attach(self.transport.clone(), config).await?;
@@ -397,7 +373,6 @@ pub struct BrowserLink {
     tasks: Vec<JoinHandle<()>>,
 }
 
-/// Every commandable part, by id.
 fn commandable(view: &AuthoritySnapshot) -> Vec<ChannelId> {
     let mut channels: Vec<ChannelId> = view
         .parts
@@ -409,8 +384,6 @@ fn commandable(view: &AuthoritySnapshot) -> Vec<ChannelId> {
     channels
 }
 
-/// Declares an identity binding over `channels` (a controller that commands
-/// paths directly), when they differ from `bound`.
 async fn rebind(
     participant: &Participant,
     bound: &Mutex<Vec<ChannelId>>,
@@ -662,8 +635,6 @@ impl BrowserLink {
                     .grant_leases(channels, release, ttl_ns.map(Duration::from_nanos))
                     .await
                     .map_err(|e| refusal(&e)),
-                // Not forwarded as a plain release: the browser would think
-                // the parts went back to the model.
                 Command::ReleaseLease { to: Some(_), .. } => Err(CtlError::new(
                     CtlStatus::Unsupported,
                     "the gateway does not forward a hand-back (lease.handback)",

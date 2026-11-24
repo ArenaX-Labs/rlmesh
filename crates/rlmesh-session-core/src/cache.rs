@@ -1,12 +1,9 @@
 //! The controller's input cache and history windows, sans-IO.
 //!
-//! [`InputCache`] keeps one slot per bound stream (shared by the entries
-//! bound to it) plus a ring as deep as the deepest window on it, fed sample
-//! by sample and snapshotted at each policy start. Every time is passed in
-//! (`now_ns`, session time). The rules (snapshot, freshness, stale required
-//! inputs, never-received inputs, windows and gaps, epochs, provenance and
-//! applied streams) are documented on `rlmesh_session::cache`, whose
-//! `Inputs` feeds this cache from the network.
+//! [`InputCache`] keeps one slot per bound stream plus a ring as deep as the deepest window on
+//! it, fed sample by sample and snapshotted at each policy start. Every time is passed in
+//! (`now_ns`, session time). The freshness, window and epoch rules are documented on
+//! `rlmesh_session::cache`.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -41,7 +38,6 @@ impl Cached {
     }
 }
 
-/// What the cache knows of one bound input.
 #[derive(Clone, Debug, PartialEq)]
 struct EntryRule {
     entry: String,
@@ -81,7 +77,6 @@ impl Ring {
         if sample.has_value() && self.held.as_ref().is_none_or(|(seq, _)| sample.seq > *seq) {
             self.held = Some((sample.seq, sample.payload.clone()));
         }
-        // Live samples arrive in order; recovered ones may fill a gap.
         match self.samples.binary_search_by_key(&sample.seq, |s| s.seq) {
             Ok(_) => {}
             Err(i) if i == 0 && self.samples.len() >= self.depth => {}
@@ -239,8 +234,8 @@ impl InputCache {
     }
 
     /// The snapshot at a policy start at session time `now_ns`, with this
-    /// controller's mapping error `self_error_ns`: every input, or why the
-    /// start is skipped.
+    /// controller's mapping error `self_error_ns`: every input, or why the start is
+    /// skipped.
     pub fn snapshot(&self, now_ns: i64, self_error_ns: u64) -> Result<Snapshot, Skip> {
         let mut skip = Skip::default();
         let mut inputs = Vec::with_capacity(self.rules.len());
@@ -265,7 +260,6 @@ impl InputCache {
                 skip.waiting.push(rule.entry.clone());
                 continue;
             };
-            // Freshness of the newest sample.
             let slack =
                 i64::try_from(newest.error_ns.saturating_add(self_error_ns)).unwrap_or(i64::MAX);
             let (age_ns, future) = match newest.capture_ns {
@@ -287,7 +281,6 @@ impl InputCache {
                 skip.stale.push(rule.entry.clone());
                 continue;
             }
-            // The window, by seq.
             let want = rule.history;
             let mut window: Vec<Cached> = ring
                 .samples
@@ -301,7 +294,6 @@ impl InputCache {
                 skip.gaps.push(rule.entry.clone());
                 continue;
             }
-            // Applied ticks that dispatched nothing keep the previous value.
             let older = ring.samples.len() - window.len();
             let first = window.first().map_or(0, |s| s.seq);
             let mut carried = ring
@@ -390,9 +382,6 @@ mod tests {
 
     const MS: i64 = 1_000_000;
 
-    /// At 200 Hz: ft at 1 kHz windowed 4 deep with warmup (derived bound
-    /// 15 ms), q at 1 kHz latest (bound 10 ms, hold allowed when asked), the
-    /// arm's applied stream, and a blank camera.
     fn cache(allow_hold: bool) -> (InputCache, ChannelId, ChannelId, ChannelId) {
         let mut parts = normalise(
             &ParticipantId::new("robot").expect("id"),
@@ -489,8 +478,6 @@ mod tests {
         cache.push(ft, Epoch(1), sample(1, 0, 1));
         cache.push(q, Epoch(1), sample(1, 0, 2));
         cache.push(last, Epoch(1), applied(1, 0, Some(3)));
-        // q's bound is 10 ms; at 11 ms its conservative age (plus 0.5 ms of
-        // mapping error on each side) is past it.
         assert!(cache.snapshot(9 * MS, 0).is_ok());
         let mut late = sample(2, 0, 2);
         late.error_ns = 500_000;
@@ -508,7 +495,6 @@ mod tests {
         held.push(last, Epoch(1), applied(1, 0, Some(3)));
         let snap = held.snapshot(12 * MS, 0).expect("held");
         assert!(snap.input("q").expect("q").stale, "delivered, flagged");
-        // Unmapped or future samples are never fresh.
         let mut unmapped = sample(2, 0, 2);
         unmapped.capture_ns = None;
         held.push(q, Epoch(1), unmapped);
@@ -539,7 +525,6 @@ mod tests {
         }
         assert_eq!(cache.snapshot(10 * MS, 0).expect_err("gap").gaps, ["ft"]);
         assert_eq!(cache.gap(ft), Some((Epoch(1), 2, 3)));
-        // The host store fills it.
         cache.push(ft, Epoch(1), sample(3, 9, 3));
         let window: Vec<u64> = cache
             .snapshot(10 * MS, 0)
@@ -551,7 +536,6 @@ mod tests {
             .map(|s| s.seq)
             .collect();
         assert_eq!(window, [2, 3, 4, 5]);
-        // Or a complete new window: 7..=10 after a lost 6.
         for seq in 7..=10 {
             cache.push(ft, Epoch(1), sample(seq, 9, 0));
         }
@@ -574,8 +558,6 @@ mod tests {
             Bytes::from(vec![7_u8; 8]),
             "a tick that dispatched nothing keeps the previous value"
         );
-        // An arm: state streams start empty and older samples are dropped;
-        // the prompt (an event) is kept.
         cache.advance(Epoch(2));
         assert_eq!(
             cache.snapshot(10 * MS, 0).expect_err("cleared").waiting,

@@ -28,13 +28,11 @@ use calls::Resolved;
 use erased::{Erased, check_native_chunk};
 use serve::serve_blocking;
 
-/// The cap on a `None` drain or close timeout, which a model serve takes
-/// too.
 const SERVE_GRACE: Duration = Duration::from_secs(5);
 
 /// Options for [`Model::new`].
 #[derive(Default)]
-#[allow(clippy::type_complexity)] // Python's hook signatures, spelled out (MDL-21).
+#[allow(clippy::type_complexity)]
 pub struct ModelOptions {
     /// Replaces [`Policy::spec`]; `None` keeps the policy's.
     pub spec: Option<SpecArg>,
@@ -60,9 +58,8 @@ impl fmt::Debug for ModelOptions {
 /// Options for [`Model::serve`], including cancellation and native extras.
 #[derive(Clone, Debug, Default)]
 pub struct ModelServeOptions {
-    /// The participant the model joins the session at `address` as:
-    /// `serve("lab:7447", name: "policy")` is reached at `lab:7447/policy`.
-    /// `None` reads it off `address` (`"lab:7447/policy"`).
+    /// The participant the model joins the session at `address` as: `serve("lab:7447",
+    /// name: "policy")` is reached at `lab:7447/policy`.
     pub name: Option<String>,
     /// The transport lifecycle policy; `None` drain and close timeouts take
     /// a 5 s cap.
@@ -78,14 +75,12 @@ pub struct ModelServeOptions {
     pub batching: Option<crate::BatchOptions>,
 }
 
-/// A loaded model built from a [`Policy`] or predict closure. A shared
-/// handle: clones drive the same model, and the last one dropped closes it
-/// if [`close`](Model::close) has not run.
+/// A loaded model built from a [`Policy`] or predict closure.
 ///
-/// Every corner and hook call on one model, across every run and serve on
-/// it, runs one at a time, in submission order, on a library thread. A
-/// corner or hook that calls back into its own model fails with the
-/// `RuntimeError` class instead of deadlocking.
+/// A shared handle: clones drive the same model, and the last one dropped closes it if
+/// [`close`](Model::close) has not run. Every corner and hook call on one model, across all
+/// its runs and serves, runs one at a time in submission order on a library thread; one that
+/// calls back into its own model fails with the `RuntimeError` class instead of deadlocking.
 #[derive(Clone)]
 pub struct Model {
     handle: Arc<Handle>,
@@ -127,8 +122,6 @@ impl fmt::Debug for Model {
     }
 }
 
-/// Check a config against `load`'s declared keys: a missing required key,
-/// then the unlisted keys.
 fn check_config(keys: Option<&[(String, bool)]>, config: &Kwargs, from_config: bool) -> Result<()> {
     let Some(keys) = keys else {
         return Ok(());
@@ -157,8 +150,6 @@ fn check_config(keys: Option<&[(String, bool)]>, config: &Kwargs, from_config: b
     Ok(())
 }
 
-/// Construct a model, in the native order: declarations, config keys,
-/// `load`, the loaded native chunk. On any failure no hook runs.
 pub(crate) fn construct(
     mut policy: Box<dyn DynPolicy>,
     decl: PolicyDecl,
@@ -256,9 +247,8 @@ impl Model {
         self.shared().decl.workflow_edition.as_deref()
     }
 
-    /// Release the model: stop every serve still running on it (drain),
-    /// wait for queued calls, then fire the close hook, at most once. Later
-    /// corner calls, runs and serves fail with the `RuntimeError` class.
+    /// Release the model: stop every serve still running on it (drain), wait for queued
+    /// calls, then fire the close hook, at most once.
     pub fn close(&self) -> Result<()> {
         if crate::env::server::in_async_context() {
             return Err(Error::Runtime(
@@ -284,8 +274,6 @@ impl Model {
     }
 
     /// Serve the model on `address` until the server stops, then close it.
-    /// SIGINT stops it (drain, close) and fails with the cancellation class;
-    /// SIGTERM stops it and returns `Ok`.
     pub fn serve(&self, address: &str, options: ModelServeOptions) -> Result<()> {
         self.serve_host(address, options, true)
     }
@@ -305,9 +293,9 @@ impl Model {
         serve_blocking(self.shared(), address, options, foreground, None)
     }
 
-    /// The async twin of [`serve`](Model::serve): installs no signal
-    /// handlers. Dropping the future after its first poll stops the server;
-    /// the drain and the close finish on a library thread.
+    /// The async twin of [`serve`](Model::serve): installs no signal handlers. Dropping the
+    /// future after its first poll stops the server; the drain and close finish on a library
+    /// thread.
     pub fn serve_async(
         &self,
         address: &str,
@@ -352,7 +340,6 @@ impl Model {
     }
 }
 
-/// Fires its token when dropped armed: a dropped `serve_async` future.
 struct DropCancels(Option<crate::ext::CancelToken>);
 
 impl DropCancels {
@@ -369,7 +356,6 @@ impl Drop for DropCancels {
     }
 }
 
-/// Watches cancel tokens and stops a server when one fires.
 pub(crate) struct CancelWatcher {
     stop: Arc<AtomicBool>,
     fired: Arc<AtomicBool>,
@@ -412,7 +398,6 @@ impl CancelWatcher {
         }
     }
 
-    /// Stop watching; whether a token fired.
     pub(crate) fn stop(mut self) -> bool {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {

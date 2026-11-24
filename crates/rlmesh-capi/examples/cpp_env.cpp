@@ -1,4 +1,3 @@
-// A detected C++17 env with typed spaces, values and metadata.
 #include <cmath>
 #include <cstdio>
 #include <rlmesh.hpp>

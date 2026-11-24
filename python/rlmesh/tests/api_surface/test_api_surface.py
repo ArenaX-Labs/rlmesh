@@ -63,10 +63,6 @@ def test_root_namespace_is_small() -> None:
         "types",
     ]
 
-    # EnvFactory is the thin runtime env-authoring base; models are authored by
-    # subclassing rlmesh.Model. The removed build DSL stays gone, and the internal
-    # modules are _-prefixed (server/serving/client/sandbox/models): none of those are
-    # part of the public top-level surface.
     for name in (
         "Recipe",
         "register",
@@ -92,7 +88,6 @@ def test_root_namespace_is_small() -> None:
 
 
 def test_lazy_exports_are_discoverable() -> None:
-    """describe/describe_json load lazily, so dir() must still complete them."""
     import rlmesh
 
     listing = dir(rlmesh)
@@ -101,7 +96,6 @@ def test_lazy_exports_are_discoverable() -> None:
 
 
 def test_exception_family_is_public() -> None:
-    """The exception family is importable from rlmesh, not just rlmesh._rlmesh."""
     import rlmesh
     from rlmesh import _rlmesh
 
@@ -207,7 +201,6 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
 
 
 def test_api_key_never_appears_in_repr_or_errors() -> None:
-    """Remote session clients expose no legacy endpoint credentials."""
     import importlib
     import inspect
     import json

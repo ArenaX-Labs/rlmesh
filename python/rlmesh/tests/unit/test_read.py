@@ -1,13 +1,3 @@
-"""Read-only role inspection: a run context's read (a Binding's, here).
-
-Pins the inline read seam: the same adapter pipeline a model uses, pointed at the
-consumer. A read item is a role constant (kept in the env's native encoding) or a
-model-input leaf that declares the encoding you want (Image(layout=...)), resolved
-once against the env's published tags and reused per step. Bare roles desugar to
-the env-native leaf by the env's own tag -- authoritative, so a prefix-less role
-(INSTRUCTION) resolves like any other.
-"""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
@@ -21,7 +11,7 @@ import rlmesh.adapters as adapt
 def _tags() -> adapt.EnvTags:
     return adapt.EnvTags(
         observation={
-            "cam": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),  # env stores HWC
+            "cam": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
             "eef_pos": adapt.StateTag(role=adapt.EEF_POS),
             "instruction": adapt.TextTag(role=adapt.INSTRUCTION),
         },
@@ -30,8 +20,6 @@ def _tags() -> adapt.EnvTags:
 
 
 class _ArmEnv:
-    """A tagged local env: HWC camera + eef state + instruction, 1-dim action."""
-
     def __init__(self) -> None:
         import gymnasium as gym
         import numpy as np
@@ -94,16 +82,12 @@ def test_read_overrides_encoding_and_keeps_native_for_bare_roles(
     binding = bind()
     obs, _ = binding.reset()
 
-    # env HWC -> CHW
     image = binding.read(obs, adapt.Image(adapt.IMAGE_PRIMARY, layout="chw"))
-    assert image.shape == (3, 8, 8)  # layout converted
-    # bare role -> env-native state
-    assert binding.read(obs, adapt.EEF_POS).shape == (3,)  # native, untouched
+    assert image.shape == (3, 8, 8)
+    assert binding.read(obs, adapt.EEF_POS).shape == (3,)
 
 
 def test_bare_role_desugars_a_prefixless_text_role(bind: Callable[..., Any]) -> None:
-    # INSTRUCTION carries no kind prefix, so desugar must read the env tag, not the
-    # role string. This is the case that kills a prefix-matching shortcut.
     binding = bind()
     obs, _ = binding.reset()
     assert binding.read(obs, adapt.INSTRUCTION) == "pick up the cube"
@@ -117,7 +101,6 @@ def test_read_returns_the_single_value_and_caches(bind: Callable[..., Any]) -> N
     assert ee.shape == (3,)
     img = binding.read(obs, adapt.Image(adapt.IMAGE_PRIMARY, layout="chw"))
     assert img.shape == (3, 8, 8)
-    # Second call with the same item reuses the resolved reader (no re-resolve).
     assert binding.read(obs, adapt.EEF_POS).shape == (3,)
 
 
@@ -129,9 +112,6 @@ def test_read_rejects_an_unknown_role(bind: Callable[..., Any]) -> None:
 
 
 def test_bare_image_role_keeps_env_chw_layout(bind: Callable[..., Any]) -> None:
-    # A torch-style env stores its camera CHW and tags layout="chw". A bare role read
-    # must keep that native layout, not silently transpose to the Image default
-    # (hwc), which would move the channel axis and corrupt the frame.
     import gymnasium as gym
     import numpy as np
 
@@ -164,14 +144,11 @@ def test_bare_image_role_keeps_env_chw_layout(bind: Callable[..., Any]) -> None:
     binding = bind(adapt.tag(_ChwEnv(), tags))
     obs, _ = binding.reset()
 
-    native = binding.read(obs, adapt.IMAGE_PRIMARY)  # bare role -> env-native layout
-    assert native.shape == (3, 8, 8)  # kept CHW, not transposed to (8, 8, 3)
+    native = binding.read(obs, adapt.IMAGE_PRIMARY)
+    assert native.shape == (3, 8, 8)
 
 
 def _clip_tags() -> adapt.EnvTags:
-    """Tags that declare env-side-only ``clip`` clamps: a per-actuator ``clip=True``
-    AND a global ``Action.clip``. Mirrors the real envs (libero/metaworld/aloha/
-    robocasa clamp the whole vector; simpler_env clamps per actuator)."""
     return adapt.EnvTags(
         observation={"cam": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
         action=adapt.Action(
@@ -183,8 +160,6 @@ def _clip_tags() -> adapt.EnvTags:
 
 
 class _ClipEnv(_ArmEnv):
-    """A tagged env whose action declares env-side clip clamps (4-dim action)."""
-
     def __init__(self) -> None:
         import gymnasium as gym
         import numpy as np
@@ -204,12 +179,6 @@ class _ClipEnv(_ArmEnv):
 def test_read_by_role_resolves_against_an_env_that_declares_clip_clamps(
     bind: Callable[..., Any],
 ) -> None:
-    # Regression: a read rides the env's own action along as a *no-op* output. ``clip``
-    # is env-side only (the resolver forbids a model action from setting it), so
-    # echoing it verbatim made every read against a clip-declaring env raise
-    # "clip is an env-side actuator clamp; the model action declaration must leave it
-    # unset" -- silently blanking the live viewer and `record`, which both read by
-    # role. The read must strip the env-side clamps and resolve normally.
     binding = bind(adapt.tag(_ClipEnv(), _clip_tags()))
     obs, _ = binding.reset()
 
@@ -218,19 +187,17 @@ def test_read_by_role_resolves_against_an_env_that_declares_clip_clamps(
 
 
 def test_read_only_action_drops_env_side_clip_clamps() -> None:
-    # The strip helper underneath: global and per-actuator clip go, while the actuator
-    # layout the read needs (roles, dims) stays.
     from rlmesh._models._read import _read_only_action
 
     stripped = _read_only_action(_clip_tags().action)
 
-    assert stripped.clip is None  # global clamp dropped
+    assert stripped.clip is None
     assert [c.clip for c in stripped.components] == [
         False,
         False,
-    ]  # per-actuator dropped
+    ]
     assert [c.role for c in stripped.components] == [
         adapt.ACTION_DELTA_POS,
         adapt.ACTION_GRIPPER,
     ]
-    assert [c.dim for c in stripped.components] == [3, 1]  # layout preserved
+    assert [c.dim for c in stripped.components] == [3, 1]

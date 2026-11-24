@@ -6,18 +6,6 @@
 //! ```text
 //! cargo run --release -p rlmesh-session --example rtt_bench -- [ROUND_TRIPS] [shared|per-class] [MESSAGE]
 //! ```
-//!
-//! `MESSAGE` is what each round trip carries:
-//!
-//! - `sample` (default): a 72-byte `Sample` each way (the raw floor);
-//! - `lockstep`: a `LockstepStep` with one T1 command (`f32[6]`) out, and a
-//!   `LockstepReply` with one T1 observation (`f32[18]`), the reward and the
-//!   done flags back, on publish/subscribe like `sample`;
-//! - `lockstep-query`: the same messages as a Zenoh query and its reply on
-//!   `l/{robot}` (the same-host transport).
-//!
-//! It spawns its own `pong` child, prints one JSON line with the round-trip
-//! percentiles (µs) and the rate, and exits.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
@@ -76,7 +64,6 @@ fn sample(seq: u64) -> Sample {
     }
 }
 
-/// One T1 step: a 1-lane `f32[6]` command.
 fn step(n: u64, command: &Bytes) -> LockstepStep {
     LockstepStep {
         epoch: Epoch(1),
@@ -90,7 +77,6 @@ fn step(n: u64, command: &Bytes) -> LockstepStep {
     }
 }
 
-/// The reply to a T1 step: a 1-lane `f32[18]` observation, reward and flags.
 fn reply(n: u64, observation: &Bytes) -> LockstepReply {
     LockstepReply {
         epoch: Epoch(1),
@@ -108,7 +94,6 @@ fn reply(n: u64, observation: &Bytes) -> LockstepReply {
     }
 }
 
-/// The step number a pong carries, if it decodes.
 fn pong_seq(message: &str, payload: &zenoh::bytes::ZBytes) -> Option<u64> {
     let bytes = payload_bytes(payload);
     match message {
@@ -117,7 +102,6 @@ fn pong_seq(message: &str, payload: &zenoh::bytes::ZBytes) -> Option<u64> {
     }
 }
 
-/// Answers every ping with a pong carrying the same seq.
 async fn pong(layout: &str, message: &str, base: std::net::SocketAddr) -> Result<(), BoxError> {
     let transport = Transport::open(&config(layout, Some(base), None)?).await?;
     let session = transport.session(TrafficClass::Realtime).clone();
@@ -169,7 +153,6 @@ async fn pong(layout: &str, message: &str, base: std::net::SocketAddr) -> Result
         })
         .await?;
     println!("ready");
-    // Exit when the parent closes stdin.
     let mut line = String::new();
     let _ = std::io::stdin().read_line(&mut line);
     Ok(())
@@ -208,7 +191,6 @@ async fn ping(layout: &str, message: &str, round_trips: usize) -> Result<(), Box
         .express(true)
         .await?;
     let command = Bytes::from(vec![0_u8; 24]);
-    // Wait for the route to exist, then warm up.
     let warm = 2_000;
     let mut rtts = Vec::with_capacity(round_trips);
     let mut seq = 0_u64;
@@ -253,7 +235,6 @@ async fn ping(layout: &str, message: &str, round_trips: usize) -> Result<(), Box
                 }
             }
             Ok(_) | Err(()) => {
-                // Before the route is up pings are lost; drain and retry.
                 while rx.try_recv().is_ok() {}
                 if started_at.elapsed() > Duration::from_secs(20) {
                     return Err("no pong".into());

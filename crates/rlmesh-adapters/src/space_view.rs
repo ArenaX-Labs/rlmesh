@@ -1,14 +1,7 @@
-//! A compact, serializable projection of a gymnasium space.
-//!
-//! `rlmesh-adapters` resolves IO plans from the *structure* of an env's
-//! observation/action spaces (keys, widths, dtypes, bounds) plus the
-//! semantic tags layered on top. It does not depend on the proto wire
-//! form of spaces; [`join`](crate::join::join) and the conformance vectors consume
-//! this view, derived from [`rlmesh_spaces::SpaceSpec`] via [`From`].
-//!
-//! The view is intentionally lossy: it keeps only what role resolution and
-//! validation need. Bounds are projected to `f64` (the byte-typed integer
-//! bounds are decoded here, once), so downstream code never re-derives them.
+//! A compact, serializable projection of a gymnasium space: only the structure
+//! role resolution and validation need (keys, widths, dtypes, bounds), derived
+//! from [`rlmesh_spaces::SpaceSpec`] via [`From`]. Bounds are projected to
+//! `f64` once here, so downstream code never re-derives them.
 
 use rlmesh_spaces::{BoxBounds, DType, SpaceKind, SpaceSpec, decode_scalars};
 use serde::{Deserialize, Serialize};
@@ -35,12 +28,12 @@ pub struct SpaceView {
     pub shape: Vec<i64>,
     pub dtype: String,
     /// Finite-or-infinite lower bounds in row-major order; `None` when the
-    /// space declares no bounds. Callers filter for finiteness as needed.
+    /// space declares no bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub low: Option<Vec<f64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub high: Option<Vec<f64>>,
-    /// `Dict` child keys, parallel to `children`. Empty for non-dicts.
+    /// `Dict` child keys, parallel to `children`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<String>,
     /// `Dict` values (parallel to `keys`) or `Tuple` items.
@@ -50,7 +43,7 @@ pub struct SpaceView {
 
 impl SpaceView {
     /// Number of scalar elements in this node's own shape (`1` for a scalar
-    /// shape `[]`). Negative dims (unknown) are treated as `0`.
+    /// shape `[]`).
     pub fn numel(&self) -> usize {
         self.shape
             .iter()
@@ -69,11 +62,8 @@ impl SpaceView {
             .and_then(|index| self.children.get(index))
     }
 
-    /// The `Tuple` child at positional `index`, if any.
-    ///
-    /// The positional analogue of [`child`](Self::child): `Tuple` children
-    /// carry no keys (they are addressed by order), so the recursive `join`
-    /// walk descends a Tuple observation node by index.
+    /// The `Tuple` child at positional `index`, if any: `Tuple` children carry
+    /// no keys, so they are addressed by order.
     pub fn child_at(&self, index: usize) -> Option<&SpaceView> {
         if self.kind != SpaceViewKind::Tuple {
             return None;
@@ -82,8 +72,6 @@ impl SpaceView {
     }
 }
 
-/// Project the `f64` bounds out of a Box space, decoding byte-typed integer
-/// bounds exactly. `None` means the space is unbounded on that side.
 fn box_bounds_f64(
     bounds: Option<&BoxBounds>,
     dtype: DType,
@@ -106,8 +94,6 @@ fn box_bounds_f64(
     }
 }
 
-/// Decode little-endian dtype bytes into `f64` bounds. A malformed buffer
-/// yields `None` (treated as unbounded) rather than panicking.
 fn decode_typed(bytes: &[u8], dtype: DType) -> Option<Vec<f64>> {
     decode_scalars(bytes, dtype)
         .ok()
@@ -197,7 +183,6 @@ mod tests {
 
     #[test]
     fn decodes_typed_integer_bounds_exactly() {
-        // uint8 bounds carried as raw bytes: low 0, high 255.
         let spec = box_spec(
             vec![1],
             DType::Uint8,
@@ -254,7 +239,6 @@ mod tests {
         );
         assert_eq!(view.child_at(1).map(SpaceView::numel), Some(7));
         assert!(view.child_at(2).is_none());
-        // A Dict-only accessor never descends a Tuple, and vice-versa.
         assert!(view.child("0").is_none());
     }
 }

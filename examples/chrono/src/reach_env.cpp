@@ -17,8 +17,6 @@ namespace chrono_reach {
 
 namespace {
 
-// Link lengths of the robot in Chrono's industrial demo: shoulder height H,
-// then biceps, forearm and wrist-to-flange (metres).
 constexpr std::array<double, 4> kLengths = {0.180, 0.250, 0.317, 0.258};
 constexpr const char* kInstruction = "move the gripper to the red sphere";
 
@@ -81,7 +79,6 @@ void IndustrialReach::build_world() {
 
   robot_ =
       chrono_types::make_shared<chrono::industrial::IndustrialRobot6dof>(system_.get(), kLengths);
-  // Analytic inverse kinematics, set up from the robot's joint frames at home.
   std::array<ChCoordsysd, 7> joints;
   const auto markers = robot_->GetMarkers();
   for (size_t i = 0; i < joints.size() && i < markers.size(); ++i) {
@@ -101,8 +98,8 @@ ChVectorDynamic<> IndustrialReach::solve_ik(const ChVector3d& tcp) const {
 }
 
 bool IndustrialReach::reachable(const ChVector3d& tcp) const {
-  if (tcp.y() < 0.06) return false;                // keep the tool off the floor
-  if ((tcp - home_).Length() > 0.4) return false;  // stay in the comfortable workspace
+  if (tcp.y() < 0.06) return false;
+  if ((tcp - home_).Length() > 0.4) return false;
   // The analytic IK clamps an out-of-reach target to finite angles, so check
   // the round trip: the joints it returns must put the tool where we asked,
   // with some reach to spare past the target.
@@ -135,7 +132,6 @@ rlmesh::ResetResult IndustrialReach::reset(std::optional<int64_t> seed,
   trail_.clear();
   ++episodes_;
 
-  // A target the arm can reach with its tool held level, away from home.
   std::uniform_real_distribution<double> spread(-0.28, 0.28);
   std::uniform_real_distribution<double> lift(-0.18, 0.12);
   target_ = home_ + ChVector3d(0.1, 0, 0);
@@ -171,14 +167,12 @@ rlmesh::StepResult IndustrialReach::step(std::optional<rlmesh::Value> action) {
     throw rlmesh::TypeError("expected a contiguous float32[3] action");
   }
 
-  // Move the tool command, then let Chrono drive the joints there: the IK
-  // setpoints are interpolated across the control period's physics substeps.
   ChVector3d next = command_;
   for (int i = 0; i < 3; ++i) {
     const double a = std::clamp(static_cast<double>(delta[i]), -1.0, 1.0);
     next[i] += a * options_.max_delta;
   }
-  if (!reachable(next)) next = command_;  // refuse to leave the workspace
+  if (!reachable(next)) next = command_;
   const int substeps =
       std::max(1, static_cast<int>(std::lround(options_.control_dt / options_.physics_dt)));
   double ik_ms = 0, physics_ms = 0;
@@ -203,7 +197,6 @@ rlmesh::StepResult IndustrialReach::step(std::optional<rlmesh::Value> action) {
   const auto observe_start = Clock::now();
   auto observation = observe();
   const double observe_ms = ms_since(observe_start);
-  // Where this step's wall time went, so a driver can profile the env.
   return {std::move(observation),
           -dist + (success_ ? 1.0 : 0.0),
           success_,
@@ -224,7 +217,6 @@ std::optional<rlmesh::Value> IndustrialReach::render() {
 }
 
 void IndustrialReach::close() {
-  // stderr: close also runs for `--describe`, whose stdout is the label JSON.
   std::fprintf(stderr, "closing after %d episodes\n", episodes_);
   robot_.reset();
   system_.reset();
@@ -232,10 +224,9 @@ void IndustrialReach::close() {
 
 rlmesh::Value IndustrialReach::camera(int size) const {
   scene::Scene scene;
-  const scene::Vec3 steel(0.93, 0.55, 0.12);  // industrial orange
+  const scene::Vec3 steel(0.93, 0.55, 0.12);
   const scene::Vec3 joint(0.18, 0.19, 0.22);
 
-  // The pedestal, then a capsule per link between consecutive joint frames.
   scene.capsules.push_back({{0, 0.0, 0}, {0, 0.03, 0}, 0.11, joint});
   std::vector<ChVector3d> chain;
   for (const auto& marker : robot_->GetMarkers()) chain.push_back(marker->GetAbsCoordsys().pos);

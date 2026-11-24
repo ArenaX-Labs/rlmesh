@@ -1,15 +1,13 @@
 //! A receiver's replay window for one (`key_id`, `kind`) flow.
 
 /// The highest `seq` seen and a 64-entry bitmap of the 64 `seq`s below it.
-/// A `seq` that was seen, or is more than 64 below the highest, is a replay.
-/// `seq` 0 is never sent (counters start at 1), so it is always one.
 ///
-/// [`check`](Self::check) before authenticating and [`insert`](Self::insert)
-/// after, so a forged message never moves the window.
+/// A `seq` already seen, more than 64 below the highest, or 0 (never sent) is a replay.
+/// [`check`](Self::check) before authenticating and [`insert`](Self::insert) after, so a
+/// forged message never moves the window.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReplayWindow {
     high: u64,
-    /// Bit `i` set: `high - 1 - i` was seen.
     below: u64,
 }
 
@@ -32,7 +30,8 @@ impl ReplayWindow {
         self.high
     }
 
-    /// Whether `seq` would be accepted. Changes nothing.
+    /// Whether `seq` would be accepted. Call it before authenticating and
+    /// [`insert`](Self::insert) after, so a forged message never moves the window.
     ///
     /// # Errors
     /// [`Replayed`] if `seq` was seen or is older than the window.
@@ -56,7 +55,6 @@ impl ReplayWindow {
         self.check(seq)?;
         if seq > self.high {
             let shift = seq - self.high;
-            // The old high becomes bit `shift - 1`; everything slides with it.
             self.below = if shift > WINDOW {
                 0
             } else {
@@ -107,7 +105,6 @@ mod tests {
             w.insert(seq).unwrap();
             assert_eq!(w.check(seq), Err(Replayed(seq)), "{seq} twice");
         }
-        // 36 is exactly 64 below 100: the oldest the window holds.
         assert_eq!(w.check(35), Err(Replayed(35)), "older than the window");
         assert!(w.check(38).is_ok());
         assert_eq!(w.high(), 100);
@@ -119,17 +116,14 @@ mod tests {
         w.insert(10).unwrap();
         w.insert(8).unwrap();
         w.insert(70).unwrap();
-        // 10 and 8 are still remembered, 9 is still open.
         assert_eq!(w.check(10), Err(Replayed(10)));
         assert_eq!(w.check(8), Err(Replayed(8)));
         assert!(w.check(9).is_ok());
         w.insert(74).unwrap();
-        // 74 - 64 = 10 is the oldest left; 9 and 8 fell out.
         assert_eq!(w.check(10), Err(Replayed(10)));
         assert_eq!(w.check(9), Err(Replayed(9)));
         assert!(w.check(11).is_ok());
         assert_eq!(w.check(70), Err(Replayed(70)));
-        // A jump of exactly the window, and past it, keeps only the old high.
         w.insert(74 + 64).unwrap();
         assert_eq!(w.check(74), Err(Replayed(74)));
         assert!(w.check(75).is_ok());

@@ -21,10 +21,6 @@ from rlmesh import EnvFactory
 
 
 class MyEnv(EnvFactory):
-    """Subclass EnvFactory: set ``tags`` (optional), implement make (+ prepare)."""
-
-    # tags = EnvTags(observation=..., action=...)  # describe obs/action for adapters.
-
     def prepare(self) -> None:
         # Optional one-time setup before make() (download assets, start a sim, ...).
         pass
@@ -37,8 +33,6 @@ class MyEnv(EnvFactory):
 def main() -> None:
     address = os.environ.get("RLMESH_ADDRESS", "0.0.0.0:7447")
     name = os.environ.get("RLMESH_NAME", "env")
-    # Prints "RLMesh serving env on ..." once the env answers. Equivalent
-    # one-liner: `python -m rlmesh.serve --env <this_module>:MyEnv`.
     MyEnv().serve(f"{address}/{name}")
 
 

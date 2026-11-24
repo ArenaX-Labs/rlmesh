@@ -37,7 +37,6 @@ family = "Warnings"
 rules = ["R-23", "RUN-19", "COR-7"]
 operation = "warning"
 variant = "workflow"
-# An authored model that declares no edition runs quietly (COR-7).
 expect = { warnings = 0, calling_thread = true }
 
 [[scenario]]

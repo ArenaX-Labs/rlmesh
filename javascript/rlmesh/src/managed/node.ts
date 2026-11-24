@@ -1,7 +1,5 @@
-// `rlmesh/managed` for Node (the `node` export condition): index.ts, plus credentials the way
-// Python's client finds them. An unset `apiKey` (and no `getAccessToken`) falls back to
-// RLMESH_API_KEY, then to the signed-in CLI (`rlmesh token --json`, after `rlmesh login`); an unset
-// `baseUrl` to RLMESH_PLATFORM_URL, then to the CLI profile's platform.
+// `rlmesh/managed` for Node: index.ts plus credentials from RLMESH_API_KEY, then the signed-in CLI
+// (`rlmesh token --json`); `baseUrl` from RLMESH_PLATFORM_URL, then the CLI profile.
 
 import { execFile } from 'node:child_process';
 import { configure, type ClientConfig } from './client.js';
@@ -28,8 +26,6 @@ function configureNode(target: Client, config: NodeClientConfig): Client {
   return configure(target, { ...config, apiKey, baseUrl }, fallback);
 }
 
-// The default client the SDK functions use when given none. index.ts configured it already; this
-// adds the environment and the CLI.
 configureNode(client, {});
 
 interface CliToken {

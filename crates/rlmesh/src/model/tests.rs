@@ -15,7 +15,6 @@ struct SmokeModel {
 impl ModelHandler for SmokeModel {
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
         self.predicts.fetch_add(1, Ordering::SeqCst);
-        // One action per lane; the action space is a Uint8 Box[1] (SmokeEnv).
         Ok((0..observation.num_envs)
             .map(|_| {
                 spaces::SpaceValue::Box(
@@ -34,15 +33,11 @@ impl ModelHandler for SmokeModel {
 #[test]
 fn episode_budget_resolves_like_python() {
     let base = RunLocalOptions::parse(":0/env").unwrap();
-    // Neither given: one episode (Python's `episodes=None`).
     assert_eq!(base.episode_budget().unwrap(), 1);
-    // Seeds only: one episode per seed.
     let seeded = base.clone().episode_seeds(vec![3, 4, 5]);
     assert_eq!(seeded.episode_budget().unwrap(), 3);
-    // An explicit count wins, zero included (runs nothing).
     assert_eq!(base.clone().for_episodes(7).episode_budget().unwrap(), 7);
     assert_eq!(base.clone().for_episodes(0).episode_budget().unwrap(), 0);
-    // Both given: the counts must match.
     assert_eq!(seeded.clone().for_episodes(3).episode_budget().unwrap(), 3);
     let error = seeded.for_episodes(2).episode_budget().unwrap_err();
     assert!(
@@ -53,11 +48,8 @@ fn episode_budget_resolves_like_python() {
     );
 }
 
-/// `for_episodes(0)` runs nothing and never dials the env; a mismatched seed
-/// count is refused before dialing.
 #[tokio::test]
 async fn run_local_zero_episodes_runs_nothing() {
-    // Nothing listens on port 1: dialing would fail the run.
     let unreachable = ":1/env";
     let predicts = Arc::new(AtomicUsize::new(0));
     let report = ModelWorker::new(SmokeModel {

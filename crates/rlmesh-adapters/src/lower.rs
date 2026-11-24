@@ -1,11 +1,9 @@
-//! v1 declarations lowered into binder input, and [`resolve`]: an env's
-//! tags and spaces and a model's spec, bound by the binder's Gym door
-//! ([`rlmesh_session_core::spec::role`]).
+//! v1 declarations lowered into binder input, and [`resolve`], which binds an env's tags and
+//! spaces to a model's spec through [`rlmesh_session_core::spec::role`].
 //!
-//! Lowering is where a declaration is held to what it alone can get wrong
-//! (an unknown field, kind, projection, resample, crop mode, channel order
-//! or dtype, a contradictory crop or fill); every check that needs the
-//! other side is the binder's.
+//! Lowering rejects what a declaration alone can get wrong (an unknown field, kind, projection,
+//! resample, crop mode, channel order or dtype, a contradictory crop or fill); every check that
+//! needs the other side is the binder's.
 
 use rlmesh_session_core::spec::Projection;
 use rlmesh_session_core::spec::plan::Fit;
@@ -44,12 +42,10 @@ fn quoted(value: &str) -> String {
 
 /// Derive the binding of an env/model pair.
 ///
-/// The env side is given as the [`EnvTags`](crate::spec::EnvTags)
-/// observation/action tree over its observation and action spaces; [`join`]
-/// derives the keyed env features (with widths and ranges) those plus the
-/// spaces imply, and the binder matches each model input leaf to an env
-/// feature by role, placed at its tree position. A model role may be reused
-/// across leaves (one camera → several input slots).
+/// The env side is its [`EnvTags`](crate::spec::EnvTags) tree over its observation and action
+/// spaces; [`join`] derives the keyed env features (with widths and ranges) they imply, and the
+/// binder matches each model input leaf to an env feature by role. A model role may be reused
+/// across leaves (one camera feeding several input slots).
 pub fn resolve(
     env_tags: &crate::spec::EnvTags,
     observation_space: &SpaceView,
@@ -57,13 +53,8 @@ pub fn resolve(
     model_spec: &ModelSpec,
     trust_entrypoints: bool,
 ) -> Result<ResolvedAdapter> {
-    // READ-door taint: a *bare* (non-`x-`) unknown field on a recognized
-    // kind is must-understand — an old core silently applying its own default
-    // for a modifier it never parsed is worse than failing. Fail closed, on both
-    // sides, before any plan is built. Unknown *kinds* are tolerated here (the
-    // binder ignores or fails them precisely); only fields taint.
-    // Past its own publish gate, a field the declaring side wrote and this
-    // reader does not know means the declaring side is newer: say which.
+    // A bare unknown field on a recognized kind is must-understand: an old core silently
+    // applying its own default for a modifier it never parsed is worse than failing.
     crate::spec::reject_bare_fields_env(env_tags).map_err(|message| {
         err(
             ErrorCode::UnsupportedKind,
@@ -119,7 +110,6 @@ fn role_advisory(advisory: &Advisory) -> role::Advisory {
     }
 }
 
-/// The binder's encoding for a v1 one (the same names).
 pub(crate) fn rotation(encoding: RotationEncoding) -> Rotation {
     match encoding {
         RotationEncoding::QuatXyzw => Rotation::QuatXyzw,
@@ -165,8 +155,6 @@ fn dtype(name: &str, at: &str) -> Result<DType> {
         })
 }
 
-/// The model spec's input leaves in tree order, its action layout and its
-/// allowed projections.
 fn lower_model(model_spec: &ModelSpec) -> Result<Spec> {
     let allow = model_spec
         .allow
@@ -186,10 +174,6 @@ fn lower_model(model_spec: &ModelSpec) -> Result<Spec> {
         .collect::<Result<Vec<_>>>()?;
     let mut inputs = Vec::new();
     collect(&model_spec.input, NodePath::root(), &mut inputs)?;
-    // `clip` is an env-side actuator clamp on the assembled action vector; a
-    // clip declared on the *model* action layout would silently do nothing.
-    // Reject it, mirroring the per-component guard that likewise rejects an
-    // env-side knob on the model.
     if model_spec.output.clip.is_some() {
         return Err(err(
             ErrorCode::Unsupported,
@@ -204,9 +188,6 @@ fn lower_model(model_spec: &ModelSpec) -> Result<Spec> {
     })
 }
 
-/// Flatten the model input tree into leaves, each carrying the placement of
-/// where its produced value lands in the payload. A `Dict` node recurses each
-/// key, a `Tuple` each index, a `Leaf` lowers itself.
 fn collect(node: &InputNode, placement: NodePath, out: &mut Vec<Leaf>) -> Result<()> {
     match node {
         InputNode::Leaf(leaf) => {
@@ -266,9 +247,6 @@ fn leaf_kind(leaf: &ModelLeaf, placement: &NodePath) -> Result<LeafKind> {
         ModelLeaf::Custom(input) => LeafKind::Custom {
             transform: input.transform.clone(),
         },
-        // A model input of an unrecognized kind has no apply path on an old
-        // core, even if the env offers a matching unknown feature — agreement
-        // is irrelevant. Localized, named by placement.
         ModelLeaf::Unknown { kind, .. } => {
             return Err(err(
                 ErrorCode::UnsupportedKind,
@@ -282,9 +260,6 @@ fn leaf_kind(leaf: &ModelLeaf, placement: &NodePath) -> Result<LeafKind> {
 }
 
 fn image(input: &Image, at: &str) -> Result<RoleImage> {
-    // `fill` only colors the zero-filled frame an `optional` camera
-    // produces when the env lacks it; without `optional` it can never take
-    // effect, so a set-but-inert fill is a spec error, not a silent no-op.
     if input.fill.is_some() && !input.optional {
         return Err(err(
             ErrorCode::Unsupported,
@@ -305,9 +280,6 @@ fn image(input: &Image, at: &str) -> Result<RoleImage> {
                 ),
             )
         })?;
-    // The two other constrained-string vocabularies, checked like `resample`:
-    // they are strings on the wire so a future additive value degrades to this
-    // typed error instead of a parse failure.
     for (field, value, vocabulary) in [
         ("crop_mode", &input.crop_mode, CROP_MODES),
         ("channel_order", &input.channel_order, CHANNEL_ORDERS),
@@ -322,9 +294,6 @@ fn image(input: &Image, at: &str) -> Result<RoleImage> {
             ));
         }
     }
-    // The two fractions say the same thing two ways — a side fraction and an
-    // area fraction — so declaring both is a spec error rather than a silent
-    // precedence rule.
     if input.crop.is_some() && input.crop_area.is_some() {
         return Err(err(
             ErrorCode::Unsupported,
@@ -460,7 +429,6 @@ fn actuator(component: &Actuator) -> RoleActuator {
     }
 }
 
-/// The env's joined features as binder input.
 fn lower_env(features: &EnvFeatures) -> Env {
     let mut env = Env {
         action: features.action.components.iter().map(actuator).collect(),

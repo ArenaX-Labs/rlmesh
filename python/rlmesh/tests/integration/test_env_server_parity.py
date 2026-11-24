@@ -1,5 +1,3 @@
-"""EnvServer behaviour aligned with the native servers (ENV-P1, ENV-P2, ENV-P7)."""
-
 from __future__ import annotations
 
 import threading
@@ -24,7 +22,6 @@ class _Env:
 
     def step(self, action):
         if self.server is not None:
-            # From inside its own callback: only triggers the drain.
             self.server.shutdown()
         return 1, 0.0, False, False, {}
 
@@ -62,7 +59,6 @@ def test_a_foreground_serve_failure_has_the_serve_prefix():
         except BaseException as exc:
             result.append(exc)
 
-    # A worker-thread serve, stopped by its owner from another thread.
     worker = threading.Thread(target=serve)
     worker.start()
     time.sleep(0.3)
@@ -86,8 +82,6 @@ def test_shutdown_from_a_callback_under_start_only_triggers_the_drain():
 
 
 class _Vector:
-    """A two-lane vector env recording the thread each call runs on."""
-
     num_envs = 2
     single_observation_space = gym.spaces.Discrete(4)
     single_action_space = gym.spaces.Discrete(2)
@@ -109,7 +103,6 @@ class _Vector:
 
 
 def test_a_background_vector_env_runs_on_one_thread():
-    """ENV-P7: one dedicated thread, never the blocking pool."""
     env = _Vector()
     server = rlmesh.EnvServer(env, ":0/env")
     server.start()

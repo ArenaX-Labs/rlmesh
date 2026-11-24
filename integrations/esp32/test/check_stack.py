@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""Hold a linked RLMesh firmware's stack use to its budgets.
-
-Reads a firmware ELF (Xtensa or RISC-V) with the toolchain's objdump: the
-frame each function allocates at its entry, and the call graph, with Xtensa's
-long calls resolved through their literals. Nothing runs on a board.
-
-Paths that never return (panics, aborts) don't count. Calls through a function
-pointer aren't followed, except snow's to its DH, cipher and hash: the margin
-below covers the rest, which are shallow (the board's clock and randomness).
-"""
+"""Hold a linked RLMesh firmware's stack use to its budgets."""
 
 from __future__ import annotations
 
@@ -20,22 +11,13 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# The loop task's stack the library declares (src/platform.cpp).
 LOOP_STACK = 12 * 1024
-# What FreeRTOS keeps of a task's stack: an interrupted task's frame, the
-# coprocessor area, the canary and the task's entry.
 RTOS_RESERVE = 768
-# Left free under the deepest call.
 MARGIN = 1536
-# The deepest call from the loop task.
 LOOP_BUDGET = LOOP_STACK - RTOS_RESERVE - MARGIN
-# `Robot::begin` down: joining fits Arduino's default stack on its own.
 JOIN_BUDGET = 4096
-# A function of the C ABI's own frame: a sketch calls these from loop().
 FRAME_BUDGET = 1024
 
-# The transport's own tasks: each entry point and the function that returns
-# the stack it is created with.
 TASKS = (
     ("verify_task", "rlmesh_zenoh_verify_stack"),
     ("tx_task", "rlmesh_zenoh_tx_stack"),
@@ -50,15 +32,15 @@ STACK_SIZE = "getArduinoLoopTaskStackSize()"
 HEADER = re.compile(r"^([0-9a-f]+) <(.+)>:$")
 INSN = re.compile(r"^\s*([0-9a-f]+):\s+(\S+)\s*(.*)$")
 ADDRESS = re.compile(r"\b([0-9a-f]{8})\b")
-# Paths that never return: their stack use ends the program either way.
 NORETURN = re.compile(
     r"^(core::panicking::|core::option::(unwrap_failed|expect_failed)|core::result::unwrap_failed"
     r"|core::slice::.*_fail|core::str::slice_error_fail|alloc::alloc::handle_alloc_error"
     r"|alloc::raw_vec::(capacity_overflow|handle_error)|__rustc::rust_begin_unwind|__assert_func"
     r"|abort$|panic_abort|esp_system_abort|__stack_chk_fail)"
 )
-# What snow's trait objects dispatch to.
-DISPATCHED = re.compile(r"crypto::noise::.* as snow::types::|snow::resolvers::.* as snow::types::")
+DISPATCHED = re.compile(
+    r"crypto::noise::.* as snow::types::|snow::resolvers::.* as snow::types::"
+)
 RETURNS = ("ret", "ret.n", "retw", "retw.n")
 
 
@@ -126,9 +108,11 @@ def parse(objdump: str, elf: Path) -> dict[int, Function]:
             continue
         address, mnemonic, operands = int(insn[1], 16), insn[2], insn[3]
         args = [a.strip() for a in operands.split("#")[0].split(",")]
-        grows = mnemonic in ("addi", "c.addi16sp") and args[:1] == ["sp"] and int(args[-1], 0) < 0
-        # Internal functions can have no symbol: the code runs on under the
-        # previous one, so a prologue starts a new one.
+        grows = (
+            mnemonic in ("addi", "c.addi16sp")
+            and args[:1] == ["sp"]
+            and int(args[-1], 0) < 0
+        )
         if (mnemonic == "entry" or (grows and ended)) and address != current.address:
             if current.frame or ended:
                 name = f"{current.name}+{address - current.address:#x}"
@@ -136,7 +120,9 @@ def parse(objdump: str, elf: Path) -> dict[int, Function]:
                 literals, constants = {}, {}
         ended = mnemonic in (*RETURNS, "c.jr", "jr", "j", "c.j")
         if mnemonic in RETURNS:
-            current.returned = constants.get("a2", literals.get("a2", constants.get("a0")))
+            current.returned = constants.get(
+                "a2", literals.get("a2", constants.get("a0"))
+            )
         if mnemonic == "entry":
             current.frame += int(args[1], 0)
         elif grows:
@@ -158,12 +144,10 @@ def parse(objdump: str, elf: Path) -> dict[int, Function]:
             else:
                 current.indirect += 1
         elif mnemonic in ("j", "c.j", "jr"):
-            # A RISC-V tail call, when it lands on another function.
             target = ADDRESS.search(operands)
             if target:
                 current.jumps.add(int(target[1], 16))
         elif mnemonic == "sub" and args[:2] == ["sp", "sp"]:
-            # RISC-V's large frames: the size is built in a register.
             current.frame += constants.get(args[2], 0)
         elif mnemonic in ("lui", "c.lui"):
             constants[args[0]] = int(args[1], 0) << 12
@@ -183,7 +167,9 @@ def parse(objdump: str, elf: Path) -> dict[int, Function]:
             del literals[args[0]]
     dispatched = {f.address for f in functions.values() if DISPATCHED.search(f.name)}
     for function in functions.values():
-        function.calls |= {j for j in function.jumps if j in functions and j != function.address}
+        function.calls |= {
+            j for j in function.jumps if j in functions and j != function.address
+        }
         if function.indirect and function.name.startswith(("<snow::", "snow::")):
             function.calls |= dispatched
     return functions
@@ -231,7 +217,9 @@ def check(functions: dict[int, Function], elf: Path) -> list[str]:
     stack = by_name.get(STACK_SIZE)
     if stack is None or stack.returned != LOOP_STACK:
         got = None if stack is None else stack.returned
-        problems.append(f"the loop task's stack is {got} bytes, not the declared {LOOP_STACK}")
+        problems.append(
+            f"the loop task's stack is {got} bytes, not the declared {LOOP_STACK}"
+        )
     root = by_name.get(ROOT)
     if root is None:
         return [*problems, f"no {ROOT} in {elf}"]
@@ -254,7 +242,6 @@ def check(functions: dict[int, Function], elf: Path) -> list[str]:
         task = by_name.get(entry)
         size = by_name.get(size_fn)
         if task is None and size is None:
-            # A sketch without the transport (the Timing example).
             continue
         if task is None or size is None or size.returned is None:
             problems.append(f"no {entry} or {size_fn} in {elf}")
@@ -278,7 +265,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--objdump", required=True)
     parser.add_argument("--elf", required=True, type=Path)
-    parser.add_argument("--root", action="append", default=[], help="print this chain instead")
+    parser.add_argument(
+        "--root", action="append", default=[], help="print this chain instead"
+    )
     args = parser.parse_args()
     functions = parse(args.objdump, args.elf)
     if args.root:

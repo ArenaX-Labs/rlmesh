@@ -1,5 +1,3 @@
-//! Resolved instructions for one model image input.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -15,8 +13,7 @@ pub struct CropPlan {
     /// Side fraction of the source kept on each axis (the square root of a
     /// declared `crop_area`).
     pub fraction: f64,
-    /// The *area* fraction the spec declared, when it declared one; carried so
-    /// describe can print it next to the side fraction it works out to.
+    /// The area fraction the spec declared, when it declared one.
     pub area: Option<f64>,
     /// `true`: an integer center cut taken *before* the resize (`crop_mode =
     /// "slice"`). `false`: the fractional box the resize itself samples
@@ -64,10 +61,9 @@ pub struct ImagePlan {
     /// to map a float image into 8-bit. `None` when the space is unbounded
     /// (the image is then assumed normalized `[0, 1]`).
     pub src_range: Option<(f64, f64)>,
-    /// Frame-stack depth: the model stacks this many consecutive frames on a new
-    /// leading axis (frame history); `1` = no stacking. Buffered per-episode and
-    /// stacked by the host (`rlmesh-adapters`' `FrameBuffers`); only the keys with
-    /// `stack > 1` carry a per-episode window.
+    /// Frame-stack depth: the model stacks this many consecutive frames on a
+    /// new leading axis; `1` is no stacking. The host buffers the frames per
+    /// episode; only inputs with `stack > 1` carry a window.
     pub stack: u32,
     /// When `Some((height, width, channels))` this input has no env source: the
     /// adapter synthesizes a black HWC frame of that shape (an optional camera
@@ -78,9 +74,8 @@ pub struct ImagePlan {
     /// Raw 8-bit level the zero-filled frame is filled with (`0` = black, the
     /// default). Only meaningful when `zero_fill` is `Some`.
     pub fill: u8,
-    /// JPEG quality to round-trip the upright frame through before the crop
-    /// and resize, reproducing the codec artifacts the model was trained on;
-    /// `None` for an untouched frame.
+    /// JPEG quality to round-trip the upright frame through before the crop and resize; `None` for an
+    /// untouched frame.
     pub jpeg_quality: Option<u8>,
     /// The center box to keep before (or as part of) the resize; `None` for
     /// the whole frame.
@@ -88,29 +83,22 @@ pub struct ImagePlan {
     /// Swap the red and blue channels after the spatial ops and before the
     /// dtype cast (`channel_order = "bgr"`); needs a 3-channel image.
     pub swap_rb: bool,
-    /// The `[height, width]` the model asserted the bound camera renders at,
-    /// when it asserted one and the camera's resolution was derivable (so the
-    /// assertion was actually checked). Describe text only — the assertion
-    /// itself is settled at resolve.
+    /// The `[height, width]` the model asserted the bound camera renders at, when it asserted one and
+    /// the camera's resolution was derivable.
     pub render: Option<(u32, u32)>,
-    /// The frame window a `stack > 1` gathers, as non-positive offsets from the
-    /// current step (oldest first, ending at `0`). `None` is the contiguous
-    /// window `stack` describes; validated against `stack` at resolve.
+    /// The frame window a `stack > 1` gathers, as non-positive offsets from the current step, oldest
+    /// first; `None` is the contiguous window.
     pub offsets: Option<Vec<i32>>,
     /// What fills the window before the episode has produced enough frames.
     pub stack_pad: StackPad,
-    /// Bytes of one *processed* frame (`height x width x channels x dtype`), or
-    /// `0` when the env's resolution was not derivable. Computed at resolve —
-    /// the only place the env's camera and the model's target are both in hand —
-    /// so a caller can size a frame window (or refuse one) without re-deriving
-    /// the pipeline.
+    /// Bytes of one processed frame (`height x width x channels x dtype`), or
+    /// `0` when the env's resolution was not derivable; enough to size or
+    /// refuse a frame window without re-deriving the pipeline.
     pub frame_bytes: u64,
     /// `Some((requested, bound))` when the lone-camera fallback bound this input
     /// to the env's single camera under a different role than the model asked
     /// for. Surfaced as a resolve advisory; `None` for an exact role match.
     pub role_rebound: Option<(String, String)>,
-    /// The body part this camera was bound under, when a side declared one
-    /// (the model's own `part`, else the env camera's). Rendered by `describe`
-    /// as `#part`.
+    /// The body part this camera was bound under, when a side declared one; rendered by `describe` as `#part`.
     pub part: Option<String>,
 }

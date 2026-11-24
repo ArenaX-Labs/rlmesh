@@ -1,10 +1,5 @@
 //! NTP-style clock offset estimation with an error bound,
 //! sans-IO.
-//!
-//! In wall mode the session clock is the host's monotonic clock, and the
-//! host keeps, per participant, an offset estimate with a rigorous error
-//! bound: `session_ns = participant_ns + offset_ns`, within `± error_ns`.
-//! Every exchange and every query is passed in; nothing here reads a clock.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -18,9 +13,8 @@ use crate::wire::{ClockMapping, ParticipantId, TimingSample};
 pub struct OffsetEstimatorConfig {
     /// Samples kept; the estimate comes from the best of them.
     pub window: usize,
-    /// Assumed worst-case relative drift between two monotonic clocks.
-    /// Linux `CLOCK_MONOTONIC` is NTP-slewed by at most 500 ppm, so that is
-    /// the default; free-running crystals are typically within ±50 ppm.
+    /// Assumed worst-case relative drift between two monotonic clocks. Defaults to 500 ppm, the
+    /// most Linux slews `CLOCK_MONOTONIC`; free-running crystals are typically within ±50 ppm.
     pub drift_bound_ppm: f64,
 }
 
@@ -73,13 +67,10 @@ impl OffsetEstimate {
 
 /// Minimum-δ filter (NTP clock-filter style) over a window of exchanges.
 ///
-/// The error bound is ε = ⌈δ/2⌉ + 1 + ⌈drift × (age + δ)⌉: half the round trip
-/// (delay asymmetry), one nanosecond of flooring, and the drift accumulated
-/// since the sample. The best sample is the one with the smallest bound now,
-/// so a low-δ sample is kept until its age makes a fresher one better: also
-/// past the window, which a burst of slow exchanges (a link that stalled,
-/// then delivered its queued heartbeats at once) would otherwise empty of
-/// every good one. Its bound grows with its age, so it holds as it did.
+/// The error bound is ε = ⌈δ/2⌉ + 1 + ⌈drift × (age + δ)⌉: half the round trip, one nanosecond of
+/// flooring, and the drift accumulated since the sample. The best sample is the one with the
+/// smallest bound now, kept even past the window until a fresher one beats it, so a burst of slow
+/// exchanges cannot empty the window of every good sample.
 // TODO: a participant declaring `ptp_synced` should take ε from PTP instead.
 #[derive(Clone, Debug)]
 pub struct OffsetEstimator {
@@ -118,7 +109,6 @@ impl OffsetEstimator {
         if self.window.len() == self.config.window.max(1)
             && let Some(out) = self.window.pop_front()
         {
-            // Kept while it is the best there is, by its bound now.
             let now = sample.t3_ns;
             let bound = |s: &TimingSample| self.bound_ns(s, now);
             let best_left = self.window.iter().chain([&sample]).map(bound).min();
@@ -144,7 +134,6 @@ impl OffsetEstimator {
         self.window.is_empty()
     }
 
-    /// The bound a sample gives at host time `now_ns`.
     fn bound_ns(&self, sample: &TimingSample, now_ns: i64) -> u64 {
         let rtt = sample.rtt_ns().max(0).unsigned_abs();
         let age = now_ns.saturating_sub(sample.t3_ns).max(0).unsigned_abs();
@@ -174,8 +163,6 @@ impl OffsetEstimator {
 mod tests {
     use super::*;
 
-    /// A participant clock at `participant = host − true_offset (+ drift)`,
-    /// exchanging over a link with the given one-way delays.
     fn exchange(
         seq: u64,
         host_send_ns: i64,
@@ -184,7 +171,6 @@ mod tests {
         hold_ns: i64,
         back_ns: i64,
     ) -> TimingSample {
-        // t1 participant clock at host time host_send_ns.
         let t1 = host_send_ns - true_offset_ns;
         let t2 = host_send_ns + out_ns;
         let t3 = t2 + hold_ns;
@@ -208,7 +194,6 @@ mod tests {
     #[test]
     fn asymmetric_delay_stays_within_half_the_round_trip() {
         let true_offset = -7_654_321_i64;
-        // Outbound 9 ms, back 1 ms: the midpoint is off by 4 ms, δ/2 = 5 ms.
         let s = exchange(1, 50_000_000, true_offset, 9_000_000, 50_000, 1_000_000);
         let mut est = OffsetEstimator::new(OffsetEstimatorConfig::default());
         assert!(est.add(s));
@@ -226,7 +211,6 @@ mod tests {
             window: 16,
             drift_bound_ppm: 0.0,
         });
-        // Deterministic pseudo-random asymmetric delays, one clean exchange.
         let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
         let mut next = || {
             x ^= x << 13;
@@ -262,14 +246,12 @@ mod tests {
             drift_bound_ppm: ppm,
         };
         let mut est = OffsetEstimator::new(config);
-        // The participant clock runs 50 ppm slow: offset grows 50 ns per ms.
         let offset_at = |host_ns: i64| 1_000_000 + (host_ns as f64 * ppm * 1e-6) as i64;
         let s = exchange(1, 0, offset_at(0), 100_000, 0, 100_000);
         assert!(est.add(s));
         let fresh = est.estimate(s.t3_ns).expect("estimate");
-        let later_ns = 2_000_000_000; // 2 s later: +100 µs of drift.
+        let later_ns = 2_000_000_000;
         let old = est.estimate(later_ns).expect("estimate");
-        // ~2 s × 50 ppm = 100 µs more (less the 100 µs the fresh sample had aged).
         assert!(
             old.error_ns - fresh.error_ns >= 99_990,
             "{old:?} vs {fresh:?}"
@@ -283,18 +265,12 @@ mod tests {
             window: 8,
             drift_bound_ppm: 100.0,
         });
-        // A very clean sample at t=0, then a noisier one 10 s later.
         assert!(est.add(exchange(1, 0, 0, 10_000, 0, 10_000)));
         assert!(est.add(exchange(2, 10_000_000_000, 0, 100_000, 0, 100_000)));
         let e = est.estimate(10_000_200_000).expect("estimate");
-        // Aged: 10_000 + 1 + 1 ms of drift; fresh: 100_000 + 1 + ~20 ns.
         assert_eq!(e.rtt_ns, 200_000);
     }
 
-    /// A link that stalled delivers its queued heartbeats at once, each
-    /// with the stall in its round trip: more of them than the window holds.
-    /// The clean exchange before the stall still bounds the offset, by its
-    /// round trip and the drift since; the stalled ones never could.
     #[test]
     fn a_burst_of_slow_exchanges_keeps_the_best_one_before_it() {
         let true_offset = 42_000_000_i64;
@@ -302,7 +278,6 @@ mod tests {
             window: 8,
             drift_bound_ppm: 500.0,
         });
-        // 40 ms round trip, then 20 that each waited out a 1.5 s stall.
         assert!(est.add(exchange(1, 0, true_offset, 20_000_000, 0, 20_000_000)));
         for seq in 2..22 {
             let at = 100_000_000 + seq * 1_000_000;
@@ -317,11 +292,9 @@ mod tests {
         }
         let now = 2_000_000_000;
         let e = est.estimate(now).expect("estimate");
-        // 20 ms of half the round trip and 1 ms of 2 s of drift, not 750.
         assert_eq!(e.rtt_ns, 40_000_000);
         assert!(e.error_ns < 22_000_000, "{e:?}");
         assert!((e.offset_ns - true_offset).unsigned_abs() <= e.error_ns);
-        // A fresher clean one takes over from it.
         assert!(est.add(exchange(30, now, true_offset, 5_000_000, 0, 5_000_000)));
         assert_eq!(
             est.estimate(now + 10_000_000).expect("estimate").rtt_ns,

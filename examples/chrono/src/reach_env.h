@@ -1,5 +1,3 @@
-// IndustrialReach: Chrono's 6-DOF industrial robot reaching a target, served as
-// an RLMesh environment.
 #pragma once
 
 #include <array>
@@ -19,20 +17,19 @@
 namespace chrono_reach {
 
 struct Options {
-  int image_size = 256;       // observation camera, square
-  int render_size = 480;      // render() frames for viewers, square
-  int max_steps = 120;        // the env truncates an episode here
-  double control_dt = 0.05;   // seconds of simulation per env step
-  double physics_dt = 0.005;  // Chrono integration step
-  double max_delta = 0.02;    // metres the TCP command moves per unit action
+  int image_size = 256;
+  int render_size = 480;
+  int max_steps = 120;
+  double control_dt = 0.05;
+  double physics_dt = 0.005;
+  double max_delta = 0.02;
   double success_radius = 0.025;
-  std::string renderer = "raytrace";  // the camera backend: "raytrace" or "vulkan"
+  std::string renderer = "raytrace";
 };
 
 // One lane of the env: owns a Chrono system for the current episode.
 class IndustrialReach {
  public:
-  // `renderer` draws both the observation image and render() frames.
   IndustrialReach(Options options, std::unique_ptr<Renderer> renderer);
 
   rlmesh::ResetResult reset(std::optional<int64_t> seed,
@@ -41,7 +38,6 @@ class IndustrialReach {
   std::optional<rlmesh::Value> render();
   void close();
 
-  // The spaces, adapter tags and reset options this env serves with.
   rlmesh::spaces::Space observation_space() const;
   rlmesh::spaces::Space action_space() const;
   std::optional<std::string> id() const { return "ChronoIndustrialReach-v0"; }

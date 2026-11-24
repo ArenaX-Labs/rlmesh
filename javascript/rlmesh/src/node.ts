@@ -13,8 +13,6 @@ import type { WorkerLike } from './supervisor.js';
 import type { ConnectOptions, TrafficClass } from './types.js';
 
 export * from './index.js';
-// The native binding's API, by name: native.ts also exports what the unreleased lobby and scenes
-// (fleet.ts) reach into, which the package does not.
 export {
   BindingRefused,
   BindingTable,
@@ -60,7 +58,6 @@ export {
   type TypedArray,
 } from './native.js';
 
-/** A worker_threads Worker behind the browser Worker shape the supervisor uses. */
 class NodeWorker implements WorkerLike {
   onmessage: ((e: { data: any }) => void) | null = null;
   onerror: ((e: { message?: string }) => void) | null = null;

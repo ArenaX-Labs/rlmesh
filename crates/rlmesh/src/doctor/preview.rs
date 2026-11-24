@@ -1,6 +1,5 @@
-//! The short random-action clip an environment probe captures from its scene
-//! camera. The clip is
-//! encoded with the recorder's in-process AV1 writer, so no ffmpeg is needed.
+//! The short random-action clip an environment probe captures from its scene camera,
+//! encoded in process as AV1.
 
 use std::path::Path;
 
@@ -31,8 +30,6 @@ pub(super) struct TaggedImage {
     pub(super) upside_down: bool,
 }
 
-/// The env's tagged image leaves, in declaration order; empty when the env
-/// publishes no tags or they do not join against its live spaces.
 pub(super) fn tagged_images(
     tags: Option<&EnvTags>,
     observation: &SpaceSpec,
@@ -74,7 +71,6 @@ pub(super) fn tagged_images(
         .collect()
 }
 
-/// The camera a preview reads: a leaf path, its name, and its orientation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Camera {
     pub(super) name: String,
@@ -82,9 +78,6 @@ pub(super) struct Camera {
     pub(super) upside_down: bool,
 }
 
-/// The image leaf to preview: the one tagged as the main camera when the tags
-/// name one, else the first image leaf in the observation space. A tag on the
-/// chosen leaf supplies its orientation.
 pub(super) fn select_camera(space: &SpaceSpec, tagged: &[TaggedImage]) -> Option<Camera> {
     let mut leaves = Vec::new();
     image_leaves(space, Vec::new(), &mut leaves);
@@ -110,7 +103,6 @@ pub(super) fn select_camera(space: &SpaceSpec, tagged: &[TaggedImage]) -> Option
     })
 }
 
-/// Width-capped output size, aspect kept.
 fn preview_dimensions(width: u32, height: u32) -> (u32, u32) {
     if width <= PREVIEW_MAX_WIDTH {
         return (width, height);
@@ -150,9 +142,6 @@ impl PreviewCapture {
         self.frames.len() >= PREVIEW_FRAMES
     }
 
-    /// Keeps the camera frame of `observation`. Frames that fail to decode or
-    /// that change shape after the first are dropped rather than aborting the
-    /// probe.
     pub(super) fn capture(&mut self, observation: &SpaceValue, space: &SpaceSpec) {
         if self.done() {
             return;
@@ -176,9 +165,6 @@ impl PreviewCapture {
         self.frames.push(image.into_raw());
     }
 
-    /// Encodes the clip and its first frame under `output_dir`; `None` when
-    /// nothing was captured. The still is the post-reset scene, before random
-    /// actions disturb it. A failed encode leaves no partial mp4 behind.
     pub(super) fn write(self, output_dir: &Path) -> Result<Option<ProbePreview>, String> {
         let Some(still) = self.frames.first().cloned() else {
             return Ok(None);
@@ -224,8 +210,6 @@ impl PreviewCapture {
     }
 }
 
-/// The RGB frame at `path` in `value`, and its channel count; `None` when the
-/// leaf is not a uint8 image.
 fn frame_at(value: &SpaceValue, space: &SpaceSpec, path: &[String]) -> Option<(RgbImage, u32)> {
     let (mut value, mut space) = (value, space);
     for key in path {
@@ -316,7 +300,6 @@ mod tests {
         assert_eq!(camera.name, MAIN_CAMERA_ROLE);
         assert!(camera.upside_down);
 
-        // Untagged: the first image leaf, named by its path.
         let camera = select_camera(&space, &[]).expect("camera");
         assert_eq!(
             (camera.path, camera.name),
@@ -357,7 +340,6 @@ mod tests {
             (capture.frames(), capture.width, capture.height),
             (2, 24, 16)
         );
-        // A frame of another size, and a non-image value, are dropped.
         capture.capture(&frame(vec![2, 2, 3], 7), &image_space(2, 2));
         capture.capture(&SpaceValue::Discrete(1), &hwc);
         assert_eq!(capture.frames(), 2);

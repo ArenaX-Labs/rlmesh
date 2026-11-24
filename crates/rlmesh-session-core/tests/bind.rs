@@ -1,10 +1,3 @@
-//! Conformance fixtures: every policy bound against
-//! the reference robots, and every refusal, as golden binding
-//! tables and refusal messages under `tests/golden/`.
-//!
-//! `RLMESH_BLESS=1 cargo test -p rlmesh-session-core --test bind` rewrites the
-//! golden files; review the diff like code.
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -21,9 +14,6 @@ fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests")
 }
 
-/// A robot's parts as the host would hold them: normalised, with channel
-/// ids assigned in authored order (each commandable part's applied stream
-/// right after it).
 fn robot(name: &str) -> Vec<PartSpec> {
     robot_as(name, name)
 }
@@ -51,7 +41,6 @@ fn policy(name: &str) -> Policy {
     Policy::parse(&json).unwrap_or_else(|err| panic!("{name}: {err}"))
 }
 
-/// Compares `text` with `tests/golden/{name}.txt`.
 fn golden(name: &str, text: &str) {
     let path = fixtures().join(format!("golden/{name}.txt"));
     if std::env::var_os("RLMESH_BLESS").is_some() {
@@ -120,8 +109,6 @@ fn pi0_single_on_ur10e() {
         b.action("gripper").expect("gripper").plan.to_string(),
         "rescale(-1…1 → 0…1)"
     );
-    // The gripper keeps the default 200 ms open-loop budget: the binder
-    // warns, never stretches.
     assert_eq!(b.warnings.len(), 1, "{:?}", b.warnings);
     golden("pi0_single__ur10e", &b.table());
 }
@@ -201,7 +188,6 @@ fn pi0_aloha_binds_every_entry_and_blanks_a_missing_camera() {
             .all(|r| r.status == Status::Bound)
             && b.actions.iter().all(|r| r.status == Status::Bound)
     );
-    // 50 actions at 50 Hz: exactly the robot's 1000 ms budget, no warning.
     assert!(b.warnings.is_empty(), "{:?}", b.warnings);
     golden("pi0_aloha__aloha2", &b.table());
 
@@ -262,12 +248,10 @@ fn force_policy_on_ur10e() {
         [
             ("ft".into(), ContractMode::History, 50.0),
             ("q".into(), ContractMode::Latest, 50.0),
-            // D = 50 is at or above the camera's S = 30: deliver every sample.
             ("wrist".into(), ContractMode::Every, 50.0),
             ("last".into(), ContractMode::Latest, 50.0),
         ]
     );
-    // The derived freshness bound for q: max(3000 / 50, 5) = 60 ms.
     assert_eq!(
         b.input("q").expect("q").max_age,
         Some(Duration::from_millis(60))
@@ -383,7 +367,6 @@ fn dex_grasp_needs_a_side() {
             .map(|p| p.path.as_str()),
         Some("left/hand")
     );
-    // 8 actions at 30 Hz outlast the hands' default 200 ms budget.
     assert_eq!(b.warnings.len(), 1, "{:?}", b.warnings);
     golden("dex_grasp__g1__left", &b.table());
 }
@@ -448,8 +431,6 @@ fn pi05_libero_on_a_v2_native_libero_robot() {
     );
 }
 
-/// One fix with every option repeated: what the Python test of the hints
-/// reads, so no keyword goes unchecked.
 #[test]
 fn a_fix_repeats_every_option_the_call_gave() {
     let options = RunOptions::named("every_option")
@@ -490,7 +471,6 @@ fn an_ambiguous_selector_and_an_unallowed_resize() {
         ]
     );
     golden("my_vla__ur10e__refused", &refusal.to_string());
-    // Allowing the conversions at run time and picking the camera binds.
     let b = bound(
         "my_vla",
         "ur10e",
@@ -503,7 +483,6 @@ fn an_ambiguous_selector_and_an_unallowed_resize() {
     assert_eq!(b.input("image").expect("image").status, Status::Override);
 }
 
-/// Inline policies for the refusals the fixtures do not reach.
 fn inline(json: &str, robot_name: &str) -> Result<Binding, BindError> {
     bind(
         &Policy::parse(json).expect("policy"),
@@ -568,8 +547,6 @@ fn two_actions_on_one_command_group_are_refused() {
 
 #[test]
 fn a_part_that_cannot_hold_its_target_needs_chunks_that_outlast_a_replan() {
-    // A velocity command runs its safe behaviour whenever nothing is due:
-    // one 20 Hz action per 20 Hz replan leaves it waiting between chunks.
     let text = refusal_text(
         r#"{"hz": 20, "actions": {"walk": {"kind": "velocity", "at": "base/twist",
             "hz": 20, "chunk": 1}}}"#,
@@ -589,7 +566,6 @@ fn a_part_that_cannot_hold_its_target_needs_chunks_that_outlast_a_replan() {
 
 #[test]
 fn conversions_need_allow_unless_lossless() {
-    // Degrees convert automatically; millimetres need allow units.
     let ok = inline(
         r#"{"hz": 10, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"],
             "units": {"pos": "deg"}}}}"#,
@@ -603,7 +579,6 @@ fn conversions_need_allow_unless_lossless() {
         "ur10e",
     );
     assert!(text.contains("[not_allowed] input \"p\": ur10e:arm/tcp publishes pos in m, the model wants mm\n    needs: units"), "{text}");
-    // Quaternion order is automatic; the depth camera's millimetres are not.
     let ok = inline(
         r#"{"hz": 10, "inputs": {"o": {"kind": "imu", "at": "pelvis/imu", "fields": ["orientation"],
             "rotation": "quat_xyzw"}}}"#,
@@ -633,7 +608,6 @@ fn conversions_need_allow_unless_lossless() {
         ok.input("d").expect("d").delivers.to_string(),
         "f32 [240, 320]"
     );
-    // A subset of joints needs select; enlarging needs upscale.
     let text = refusal_text(
         r#"{"hz": 10, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"],
             "names": ["elbow_joint", "shoulder_pan_joint"]}}}"#,
@@ -652,7 +626,6 @@ fn conversions_need_allow_unless_lossless() {
         text.contains("which enlarges it\n    needs: upscale"),
         "{text}"
     );
-    // An inexact cast needs dtype; bool and float never convert.
     let text = refusal_text(
         r#"{"hz": 10, "inputs": {"f": {"kind": "unitree/foot_force", "at": "feet/force",
             "fields": {"force": ["int8", [4]]}}}}"#,
@@ -771,8 +744,6 @@ fn optional_entries_blank_or_drop_only_when_allowed() {
     assert!(b.channels().is_empty());
 }
 
-/// `optional` without `blank` (or `drop`) allowed is refused at once, even
-/// when the robot it names has not appeared: no robot could make it stand.
 #[test]
 fn an_optional_entry_that_may_not_stay_unbound_is_refused_at_once() {
     let parts = robot("ur10e");
@@ -804,7 +775,6 @@ fn an_optional_entry_that_may_not_stay_unbound_is_refused_at_once() {
         );
         assert!(text.contains(&format!("fix: allow=[{allow:?}]")), "{text}");
     }
-    // The bind call's allowance counts.
     let policy = Policy::parse(
         r#"{"hz": 20, "inputs": {"q": {"kind": "joints", "at": "arm", "fields": ["pos"],
             "optional": true}}}"#,
@@ -816,14 +786,11 @@ fn an_optional_entry_that_may_not_stay_unbound_is_refused_at_once() {
 
 #[test]
 fn captures_scope_and_qualified_selectors() {
-    // An unfilled capture is inferred when one value binds every required
-    // entry (only the right hand exists here).
     let mut g1 = robot("g1");
     g1.retain(|p| !p.path.as_str().starts_with("left/hand"));
     let policy = policy("dex_grasp");
     let b = bind(&policy, &g1, &RunOptions::named("dex_grasp")).expect("inferred");
     assert_eq!(b.captures, [("side".into(), "right".into())]);
-    // A capture too broad to enumerate.
     let mut wide = String::from("{");
     for i in 0..70 {
         wide.push_str(&format!(r#""a{i}/b{i}": {{"kind": "text"}},"#));
@@ -846,7 +813,6 @@ fn captures_scope_and_qualified_selectors() {
     )
     .expect_err("too broad");
     assert!(err.to_string().contains("[pattern_too_broad]"), "{err}");
-    // Two robots: one input qualified by robot, actions on the robot given.
     let mut session = robot("go2");
     session.extend(
         robot_as("go2", "supervisor")
@@ -858,8 +824,6 @@ fn captures_scope_and_qualified_selectors() {
             "actions": {"legs": {"kind": "joints", "at": "legs", "chunk": 1}}}"#,
     )
     .expect("policy");
-    // No robot named: the session's view, every robot under its name, so
-    // an unqualified path names no part and the refusal says which.
     let err = bind(&policy, &session, &RunOptions::named("loco")).expect_err("which robot");
     assert!(
         err.to_string().contains(r#"at={"legs": "go2/legs"}"#),
@@ -886,7 +850,6 @@ fn fingerprints_follow_the_table() {
     assert_eq!(a.fingerprint, b.fingerprint, "deterministic");
     let renamed = bound("pi0_single", "ur10e", RunOptions::named("pi0_other"));
     assert_ne!(a.fingerprint, renamed.fingerprint);
-    // The grids carry each action's dt for chunks that send dt = 0.
     let grids = a.grids();
     assert_eq!(grids.len(), 2);
     assert!(
@@ -900,9 +863,6 @@ fn fingerprints_follow_the_table() {
     );
 }
 
-/// The eyeball rig: two eyes, a skull and a fixed camera,
-/// each its own robot with channel ids unique across the session, placed
-/// in one view; `extra` robots join unplaced.
 fn eyeball_rig(extra: &[(&str, &str)]) -> (Vec<PartSpec>, Vec<Place>) {
     let robots = [
         ("eye", "eye-l"),
@@ -960,8 +920,6 @@ fn one_policy_binds_across_placed_robots() {
     )
     .unwrap_or_else(|err| panic!("{err}"));
     assert_eq!(b.robot.as_str(), "scene");
-    // Rows keep each part as declared, under its own robot and path: what
-    // its stream keys and leases are made of.
     let owners = |rows: Vec<Option<&PartSpec>>| -> Vec<String> {
         rows.into_iter()
             .map(|p| p.map_or("-".into(), |p| format!("{}:{}", p.owner, p.path)))
@@ -978,7 +936,6 @@ fn one_policy_binds_across_placed_robots() {
     assert_eq!(b.table_json()["actions"][1]["robot"], "eye-r");
     golden("eyeball_tracker__eyeball_rig", &b.table());
 
-    // robot= binds that one robot as today.
     let jaw = bind_in(
         &Policy::parse(r#"{"hz": 30, "actions": {"jaw": {"kind": "joints", "at": "jaw"}}}"#)
             .expect("policy"),
@@ -1046,7 +1003,6 @@ fn before_any_robot_the_robots_entries_name_are_what_a_bind_waits_for() {
     let named = RunOptions::named("tracker");
     let cases: [(&str, Option<&RunOptions>, Option<&str>); 4] = [
         (
-            // Every required entry names its robot: they are known at once.
             r#"{"hz": 20,
                 "inputs": {"target": {"kind": "joints", "at": "b:target", "fields": ["pos"]}},
                 "actions": {"arm": {"kind": "joints", "at": "a:arm", "command": "position"}}}"#,
@@ -1057,7 +1013,6 @@ fn before_any_robot_the_robots_entries_name_are_what_a_bind_waits_for() {
             ),
         ),
         (
-            // An entry naming no robot may be any robot's.
             r#"{"hz": 20,
                 "inputs": {"target": {"kind": "joints", "at": "b:target", "fields": ["pos"]}},
                 "actions": {"arm": {"kind": "joints", "at": "arm", "command": "position"}}}"#,
@@ -1065,7 +1020,6 @@ fn before_any_robot_the_robots_entries_name_are_what_a_bind_waits_for() {
             None,
         ),
         (
-            // An optional entry's robot is not waited for.
             r#"{"hz": 20, "allow": ["blank"],
                 "inputs": {"cam": {"kind": "joints", "at": "c:cam", "fields": ["pos"],
                                    "count": 2, "optional": true},
@@ -1077,7 +1031,6 @@ fn before_any_robot_the_robots_entries_name_are_what_a_bind_waits_for() {
             ),
         ),
         (
-            // A named robot is the caller's to say.
             r#"{"hz": 20,
                 "inputs": {"target": {"kind": "joints", "at": "b:target", "fields": ["pos"]}}}"#,
             Some(&RunOptions::named("tracker").robot("a").expect("robot")),
@@ -1120,7 +1073,6 @@ fn only_a_robot_that_has_not_appeared_is_waited_for() {
             .contains("tracker has not declared any parts yet.\n    fix: start tracker"),
         "{absent}"
     );
-    // A present robot's missing part stands, alone or beside an absent robot.
     let missing = refusal(r#"{"hz": 20, "inputs": {"c": {"kind": "gripper", "at": "nope"}}}"#);
     assert_eq!(missing.waiting_for(), None, "{missing}");
     let both = refusal(
@@ -1129,7 +1081,6 @@ fn only_a_robot_that_has_not_appeared_is_waited_for() {
             "target": {"kind": "joints", "at": "tracker:target", "fields": ["pos"]}}}"#,
     );
     assert_eq!(both.waiting_for(), None, "{both}");
-    // An optional entry's robot is not waited for: absent binds blank.
     let policy = Policy::parse(
         r#"{"hz": 20, "inputs": {"target": {"kind": "joints", "at": "tracker:target",
             "fields": ["pos"], "count": 2, "optional": true}},
@@ -1184,7 +1135,6 @@ fn a_custom_kind_blanks_from_its_fields_schema() {
     );
 }
 
-/// An inline robot's parts, channels assigned as [`robot`] does.
 fn inline_robot(json: &str) -> Vec<PartSpec> {
     let mut parts =
         normalise(&ParticipantId::new("bot").expect("id"), SPEC_VERSION, json).expect("robot");
@@ -1240,7 +1190,6 @@ fn a_range_rescales_only_when_it_differs_and_only_when_allowed() {
     );
     let rescaled = inline(&gripper("inputs", "[-1, 1]", r#""rescale""#), "ur10e").expect("allowed");
     assert_eq!(plan(&rescaled, "g"), "rescale(0…1 → -1…1)");
-    // An integer field is rescaled into float32.
     let knob = r#"{"knob": {"kind": "acme/knob", "hz": 10, "fields": {"v": ["int16", [1]]},
         "range": {"v": [0, 100]}}}"#;
     let b = on_inline(
@@ -1273,7 +1222,6 @@ fn an_action_converts_units_and_rotation_into_the_parts_and_may_run_at_its_contr
     let t = b.action("t").expect("t");
     assert_eq!(t.plan.to_string(), "rotation(rot quat_xyzw → axis_angle)");
     assert_eq!(t.delivers.to_string(), "f32 [10, 7]");
-    // One delta per control tick at most: exactly the control rate binds.
     inline(
         r#"{"hz": 500, "actions": {"t": {"kind": "pose", "at": "arm/tcp", "command": "delta",
             "hz": 500, "chunk": 10}}}"#,
@@ -1310,14 +1258,12 @@ fn a_custom_action_binds_by_its_fields_schema_up_to_the_chunk_cap() {
             "{err}"
         );
     }
-    // A command field keeps its own unit: no conversion to declare.
     let b = on_inline(
         &bot(r#"{"q": ["float32", [2]]}"#, r#", "units": {"q": "tick"}"#),
         &action(r#"{"q": ["float32", [2]]}"#, 10),
     )
     .expect("own unit");
     assert_eq!(b.action("x").expect("x").plan.to_string(), "none");
-    // A chunk of exactly 4 MiB binds; one more element per action does not.
     let field = |n: u32| format!(r#"{{"q": ["float32", [{n}]]}}"#);
     on_inline(&bot(&field(1024), ""), &action(&field(1024), 1024)).expect("4 MiB");
     let err = on_inline(&bot(&field(1026), ""), &action(&field(1026), 1024)).expect_err("over");
@@ -1342,7 +1288,6 @@ fn image_fits_and_conversions_need_their_allows() {
             "",
             "decode(jpeg) → crop(0.5 of 640x480 → 320x240)",
         ),
-        // Scaled by 1 to fit, then padded: nothing is enlarged.
         (
             r#", "size": [640, 640]"#,
             r#""resize", "pad""#,
@@ -1398,7 +1343,6 @@ fn image_fits_and_conversions_need_their_allows() {
         let text = refusal_text(&camera(extra, allow), "ur10e");
         assert!(text.contains(needle), "{extra}: {text}");
     }
-    // A depth image already in the model's unit needs no conversion.
     let b = inline(
         r#"{"hz": 10, "inputs": {"d": {"kind": "depth", "at": "head/depth", "units": {"depth": "mm"}}}}"#,
         "g1",
@@ -1435,7 +1379,6 @@ fn input_fields_keep_their_dtype_and_affines_count_elements() {
         text.contains("scale has 6 values for 12 elements"),
         "{text}"
     );
-    // One field counts all its elements; mixed dtypes take one value each.
     let pose = |fields: &str, scale: usize| {
         let scale = vec!["1"; scale].join(", ");
         on_inline(
@@ -1453,7 +1396,6 @@ fn input_fields_keep_their_dtype_and_affines_count_elements() {
         err.to_string().contains("51 values for per-field elements"),
         "{err}"
     );
-    // An integer field under an affine is delivered as float32.
     let b = inline(
         r#"{"hz": 10, "inputs": {"f": {"kind": "unitree/foot_force", "at": "feet/force",
             "fields": {"force": ["int16", [4]]}, "scale": [0.5]}}}"#,
@@ -1468,7 +1410,6 @@ fn input_fields_keep_their_dtype_and_affines_count_elements() {
     )
     .expect("select");
     assert_eq!(delivers(&b, "q"), "f32 [2]");
-    // A window trained within 1% of the source rate binds.
     inline(
         r#"{"hz": 50, "inputs": {"ft": {"kind": "wrench", "at": "wrist/ft", "history": 50,
             "history_hz": 505}}}"#,
@@ -1500,7 +1441,6 @@ fn an_absent_optional_input_blanks_to_its_declared_shape_and_preprocessing() {
             "f32 [4, 2]",
             vec![0.0],
         ),
-        // Black (the range's low end) through the per-channel scale.
         (
             format!(
                 r#"{{"kind": "camera", {absent}, "size": [2, 2], "range": [-1, 1],
@@ -1570,7 +1510,6 @@ fn units_name_their_conversion_and_gripper_metres_need_a_width() {
     )
     .expect("allowed");
     assert_eq!(plan(&b, "p"), "fields pos → units(pos m → mm)");
-    // A robot publishing millimetres on a pose converts as plain units.
     let b = on_inline(
         r#"{"tcp": {"kind": "pose", "frame": "b", "child": "t", "hz": 10, "units": {"pos": "mm"}}}"#,
         r#"{"hz": 10, "inputs": {"p": {"kind": "pose", "at": "tcp", "fields": ["pos"]}},
@@ -1677,8 +1616,6 @@ fn an_optional_entry_blanks_instead_of_binding_a_departed_robots_part() {
         let b = bind_in(&policy, &target, &options).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(b.input("c").expect("c").status, status, "present {present}");
     }
-    // A required entry keeps its part through the robot's absence, even
-    // where blank is allowed.
     let required = Policy::parse(
         r#"{"hz": 10, "inputs": {"c": {"kind": "camera", "at": "wrist/cam"}},
             "allow": ["blank"]}"#,

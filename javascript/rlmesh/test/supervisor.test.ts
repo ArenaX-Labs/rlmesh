@@ -48,7 +48,6 @@ test('a wasm trap (fatal) respawns the class Worker from the same Module', async
   assert.equal(s.restarts[0]!.cls, 'state');
   assert.equal(s.restarts[0]!.restarts, 1);
   assert.ok(s.sup.post('state', { op: 'x' }));
-  // Messages from the dead Worker are ignored.
   first.terminated = false;
   first.emit({ op: 'sample', n: 2 });
   assert.equal(s.messages.length, 1);
@@ -68,7 +67,6 @@ test('crash loops back off; onerror and stalls also restart', async () => {
     ['bulk', 'bulk', 'bulk'],
   );
   assert.equal(s.restarts.length, 3);
-  // Stall: no message for > stallMs (checked on time) -> restart.
   s.sup.checkStalls();
   s.advance(800);
   s.sup.checkStalls();
@@ -81,7 +79,7 @@ test('crash loops back off; onerror and stalls also restart', async () => {
 test('a blocked caller does not count as a stall', async () => {
   const s = setup();
   await s.sup.start('state' as TrafficClass);
-  s.advance(5000); // the main thread was blocked: the check itself is late
+  s.advance(5000);
   s.sup.checkStalls();
   assert.equal(s.downs.length, 0);
 });

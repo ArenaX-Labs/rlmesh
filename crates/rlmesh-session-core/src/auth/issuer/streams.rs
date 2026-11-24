@@ -1,5 +1,5 @@
-//! Stream keys: one slot per part, its versions, and the rotation that
-//! installs, sends and retires them.
+//! Stream keys: one slot per part, its versions, and the rotation that installs, sends and
+//! retires them.
 
 use super::{
     INSTALL_WAIT_NS, KeyIssuer, PendingStep, Rotation, Slot, SlotState, Stage, StreamSlot,
@@ -11,9 +11,8 @@ use crate::wire::{CtlError, KeyPurpose, ParticipantId, Security};
 use alloc::collections::{BTreeMap, BTreeSet};
 
 impl KeyIssuer {
-    /// Keeps one stream slot per declared part (its `channel` and
-    /// `applied_channel`), at each part's level: a new part's slot starts
-    /// at version 1, a removed part's keys are retired.
+    /// Keeps one stream slot per declared part (its `channel` and `applied_channel`), at each
+    /// part's level: a new part's slot starts at version 1, a removed part's keys are retired.
     ///
     /// # Errors
     /// [`CtlError`] when no key could be drawn.
@@ -82,9 +81,6 @@ impl KeyIssuer {
         Ok(())
     }
 
-    /// Prepares `slot`'s next version for sender generation `generation`,
-    /// unless the slot already has one for it, and starts installing it at
-    /// the members `access` lets read it.
     pub(super) fn rotate(
         &mut self,
         rng: &mut dyn Rng,
@@ -103,10 +99,6 @@ impl KeyIssuer {
         self.next_version(rng, slot, generation, access, now_ns)
     }
 
-    /// Draws `slot`'s next version for sender generation `generation` and
-    /// starts installing it at the members `access` lets read it. A
-    /// rotation still under way is taken over: the new one retires every
-    /// older version.
     fn next_version(
         &mut self,
         rng: &mut dyn Rng,
@@ -163,9 +155,8 @@ impl KeyIssuer {
         Ok(())
     }
 
-    /// A device's entry changed: every slot a device that holds one of its
-    /// versions may no longer read rotates, once, to the members still
-    /// allowed. A slot is never rotated for its own sender.
+    /// A device's entry changed: every slot a device that holds one of its versions may no
+    /// longer read rotates, once, to the members still allowed.
     ///
     /// # Errors
     /// [`CtlError`] when no key could be drawn.
@@ -193,7 +184,6 @@ impl KeyIssuer {
         Ok(())
     }
 
-    /// Moves every rotation as far as its acknowledgements allow.
     pub(super) fn advance(&mut self, now_ns: i64) {
         let slots: Vec<Slot> = self
             .slots
@@ -262,7 +252,6 @@ impl KeyIssuer {
         }
     }
 
-    /// A rotation completed: the versions below it are gone everywhere.
     fn finish(&mut self, slot: &Slot, version: u32) {
         let Some(state) = self.slots.get_mut(slot) else {
             return;
@@ -278,7 +267,6 @@ impl KeyIssuer {
         self.forget(&older);
     }
 
-    /// Who a rotation's current stage waits for.
     fn waiting(&self, slot: &Slot, rotation: &Rotation) -> Vec<ParticipantId> {
         let pending = |who: &ParticipantId| -> bool {
             self.members.contains_key(who)
@@ -302,8 +290,7 @@ impl KeyIssuer {
         }
     }
 
-    /// Every rotation step still waiting, and for whom: what a revocation
-    /// report names.
+    /// Every rotation step still waiting, and for whom: what a revocation report names.
     pub fn pending(&self) -> Vec<PendingStep> {
         self.slots
             .iter()

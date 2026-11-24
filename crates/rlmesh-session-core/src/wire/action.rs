@@ -1,9 +1,4 @@
 //! Timed action chunks: a controller's commands for one commandable part.
-//!
-//! All times are **session time** (the host's clock domain, or ticks ×
-//! `tick_ns` in virtual and lockstep modes); the edge converts them into its
-//! own clock on receipt, conservatively, and never acts on a chunk past its
-//! own age cap, whatever `valid_until_ns` says.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -57,9 +52,8 @@ pub struct ActionChunk {
     pub lease_token: LeaseToken,
     /// Per lease token, increasing.
     pub seq: u64,
-    /// The controller that computed it. The edge refuses a chunk whose
-    /// source does not hold the lease its token names, so every applied
-    /// action's attribution is checked, not just claimed.
+    /// The controller that computed it; the edge refuses a source that does not hold
+    /// the lease.
     pub source: ParticipantId,
     /// The binding of the lease; the edge refuses any other.
     pub binding: Fingerprint,

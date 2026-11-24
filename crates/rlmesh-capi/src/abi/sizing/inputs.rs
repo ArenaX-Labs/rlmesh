@@ -1,4 +1,3 @@
-//! Explicit representation contracts for every sized FFI input.
 #![allow(unsafe_code)]
 use super::SizedInput;
 
@@ -10,7 +9,6 @@ macro_rules! input {
             const BOOL_FIELDS: &'static [(usize, &'static str)] = &[
                 $($((std::mem::offset_of!($ty, $bool), stringify!($bool)),)*)?
             ];
-            // The first appended field starts at the ABI-5 sizeof.
             const MIN_SIZE: usize = std::mem::offset_of!($ty, $min);
             const APPENDED_ENDS: &'static [usize] = &[
                 $(std::mem::offset_of!($ty, $appended)
@@ -213,7 +211,6 @@ input!(
 input!(crate::variant::RLMeshVariantOptions);
 input!(crate::view::RLMeshView, has_step_hz);
 
-/// The size of the field `get` projects, in a const context.
 pub(crate) const fn field_size<T, F>(_get: fn(&T) -> &F) -> usize {
     std::mem::size_of::<F>()
 }

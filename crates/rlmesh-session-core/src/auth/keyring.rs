@@ -1,25 +1,22 @@
-//! The keys a process holds besides its pairwise ones,
-//! sans-IO: what the host delivered to a participant, or what the host
-//! keeps to open its members' streams. One [`Keyring`] per participant
-//! generation (inside its [`Link`](super::Link)), one in the host.
+//! The keys a process holds besides its pairwise ones, sans-IO: what the host delivered to
+//! a participant, or what the host keeps to open its members' streams. One [`Keyring`]
+//! per participant generation (inside its [`Link`](super::Link)), one in the host.
 //!
-//! - **Install.** A rotating key (a stream's) is installed only above every
-//!   version seen for its slot and above the slot's retire floor; a fixed key
-//!   (a lease's) by id. A same-id delivery with `send` switches a held key
-//!   to sending without resetting its counters or windows. A participant
-//!   never sends under a key whose sender is another participant or
-//!   generation.
-//! - **Retire.** `retire_through` drops a key and every older version of its
-//!   slot, and raises the slot's floor so recovery never brings them back.
-//! - **Rotation.** Every version above the floor is accepted until the first
-//!   valid message under a newer one, which drops the older versions.
-//! - **Discard.** A fixed key goes when its token, seen live in authority
-//!   state, ends, or when the token hasn't appeared within
-//!   [`UNSEEN_TTL_NS`] of installing it.
+//! - **Install.** A rotating key (a stream's) is installed only above every version seen
+//!   for its slot and above the slot's retire floor; a fixed key (a lease's) by id. A
+//!   same-id delivery with `send` switches a held key to sending without resetting its
+//!   counters or windows. A participant never sends under a key whose sender is another
+//!   participant or generation.
+//! - **Retire.** `retire_through` drops a key and every older version of its slot, and
+//!   raises the slot's floor so recovery never brings them back.
+//! - **Rotation.** Every version above the floor is accepted until the first valid
+//!   message under a newer one, which drops the older versions.
+//! - **Discard.** A fixed key goes when its token, seen live in authority state, ends, or
+//!   when the token hasn't appeared within [`UNSEEN_TTL_NS`] of installing it.
 //!
-//! Opening checks a message's kind against the key's purpose (its
-//! receiver's kinds) and then its body against the key's scope: a chunk's
-//! part, token and source, a sample's robot and part.
+//! Opening checks a message's kind against the key's purpose (its receiver's kinds), then
+//! its body against the key's scope: a chunk's part, token and source, a sample's robot
+//! and part.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 
@@ -39,8 +36,8 @@ use crate::wire::{
     KeysAck, LeaseToken, LockstepRequest, LockstepResponse, ParticipantId, Sample, Security,
 };
 
-/// How long a fixed key waits for its token to appear in authority state
-/// before it is discarded.
+/// How long a fixed key waits for its token to appear in authority state before it is
+/// discarded.
 pub const UNSEEN_TTL_NS: i64 = 4_000_000_000;
 
 /// The kinds a key of `purpose` carries.
@@ -104,7 +101,6 @@ impl Scope {
     }
 }
 
-/// A rotating key's slot.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Slot {
     purpose: KeyPurpose,
@@ -112,12 +108,9 @@ struct Slot {
     channels: Vec<ChannelId>,
 }
 
-/// What a participant remembers of a slot.
 #[derive(Clone, Copy, Debug, Default)]
 struct Mark {
-    /// The highest version seen.
     seen: u32,
-    /// Versions at or below this are retired.
     floor: u32,
 }
 
@@ -127,16 +120,13 @@ struct Held {
     rx: SealReceiver,
     tx: Option<SealSender>,
     installed_ns: i64,
-    /// Its token was in authority state.
     live: bool,
-    /// A message under it opened (a rotating key retires older versions
-    /// at its first).
     opened: bool,
 }
 
-/// One subscription's replay windows over a stream, by key and kind, and
-/// the newest key version it accepted (the first valid
-/// message under a newer version restarts the stream's sample high-water).
+/// One subscription's replay windows over a stream, by key and kind, and the newest key
+/// version it accepted (the first valid message under a newer version restarts the stream's
+/// sample high-water).
 #[derive(Debug, Default)]
 pub struct StreamWindows {
     windows: BTreeMap<(u32, u8), ReplayWindow>,
@@ -150,9 +140,8 @@ impl StreamWindows {
             .map_or(Ok(()), |w| w.check(header.seq))
     }
 
-    /// Records a verified message under a key of `version`: whether it is
-    /// the first under a newer version (the sender restarted, so its `seq`s
-    /// did too).
+    /// Records a verified message under a key of `version`: whether it is the first under a
+    /// newer version (the sender restarted, so its `seq`s did too).
     ///
     /// # Errors
     /// [`Replayed`]: a second copy verified meanwhile.
@@ -173,8 +162,8 @@ impl StreamWindows {
 /// Why a key-scoped message was refused or not sealed.
 #[derive(Debug, thiserror::Error)]
 pub enum KeyError {
-    /// Sealed under a key this process doesn't hold: drop it, and recover
-    /// with `GetKeys` if the key should exist.
+    /// Sealed under a key this process doesn't hold: drop it, and recover with `GetKeys` if the
+    /// key should exist.
     #[error("key {0} is not held")]
     Unknown(u32),
     /// No held key may send this.
@@ -199,18 +188,13 @@ pub enum KeyError {
 pub struct Keyring {
     me: Option<ParticipantId>,
     generation: u32,
-    /// Boxed: a key's receiver and sender take hundreds of bytes, and a
-    /// map node holds eleven entries inline, so the first key would take a
-    /// block of kilobytes, which a board's fragmented heap may not have.
     held: BTreeMap<u32, Box<Held>>,
     marks: BTreeMap<Slot, Mark>,
-    /// Fixed keys this process dropped: never installed again, so a late
-    /// delivery or recovery reply never restarts their counters (a reused
-    /// nonce) or replay windows.
+    // Fixed keys dropped: never installed again, so a late delivery or recovery reply cannot
+    // restart their counters (a reused nonce) or replay windows.
     // TODO: grows by a few ids per lease for the life of a generation;
     // bound it if boards run sessions long enough to feel it.
     gone: BTreeSet<u32>,
-    /// The newest snapshot observed: (revision, host_ns).
     observed: Option<(u64, i64)>,
 }
 
@@ -225,8 +209,7 @@ impl core::fmt::Debug for Keyring {
 }
 
 impl Keyring {
-    /// The keys of generation `generation` of `me` (`None`: the host,
-    /// which only receives).
+    /// The keys of generation `generation` of `me` (`None`: the host, which only receives).
     pub fn new(me: Option<ParticipantId>, generation: u32) -> Self {
         Self {
             me,
@@ -235,8 +218,7 @@ impl Keyring {
         }
     }
 
-    /// Applies a delivery at `now_ns` (this process's clock): what to
-    /// acknowledge.
+    /// Applies a delivery at `now_ns` (this process's clock): what to acknowledge.
     pub fn apply(&mut self, delivery: &KeyDelivery, now_ns: i64) -> KeysAck {
         let mut ack = KeysAck::default();
         for key in &delivery.keys {
@@ -254,9 +236,9 @@ impl Keyring {
         ack
     }
 
-    /// Installs `key` (or switches a held one to sending): whether it now
-    /// sends under it, or `None` when it is refused (another sender's key
-    /// to send, a retired or superseded version).
+    /// Installs `key` (or switches a held one to sending): whether it now sends under it, or
+    /// `None` when it is refused (another sender's key to send, a retired or superseded
+    /// version).
     pub fn install(&mut self, key: &IssuedKey, now_ns: i64) -> Option<bool> {
         if key.send && (key.sender != self.me || key.generation != self.generation) {
             return None;
@@ -308,8 +290,8 @@ impl Keyring {
         Some(key.send)
     }
 
-    /// Drops key `key_id` and, for a rotating key, every older version of
-    /// its slot (which recovery never reinstalls).
+    /// Drops key `key_id` and, for a rotating key, every older version of its slot (which
+    /// recovery never reinstalls).
     pub fn retire(&mut self, key_id: u32) {
         let Some(held) = self.held.remove(&key_id) else {
             return;
@@ -327,12 +309,9 @@ impl Keyring {
         }
     }
 
-    /// Takes an authority snapshot or a device view, if newer than the
-    /// last: drops lease
-    /// keys whose token ended (or never appeared within [`UNSEEN_TTL_NS`]),
-    /// and every key once a newer generation of this participant took over.
-    /// An older snapshot (a delayed broadcast, a cached reply) changes
-    /// nothing.
+    /// Takes an authority snapshot or a device view, if newer than the last: drops lease keys
+    /// whose token ended (or never appeared within [`UNSEEN_TTL_NS`]), and every key once a
+    /// newer generation of this participant took over.
     pub fn observe(&mut self, snapshot: &impl AuthorityView, now_ns: i64) {
         let order = (snapshot.revision(), snapshot.host_ns());
         if self.observed.is_some_and(|last| order <= last) {
@@ -352,14 +331,12 @@ impl Keyring {
             self.held.clear();
             return;
         }
-        // Looked up in place: a set of them would allocate on every view.
         let leases = snapshot.leases();
         let gone = &mut self.gone;
         self.held.retain(|id, held| {
             if held.scope.purpose.rotates() {
                 return true;
             }
-            // A `k_estop` lives while its sender's generation does.
             let current = if held.scope.purpose == KeyPurpose::Estop {
                 let sender = held.scope.sender.as_ref();
                 sender
@@ -390,8 +367,8 @@ impl Keyring {
         self.held.values().map(|h| (&h.scope, h.tx.is_some()))
     }
 
-    /// Whether this process may send `channel`'s samples (it holds that
-    /// stream's key with `send`).
+    /// Whether this process may send `channel`'s samples (it holds that stream's key with
+    /// `send`).
     pub fn sends_stream(&self, channel: ChannelId) -> bool {
         self.held.values().any(|h| {
             h.tx.is_some()
@@ -400,8 +377,6 @@ impl Keyring {
         })
     }
 
-    /// Takes the next `seq` of `kind` under the newest sending key `pick`
-    /// accepts (the lowest id among equals).
     fn sender(
         &mut self,
         kind: Kind,
@@ -426,7 +401,6 @@ impl Keyring {
         Ok(tx.begin(kind)?)
     }
 
-    /// Seals `body` as `kind` on `keyexpr` (see [`Self::sender`]).
     fn seal(
         &mut self,
         kind: Kind,
@@ -441,9 +415,6 @@ impl Keyring {
         Ok(out)
     }
 
-    /// Checks `msg` (which must be `kind`) against the key its header
-    /// names and that key's replay window: what to verify, and the key's
-    /// scope.
     fn opening(&self, msg: &[u8], kind: Kind) -> Result<(Opening, &Scope), KeyError> {
         let header = Header::parse(msg)?;
         if header.kind != kind {
@@ -456,8 +427,7 @@ impl Keyring {
         Ok((held.rx.begin(msg)?, &held.scope))
     }
 
-    /// Records the `seq` of a message an [`Opening`] verified. A rotating
-    /// key's first message drops its older versions.
+    /// Records the `seq` of a message an [`Opening`] verified.
     ///
     /// # Errors
     /// [`KeyError`]: a second copy, or a key retired meanwhile.
@@ -471,9 +441,8 @@ impl Keyring {
         self.opened(header)
     }
 
-    /// A message under `header`'s key verified (its replay window kept
-    /// elsewhere: [`StreamWindows`]): a rotating key's first drops its
-    /// older versions.
+    /// A message under `header`'s key verified (its replay window kept elsewhere:
+    /// [`StreamWindows`]): a rotating key's first drops its older versions.
     ///
     /// # Errors
     /// [`KeyError::Unknown`] for a key retired meanwhile.
@@ -493,9 +462,8 @@ impl Keyring {
         Ok(())
     }
 
-    /// Takes the next `seq` for one of this robot's samples of `channel`
-    /// (an `_applied` entry when `applied`), to seal without the caller's
-    /// lock: the two-phase [`Self::seal_sample`].
+    /// Takes the next `seq` for one of this robot's samples of `channel` (an `_applied` entry
+    /// when `applied`), to seal without the caller's lock: the two-phase [`Self::seal_sample`].
     ///
     /// # Errors
     /// [`KeyError::NoKey`] before the stream's key reached this process.
@@ -507,9 +475,9 @@ impl Keyring {
         })
     }
 
-    /// Checks a sample of `robot`'s stream `channel` against its stream
-    /// key and replay window, to verify without the caller's lock (then
-    /// [`Self::commit_open`]): the two-phase [`Self::open_sample`].
+    /// Checks a sample of `robot`'s stream `channel` against its stream key and replay window,
+    /// to verify without the caller's lock (then [`Self::commit_open`]): the two-phase
+    /// [`Self::open_sample`].
     ///
     /// # Errors
     /// [`KeyError`]: it is dropped.
@@ -531,10 +499,9 @@ impl Keyring {
         Ok(opening)
     }
 
-    /// [`Self::begin_open_sample`] for one subscription, which keeps its
-    /// own replay windows (`windows`): several subscriptions to one stream
-    /// in one process each get every sample, and each refuses a repeat.
-    /// Also returns the key's version.
+    /// [`Self::begin_open_sample`] for one subscription, which keeps its own replay windows
+    /// (`windows`): several subscriptions to one stream in one process each get every sample,
+    /// and each refuses a repeat.
     ///
     /// # Errors
     /// [`KeyError`]: it is dropped.
@@ -566,8 +533,8 @@ impl Keyring {
         Ok((held.rx.begin_unwindowed(msg)?, scope.version))
     }
 
-    /// Seals `chunk` for `robot`'s edge on `keyexpr` (`c/{robot}/{path}`),
-    /// under the `k_cmd` of its token for its part.
+    /// Seals `chunk` for `robot`'s edge on `keyexpr` (`c/{robot}/{path}`), under the `k_cmd` of
+    /// its token for its part.
     ///
     /// # Errors
     /// [`KeyError::NoKey`] without that key.
@@ -586,8 +553,8 @@ impl Keyring {
         })
     }
 
-    /// Opens a chunk to this robot received on `keyexpr`: under a `k_cmd`
-    /// for this robot whose part, token and sender match the chunk's.
+    /// Opens a chunk to this robot received on `keyexpr`: under a `k_cmd` for this robot whose
+    /// part, token and sender match the chunk's.
     ///
     /// # Errors
     /// [`KeyError`]: it is dropped.
@@ -607,9 +574,8 @@ impl Keyring {
         Ok(chunk)
     }
 
-    /// Seals one of this robot's samples on `keyexpr` (`d/{robot}/{path}`,
-    /// `_applied` for an applied entry) under its stream's newest sending
-    /// key.
+    /// Seals one of this robot's samples on `keyexpr` (`d/{robot}/{path}`, `_applied` for an
+    /// applied entry) under its stream's newest sending key.
     ///
     /// # Errors
     /// [`KeyError::NoKey`] before the stream's key reached this process.
@@ -627,8 +593,8 @@ impl Keyring {
         })
     }
 
-    /// Opens a sample of `robot` received on `keyexpr`, an applied entry
-    /// when `applied`: under a stream key of that robot covering its part.
+    /// Opens a sample of `robot` received on `keyexpr`, an applied entry when `applied`: under
+    /// a stream key of that robot covering its part.
     ///
     /// # Errors
     /// [`KeyError`]: it is dropped.
@@ -651,8 +617,8 @@ impl Keyring {
         Ok(sample)
     }
 
-    /// Seals a lockstep request to `robot` under token `token`'s `k_cmd`
-    /// for that robot (the one with the lowest id).
+    /// Seals a lockstep request to `robot` under token `token`'s `k_cmd` for that robot (the
+    /// one with the lowest id).
     ///
     /// # Errors
     /// [`KeyError::NoKey`] without a lease key.
@@ -669,8 +635,8 @@ impl Keyring {
         })
     }
 
-    /// Opens a lockstep request to this robot: the request and the token
-    /// of the key it came under, which the robot checks against its view.
+    /// Opens a lockstep request to this robot: the request and the token of the key it came
+    /// under, which the robot checks against its view.
     ///
     /// # Errors
     /// [`KeyError`]: it is dropped.
@@ -726,10 +692,8 @@ impl Keyring {
         Ok(codec::decode_lockstep_response(body)?)
     }
 
-    /// Opens `msg` (which must be `kind`) and returns its body, sliced from
-    /// the buffer without a copy, and its key's scope.
-    /// Seals this participant's e-stop signal on `keyexpr`
-    /// (`estop/{me}`) under its generation's `k_estop`.
+    /// Opens `msg` (which must be `kind`) and returns its body, sliced from the buffer without
+    /// a copy, and its key's scope.
     ///
     /// # Errors
     /// [`KeyError::NoKey`] without it: this generation isn't attached.
@@ -741,8 +705,8 @@ impl Keyring {
         })
     }
 
-    /// Opens `by`'s e-stop signal received on `keyexpr`: under the
-    /// `k_estop` of `by`'s current generation, and no one else's.
+    /// Opens `by`'s e-stop signal received on `keyexpr`: under the `k_estop` of `by`'s current
+    /// generation, and no one else's.
     ///
     /// # Errors
     /// [`KeyError`]: it is dropped (a non-member, a forgery, an ended
@@ -825,16 +789,13 @@ mod tests {
             let sealed = robot.seal_sample(KEY, &sample(1), false).expect("seal");
             let clear = sealed.windows(8).any(|w| w == b"wrench!!");
             assert_eq!(clear, security == Security::Mac, "{security:?}");
-            // The keyed reader opens and verifies it either way.
             let opened = reader.open_sample(KEY, sealed.clone(), &pid("arm"), false);
             assert_eq!(opened.expect("open").payload, sample(1).payload);
-            // A member without the key can't open (or forge) it.
             let mut stranger = Keyring::new(Some(pid("cockpit")), 1);
             assert!(matches!(
                 stranger.open_sample(KEY, sealed.clone(), &pid("arm"), false),
                 Err(KeyError::Unknown(9))
             ));
-            // A changed body fails to verify at the keyed reader.
             let mut forged = robot.seal_sample(KEY, &sample(2), false).expect("seal");
             let at = forged.len() - TAG_LEN - 1;
             forged[at] ^= 1;
@@ -842,7 +803,6 @@ mod tests {
                 reader.open_sample(KEY, forged, &pid("arm"), false),
                 Err(KeyError::Open(OpenError::Auth))
             ));
-            // A stream key never opens another robot's part.
             let other = robot.seal_sample(KEY, &sample(3), false).expect("seal");
             assert!(matches!(
                 reader.open_sample(KEY, other, &pid("gripper"), false),
@@ -858,8 +818,6 @@ mod tests {
         robot_v1.install(&stream_key(9, 1, true, Security::Mac), 0);
         reader.install(&stream_key(9, 1, false, Security::Mac), 0);
         let old = robot_v1.seal_sample(KEY, &sample(1), false).expect("seal");
-        // The robot's new generation gets version 2; the reader installs it
-        // first, and a send key for another generation is refused.
         let mut robot_v2 = Keyring::new(Some(pid("arm")), 2);
         let v2 = |send| IssuedKey {
             generation: 2,
@@ -872,7 +830,6 @@ mod tests {
             "another generation's key"
         );
         assert_eq!(robot_v2.install(&v2(true), 0), Some(true));
-        // Both versions open until the first message under v2...
         assert!(
             reader
                 .open_sample(KEY, old.clone(), &pid("arm"), false)
@@ -880,7 +837,6 @@ mod tests {
         );
         let new = robot_v2.seal_sample(KEY, &sample(1), false).expect("seal");
         assert!(reader.open_sample(KEY, new, &pid("arm"), false).is_ok());
-        // ...which drops v1, as `retire_through = [9]` does.
         let late = robot_v1.seal_sample(KEY, &sample(2), false).expect("seal");
         assert!(matches!(
             reader.open_sample(KEY, late, &pid("arm"), false),
@@ -894,7 +850,6 @@ mod tests {
             0,
         );
         assert_eq!(ack.retired, vec![9]);
-        // Recovery never reinstalls a retired or superseded version.
         assert_eq!(
             reader.install(&stream_key(9, 1, false, Security::Mac), 0),
             None
@@ -941,7 +896,6 @@ mod tests {
         snapshot.host_ns += 1;
         edge.observe(&snapshot, UNSEEN_TTL_NS);
         assert!(edge.holds(20) && !edge.holds(21), "21 never appeared");
-        // A delayed, older snapshot without the lease drops nothing.
         let mut stale = snapshot.clone();
         stale.leases.clear();
         stale.host_ns -= 1;
@@ -975,7 +929,6 @@ mod tests {
             assert!(!open(&mut reader, windows, &msg).expect("each gets it"));
             assert!(open(&mut reader, windows, &msg).is_err(), "a repeat");
         }
-        // The robot's next generation, its seqs from 1 under version 2.
         let v2 = IssuedKey {
             generation: 2,
             ..stream_key(12, 2, true, Security::Mac)
@@ -989,7 +942,6 @@ mod tests {
 
     #[test]
     fn a_delayed_recovery_never_brings_back_an_ended_lease_key() {
-        // The holder sends under token 5's key...
         let key = IssuedKey {
             key_id: 30,
             purpose: KeyPurpose::Command,
@@ -1041,13 +993,10 @@ mod tests {
         };
         snapshot.leases.push(lease);
         holder.observe(&snapshot, 1);
-        // ...the token ends...
         snapshot.leases.clear();
         snapshot.revision += 1;
         holder.observe(&snapshot, 2);
         assert!(!holder.holds(30));
-        // ...and a GetKeys reply from before that lands: refused, so no
-        // second message ever goes out under nonce 1.
         assert_eq!(holder.install(&key, 3), None);
         assert!(matches!(
             holder.seal_chunk(KEY, &pid("arm"), &chunk),
@@ -1056,7 +1005,6 @@ mod tests {
         assert_eq!(Header::parse(&first).expect("header").seq, 1);
     }
 
-    /// A lease key on part 3.
     fn lease_key(
         id: u32,
         purpose: KeyPurpose,
@@ -1108,7 +1056,6 @@ mod tests {
         }
     }
 
-    /// Revision `revision` of a view with these members and lease tokens.
     fn view(revision: u64, members: &[(&str, u32)], tokens: &[u64]) -> crate::wire::DeviceView {
         let state = crate::authority::Authority::new(
             crate::wire::SessionId::named("demo"),
@@ -1189,7 +1136,6 @@ mod tests {
         assert_eq!(windows.commit(&header(9), 1), Ok(false));
         assert_eq!(windows.commit(&header(10), 1), Ok(false));
         assert!(windows.check(&header(9)).is_err(), "still a repeat");
-        // A newer version does drop it.
         assert_eq!(windows.commit(&header(11), 2), Ok(true));
         assert!(windows.check(&header(9)).is_ok());
     }
@@ -1385,7 +1331,6 @@ mod tests {
         let mut other = Keyring::new(Some(pid("gripper")), 1);
         edge.install(&key, 0);
         other.install(&key, 0);
-        // Whoever has the bytes can seal anything: the scope is the check.
         let mut forger = SealSender::new(
             30,
             Key::from_bytes([30; 32]),
@@ -1501,7 +1446,6 @@ mod tests {
             holder.open_lockstep_response(KEY, token, &pid("arm"), LeaseToken(6)),
             Err(KeyError::Scope(_))
         ));
-        // Key 32 names another robot, and no key names token 6.
         for token in [6, 7] {
             assert!(
                 matches!(

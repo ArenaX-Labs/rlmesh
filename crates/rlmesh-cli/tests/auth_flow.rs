@@ -1,11 +1,6 @@
 //! End-to-end auth flows against a mock platform: sign-in, token lifecycle,
 //! locking, org switching, logout, API keys, and the docker helper.
-//!
-//! Every invocation passes `--profile`/`--platform` explicitly so a
-//! developer's `RLMESH_PROFILE`/`RLMESH_PLATFORM_URL` cannot leak in through
-//! clap's env bindings.
 
-// Tests panic on unexpected state by design.
 #![allow(clippy::unwrap_used)]
 
 mod support;
@@ -76,7 +71,6 @@ async fn login_honors_slow_down() {
     let (code, stdout, stderr) = harness.run(&login_args(&harness.mock.url)).await;
 
     assert_eq!(code, 0, "stdout={stdout}\nstderr={stderr}");
-    // interval 1s, then slow_down adds 5s before the next poll.
     assert!(
         started.elapsed() >= Duration::from_secs(6),
         "{:?}",
@@ -202,7 +196,6 @@ async fn expired_token_refreshes_once_and_persists_the_rotation() {
         }]
     );
 
-    // The rotated token is fresh, so the next call is local.
     let seen_before = harness.mock.seen().len();
     let (code, _, _) = harness.run(&["token", "--profile", "default"]).await;
     assert_eq!(code, 0);
@@ -325,7 +318,6 @@ async fn an_unpinned_profile_must_sign_in_again_before_refreshing() {
     assert!(stderr.contains("rlmesh login"), "{stderr}");
     assert!(harness.mock.refresh_grants().is_empty());
 
-    // A fresh token still works without any pin: no refresh is attempted.
     harness.seed_session("default", 3_600);
     let (code, _, stderr) = harness.run(&["token", "--profile", "default"]).await;
     assert_eq!(code, 0, "{stderr}");
@@ -358,7 +350,6 @@ async fn org_switch_uses_the_provider_id() {
     assert!(config.contains("organization_id = \"org_02H\""), "{config}");
     assert!(config.contains("organization_name = \"Beta\""), "{config}");
 
-    // An organization the account does not belong to is kept out.
     let (code, _stdout, stderr) = harness
         .run(&["org", "switch", "org_nope", "--profile", "default"])
         .await;
@@ -521,7 +512,6 @@ async fn registry_login_and_credential_helper_hand_docker_a_fresh_token() {
     let hosts: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(hosts["registry.test"], USER_ID);
 
-    // An unknown host is docker's "not found" sentinel, not an error.
     let mut get = harness.command(HELPER);
     get.arg("get").stdin(Stdio::piped()).stdout(Stdio::piped());
     let output = tokio::task::spawn_blocking(move || {

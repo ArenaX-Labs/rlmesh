@@ -1,10 +1,3 @@
-"""Run the paired-seed fixture through the runtime's derivation from Python.
-
-crates/rlmesh/conformance/episode_seeds.v1.json pins
-``episode_seed(base_seed, seed_key, slot)`` for every language that derives
-reset seeds, the managed platform included.
-"""
-
 from __future__ import annotations
 
 import json

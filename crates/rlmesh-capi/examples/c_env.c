@@ -1,4 +1,3 @@
-/* Minimal ABI 5 environment describe with the translation unit's host runtime. */
 #include <rlmesh.h>
 #include <stdio.h>
 static RLMeshStatus reset(void* u, const int64_t* seed, const RLMeshValue* options,

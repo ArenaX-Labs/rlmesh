@@ -1,11 +1,9 @@
 //! A policy map built in Rust: [`PolicyBuilder`], and what the
-//! [`inputs`](crate::spec::inputs) and [`actions`](crate::spec::actions)
-//! builders share.
+//! [`inputs`](crate::spec::inputs) and [`actions`](crate::spec::actions) builders share.
 //!
-//! Every builder lowers to the JSON entry it stands for, and the policy is
-//! parsed by [`Policy::parse`], so the normaliser's rules and refusals apply
-//! as they are. Only what JSON cannot carry (a NaN or an infinity) is
-//! refused before it, in the normaliser's words.
+//! Every builder lowers to the JSON entry it stands for and the policy is parsed by
+//! [`Policy::parse`], so the normaliser's rules and refusals apply unchanged. Only what JSON
+//! cannot carry (a NaN or an infinity) is refused earlier, in the normaliser's words.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -99,7 +97,6 @@ impl Serialize for Array {
     }
 }
 
-/// A value an entry's key holds, as its JSON is written.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Val {
     Str(String),
@@ -115,8 +112,6 @@ pub(crate) enum Val {
     Json(Value),
 }
 
-/// A number as JSON: a whole number as an integer, as a hand-written map
-/// has it.
 struct Num(f64);
 
 impl Serialize for Num {
@@ -169,15 +164,11 @@ impl Serialize for Val {
     }
 }
 
-/// An entry being built: its kind and the keys set, in the order set.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Draft {
     kind: String,
     keys: Vec<(&'static str, Val)>,
-    /// The keys the kind takes, when it is known only at run time
-    /// (`inputs::of`).
     takes: Option<&'static [&'static str]>,
-    /// Why the entry cannot be built, found before the policy is.
     problem: Option<String>,
 }
 
@@ -191,7 +182,6 @@ impl Draft {
         }
     }
 
-    /// Sets `key`, replacing an earlier value.
     pub(crate) fn set(&mut self, key: &'static str, value: Val) {
         match self.keys.iter_mut().find(|(k, _)| *k == key) {
             Some((_, slot)) => *slot = value,
@@ -199,7 +189,6 @@ impl Draft {
         }
     }
 
-    /// Adds names to the list `key`.
     pub(crate) fn extend(&mut self, key: &'static str, names: impl IntoIterator<Item = String>) {
         if let Some((_, Val::Names(list))) = self.keys.iter_mut().find(|(k, _)| *k == key) {
             list.extend(names);
@@ -208,7 +197,6 @@ impl Draft {
         }
     }
 
-    /// Sets `name` in the map `key` (`units`).
     pub(crate) fn put(&mut self, key: &'static str, name: String, value: String) {
         if let Some((_, Val::Map(pairs))) = self.keys.iter_mut().find(|(k, _)| *k == key) {
             match pairs.iter_mut().find(|(n, _)| *n == name) {
@@ -220,7 +208,6 @@ impl Draft {
         }
     }
 
-    /// Sets the custom kind's field `name`.
     pub(crate) fn field(&mut self, name: String, array: Array) {
         if let Some((_, Val::Schema(fields))) = self.keys.iter_mut().find(|(k, _)| *k == "fields") {
             match fields.iter_mut().find(|(n, _)| *n == name) {
@@ -232,21 +219,16 @@ impl Draft {
         }
     }
 
-    /// Takes only `keys`, refusing any other when the policy is built.
     pub(crate) fn taking(mut self, keys: &'static [&'static str]) -> Self {
         self.takes = Some(keys);
         self
     }
 
-    /// Refuses to build, for `problem`.
     pub(crate) fn refused(mut self, problem: String) -> Self {
         self.problem = Some(problem);
         self
     }
 
-    /// What the normaliser would refuse but JSON cannot carry: a NaN or an
-    /// infinity, refused in the normaliser's words; and what the builder
-    /// found wrong.
     pub(crate) fn check(&self, where_: &str) -> Result<(), String> {
         if let Some(problem) = &self.problem {
             return Err(format!("{where_}: {problem}"));
@@ -292,7 +274,6 @@ impl Serialize for Draft {
     }
 }
 
-/// An entry as given: built, or written as JSON.
 #[derive(Clone, Debug, PartialEq)]
 enum Written {
     Built(Draft),
@@ -867,7 +848,6 @@ macro_rules! builder {
         pub struct $ty($crate::spec::policy::Draft);
 
         impl $ty {
-            /// The JSON keys its entries take.
             #[allow(dead_code)]
             pub(crate) const KEYS: &'static [&'static str] =
                 &["at", $($crate::spec::policy::key!($key)),*];
@@ -882,7 +862,6 @@ macro_rules! builder {
             }
         }
 
-        /// The entry as the policy map has it.
         impl serde::Serialize for $ty {
             fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
                 serde::Serialize::serialize(&self.0, s)

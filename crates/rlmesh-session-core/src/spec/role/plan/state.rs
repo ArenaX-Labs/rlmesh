@@ -1,5 +1,3 @@
-//! Resolved instructions for one model state input.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -8,9 +6,8 @@ use crate::spec::role::path::NodePath;
 use crate::spec::rotation::{Matrix, Rotation};
 use crate::wire::part::DType;
 
-/// The model's own output an action-source piece reads (`source="action"`):
-/// the `[start, stop)` slice of the raw action executed at the previous step,
-/// in model order, before the actuator's affine.
+/// The model's own output an action-source piece reads (`source="action"`): the `[start, stop)`
+/// slice of the raw action executed at the previous step, before the actuator's affine.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreviousAction {
     /// The actuator's role, for `describe`.
@@ -80,30 +77,20 @@ pub struct StatePiece {
     /// the fit report confesses, by name), or `None` for a declared constant
     /// part.
     pub absent_role: Option<String>,
-    /// The model output this piece reads instead of an env leaf, when the
-    /// part's `source` is `action`; `fill` is then what it reads before the
-    /// episode's first action, and `gather` reorders the actuator's axes by
-    /// label. `None` for an env-sourced or constant piece.
+    /// The model output this piece reads instead of an env leaf, when the part's `source` is `action`;
+    /// `fill` is what it reads before the first action.
     pub previous: Option<PreviousAction>,
-    /// The agreed coordinate frame this piece's values are in, when either side
-    /// declared one (`None` when both were silent). Rendered by `describe`; the
-    /// disagreement it would represent is already a resolve error.
+    /// The agreed coordinate frame this piece's values are in, when either side declared one.
     pub frame: Option<FrameRef>,
     /// The agreed provenance, when either side declared one: the env leaf's
     /// value, else the model's declaration (its accepted values joined by
     /// `|` when it named several). Rendered by `describe` as `#sensed`.
     pub provenance: Option<FrameRef>,
-    /// The body part this piece was bound under, when a side declared one:
-    /// the model's own `part`, else the env leaf's. Rendered by `describe` as
-    /// `#part`; `None` when neither side named one, so every pre-`part`
-    /// summary is unchanged.
+    /// The body part this piece was bound under, when a side declared one; rendered by `describe` as
+    /// `#part`.
     pub part: Option<String>,
-    /// Resolved output width of this piece, when statically known (`None` when
-    /// the env feature declares no width and nothing else fixes it). A
-    /// host-side custom encoding addresses its own slice of a multi-part state
-    /// by these widths, and `apply_state` asserts every piece against its width
-    /// so a runtime value of another width is a loud error rather than a
-    /// silently shifted layout.
+    /// Resolved output width of this piece, when statically known. Applying the plan checks
+    /// every runtime value against it, so a value of another width is an error.
     pub width: Option<u32>,
 }
 

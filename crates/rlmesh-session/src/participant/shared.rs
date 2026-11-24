@@ -20,9 +20,6 @@ use crate::participant::sealer::Sealer;
 use crate::participant::{Shared, lock};
 use crate::transport::{CONTROL_CONGESTION, CONTROL_PRIORITY};
 
-/// Work for the key task: acknowledge a delivery, recover missing keys,
-/// or keep retrying a request whose caller timed out (its reply may carry
-/// keys: a grant's).
 #[derive(Debug)]
 pub(super) enum KeyWork {
     Ack(KeysAck),
@@ -57,11 +54,9 @@ impl Pending {
     }
 }
 
-/// The link, once the handshake completed.
 pub(super) type SharedLink = Arc<std::sync::OnceLock<Mutex<Link>>>;
 
 impl Shared {
-    /// Keeps the newest snapshot.
     pub(super) fn observe(&self, snapshot: AuthoritySnapshot) {
         if let Some(link) = self.link.get() {
             lock(link).observe(&snapshot, self.clock.now_ns());
@@ -94,15 +89,11 @@ impl Shared {
             .unwrap_or_default()
     }
 
-    /// Latches this robot process's e-stop for `reason`, and queues its
-    /// report to the host.
     pub(super) fn latch(&self, reason: Reason) {
         let seq = self.estop.latch(reason.clone());
         let _ = self.reports.send(Report::estop(&reason, seq));
     }
 
-    /// A member's e-stop signal on `key`: latched at once (`ESTOP_SIGNAL`,
-    /// `by` its sender), when its `k_estop` verifies it.
     pub(super) fn on_estop_signal(&self, key: &str, payload: &zenoh::bytes::ZBytes) {
         let Some(link) = self.link.get() else {
             return;
@@ -123,8 +114,6 @@ impl Shared {
         }
     }
 
-    /// Whether this participant's generation ended: the view lists a newer
-    /// one under its id, or none at all.
     pub(super) fn generation_ended(&self) -> bool {
         let Some(link) = self.link.get() else {
             return true;
@@ -150,9 +139,6 @@ impl Shared {
             .map_or(ClockMode::Wall, |s| s.clock_mode)
     }
 
-    /// Sends one verb and waits for the host's reply. Every reply carries the
-    /// host's snapshot, which updates this participant's view even when the
-    /// verb was refused.
     pub(super) async fn ctl(
         &self,
         command: Command,
@@ -167,11 +153,6 @@ impl Shared {
         Ok((state, leases))
     }
 
-    /// [`Self::ctl`], with a refusal left in the reply. A request left
-    /// unanswered is retried in the background under its id until the
-    /// host's answer (its cached reply, keys included) arrives or this
-    /// generation ends; a caller that timed out gets
-    /// [`SessionError::Pending`], whose handle resolves with that answer.
     pub(super) async fn ctl_reply(&self, command: Command) -> Result<CtlReply, SessionError> {
         let (id, reply) = self.call(None, &command).await;
         let Some(id) = id.filter(|&id| {
@@ -194,12 +175,6 @@ impl Shared {
         }
     }
 
-    /// Sends `command` as a new request (`None`) or again as request `id`
-    /// (a retry, which the host answers from its reply cache, never
-    /// applying the verb twice), and takes the first reply that
-    /// answers it. An unsealed refusal is only a hint (anyone can answer
-    /// `ctl`): it is returned, as [`SessionError::Unverified`], when no
-    /// sealed reply came. Returns the id.
     pub(super) async fn call(
         &self,
         request_id: Option<u64>,
@@ -259,8 +234,6 @@ impl Shared {
                     lock(link).reply_view(key, &mut bytes, request_id, self.clock.now_ns());
                 match outcome {
                     Ok(ReplyOutcome::Answer(reply)) => {
-                        // The reply carries the view, not the state: read
-                        // the state the verb left.
                         let state = self.fetch_state().await?;
                         let ViewReply {
                             result,
@@ -308,8 +281,6 @@ impl Shared {
         }
     }
 
-    /// The host's current snapshot, queried and verified (a newer
-    /// publication that overtook it stands).
     async fn fetch_state(&self) -> Result<AuthoritySnapshot, SessionError> {
         let key = self.keys.host_state();
         let signed = ask(self.transport.control(), &key, None, self.ctl_timeout).await?;
@@ -322,7 +293,6 @@ impl Shared {
             .ok_or(SessionError::NoReply(self.ctl_timeout))
     }
 
-    /// Verifies a `host/state` broadcast, received on `key`.
     pub(super) fn verify_state(&self, key: &str, msg: &[u8]) -> Option<AuthoritySnapshot> {
         lock(self.link.get()?)
             .state(key, msg)
@@ -332,11 +302,6 @@ impl Shared {
 }
 
 impl Shared {
-    /// Seals `heartbeat` under `k_up` and publishes it.
-    /// Seals and sends `heartbeat`. With `stamp`, its `t1` is taken
-    /// under the link's lock, so time spent waiting for the lock (another
-    /// task sealing or opening) never counts as network time in the clock
-    /// mapping.
     pub(super) async fn send_heartbeat(
         &self,
         mut heartbeat: Heartbeat,
@@ -348,6 +313,7 @@ impl Shared {
         let sealed = {
             let mut link = lock(link);
             if stamp {
+                // Taken under the link's lock so time spent waiting for it never counts as network time in the clock mapping.
                 heartbeat.t1_ns = self.clock.now_ns();
             }
             link.heartbeat(publisher.key_expr().as_str(), &heartbeat)

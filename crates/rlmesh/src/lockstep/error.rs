@@ -74,8 +74,6 @@ impl GymError {
 
     /// Whether the env stays usable after this failure: its own
     /// recoverable flag, or a reply that did not come in time. What the
-    /// driver records on an env call; see [`is_transient`](Self::is_transient)
-    /// for whether to retry a call.
     pub fn is_recoverable(&self) -> bool {
         match self {
             Self::Env(error) => error.is_recoverable,
@@ -85,16 +83,14 @@ impl GymError {
     }
 
     /// Whether retrying the same call can succeed, as
-    /// [`ErrorExt::is_transient`](crate::ext::ErrorExt::is_transient) answers it: a peer not reachable or not
-    /// there yet (no host listening, no reply in time, the robot not joined,
-    /// its lease held by another driver), or the env's recoverable failure.
-    /// A refusal that the same call meets again is not: a key the host does
-    /// not accept, a malformed address or map, a protocol the session lacks.
+    /// [`ErrorExt::is_transient`](crate::ext::ErrorExt::is_transient) answers it: a peer not
+    /// reachable or not there yet (no host listening, no reply in time, the robot not joined,
+    /// its lease held by another driver), or the env's recoverable failure. A refusal the
+    /// same call meets again is not.
     ///
-    /// A driver that dials a peer that may still be starting retries
-    /// [`connect`](crate::lockstep::connect) while this holds and stops at
-    /// once when it does not. A robot name the session never sees reads as
-    /// one not joined yet: the session cannot tell them apart.
+    /// A driver dialing a peer that may still be starting retries
+    /// [`connect`](crate::lockstep::connect) while this holds. A robot name the session never
+    /// sees reads as one not joined yet.
     pub fn is_transient(&self) -> bool {
         match self {
             Self::Env(error) => error.is_recoverable,
@@ -110,9 +106,6 @@ impl GymError {
     }
 }
 
-/// Whether a session failure can clear on its own: the transport, a
-/// deadline, or a refusal of a state that moves (a lease, an epoch, a
-/// member arriving).
 fn session_transient(error: &SessionError) -> bool {
     use rlmesh_session::wire::CtlStatus;
     match error {

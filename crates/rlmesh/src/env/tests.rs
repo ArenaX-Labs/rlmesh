@@ -1,5 +1,3 @@
-//! The Gymnasium-shaped env traits served end to end.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -16,8 +14,6 @@ mod serving;
 mod shutdown;
 
 thread_local! {
-    /// One client runtime per test thread: a client's connection lives on the
-    /// runtime that dialed it.
     static CLIENT: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -38,13 +34,11 @@ struct Counters {
     threads: Mutex<Vec<std::thread::ThreadId>>,
 }
 
-/// A three-step counter env with scripted failures.
 struct Counter {
     counters: Arc<Counters>,
     step: i64,
     fail_step: Option<Error>,
     metadata: Option<Metadata>,
-    /// How long each step takes.
     slow: Option<Duration>,
 }
 
@@ -135,7 +129,6 @@ fn dial(address: &str) -> crate::Result<RemoteEnv> {
     RemoteEnv::new(RemoteEnvOptions::default().address(address))
 }
 
-/// A two-lane vector env over Discrete actions.
 struct Pair {
     num_envs: u64,
     seen: Arc<Mutex<Vec<Value>>>,

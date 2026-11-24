@@ -1,7 +1,3 @@
-//! A transport opened or dropped on a thread that blocks on a future (a
-//! program's main thread, a binding's call) takes none of the wakeups of the
-//! other futures polled there.
-
 #![allow(clippy::unwrap_used)]
 
 use std::future::Future;
@@ -10,10 +6,6 @@ use std::time::Duration;
 
 use rlmesh_session::transport::{Transport, TransportConfig, TransportTuning, open_local_listener};
 
-/// Polls `sibling` once with a timer pending whose wakeup has fired, as a
-/// runner's main future polls one route while another waits; then waits
-/// only for that timer. A sibling that took the wakeup leaves it waiting
-/// forever.
 fn timer_survives(sibling: impl Future<Output = ()> + Send + 'static) -> bool {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -31,9 +23,7 @@ fn timer_survives(sibling: impl Future<Output = ()> + Send + 'static) -> bool {
                     return Poll::Ready(());
                 }
                 if let Some(mut polled) = sibling.take() {
-                    // The timer fires meanwhile: its wakeup is pending here.
                     std::thread::sleep(Duration::from_millis(50));
-                    // Kept pending or not, it is not polled again.
                     let _ = polled.as_mut().poll(cx);
                     std::mem::forget(polled);
                 }

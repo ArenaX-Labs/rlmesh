@@ -1,6 +1,3 @@
-// The Unity host's gate program of python/rlmesh/tests/conformance/native_gate.py:
-// the C# echo env served as RLMeshEnvBehaviour serves a scene, every call
-// dispatched to a main thread that pumps like Unity's tick.
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -27,7 +24,6 @@ static class Program
             UnityEnvHost.Pump();
             Thread.Sleep(1);
         }
-        // Off the main thread, as UnityEnvHost stops a component.
         var stop = Task.Run(server.Dispose);
         while (!stop.IsCompleted) UnityEnvHost.Pump();
         stop.Wait();

@@ -9,29 +9,21 @@ use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
 use rlmesh_proto::{Edition, EditionDefaults};
 use serde::{Deserialize, Serialize};
 
-/// Empty fallback returned by the internal `*_validated` accessors only on the
-/// unreachable path where the space is absent despite validation (see their
-/// `debug_assert!`s). Lets those accessors stay panic-free and lint-clean.
 static EMPTY_SPACE_SPEC: LazyLock<SpaceSpec> = LazyLock::new(SpaceSpec::default);
 
-/// Key under which an env declares, in its contract metadata, which reserved
-/// reset-option keys it wants delivered (a list of strings). The runtime sends a
-/// reserved `ResetRequest.options` key only to an env that named it here, so an
-/// env that forwards `options` blindly into a third-party `reset` never receives
-/// one it cannot interpret. Mirrored in Python as `rlmesh.ENV_RESET_OPTIONS_KEY`.
+/// Contract metadata key under which an env lists the reserved reset-option keys it wants delivered (a list of strings).
+/// The runtime sends a reserved `ResetRequest.options` key only to an env that named it here.
+/// Mirrored in Python as `rlmesh.ENV_RESET_OPTIONS_KEY`.
 pub const ENV_RESET_OPTIONS_KEY: &str = "rlmesh.env.v1.reset_options";
 
 /// Key under which an env declares, in its contract metadata, that it has no
 /// episode horizon of its own (`true`): it never truncates, so a run against it
 /// must cap every episode with `max_episode_steps`.
-/// [`RuntimeSessionSpec::validate`] refuses an uncapped session against such an
-/// env before its first reset.
 pub const ENV_REQUIRES_EPISODE_CAP_KEY: &str = "rlmesh.env.v1.requires_episode_cap";
 
-/// Key under which an env names, in its contract metadata, the two `make`
-/// params that set its camera resolution, as `[height, width]`: its render
-/// dial. A driver that knows the model's `Image(render=...)` assertion binds it
-/// there before the env is made. The runtime never reads it.
+/// Contract metadata key under which an env names the two `make` params that set its camera resolution, as `[height, width]`.
+/// A driver that knows the model's `Image(render=...)` binds them before the env is made; the
+/// runtime never reads it.
 pub const ENV_RENDER_PARAMS_KEY: &str = "rlmesh.env.v1.render_params";
 
 /// Whether `contract` declared [`ENV_REQUIRES_EPISODE_CAP_KEY`] as `true`.
@@ -47,19 +39,14 @@ pub fn requires_episode_cap(contract: &EnvContract) -> bool {
 
 /// The reserved reset option carrying the ordinal of the episode a reset
 /// starts. Declared by an env under [`ENV_RESET_OPTIONS_KEY`]; read in Python
-/// as `rlmesh.trial_index(options)`.
-///
-/// The env-side spelling of the key. The driver never reads it: a session takes
-/// its trial-index key from [`EditionDefaults::trial_index_option_key`], so the
-/// edition governs what goes on the wire.
+/// as `rlmesh.trial_index(options)`. The key a session sends comes from
+/// [`EditionDefaults::trial_index_option_key`].
 pub const TRIAL_INDEX_OPTION: &str = "trial_index";
 
 /// Whether `contract` named `key` in its metadata under
 /// [`ENV_RESET_OPTIONS_KEY`], as either a list of strings or a bare string.
-///
-/// The declaration gate for every reserved `ResetRequest.options` key: an env
-/// that forwards `options` blindly into a third-party `reset` must never
-/// receive a reserved key it cannot interpret.
+/// Gates every reserved `ResetRequest.options` key, so an env that forwards
+/// `options` blindly into a third-party `reset` never receives one.
 pub fn declares_reset_option(contract: &EnvContract, key: &str) -> bool {
     let Some(declared) = contract
         .spec
@@ -79,14 +66,9 @@ pub fn declares_reset_option(contract: &EnvContract, key: &str) -> bool {
     }
 }
 
-/// The `ResetRequest.options` map delivering `trials` under `option_key` — the
-/// trial-index key the session's edition governs
-/// ([`EditionDefaults::trial_index_option_key`], mirrored for env-side callers by
-/// [`TRIAL_INDEX_OPTION`]) — or `None` when there are no trials or the env never
-/// declared the key.
-///
-/// A single lane sends the bare integer; a multi-lane reset sends the list, in
-/// the same lane order as `seeds` and `episode_ids`.
+/// The `ResetRequest.options` map delivering `trials` under `option_key`, the trial-index key the session's edition governs.
+/// `None` when there are no trials or the env never declared the key. A single lane sends the bare
+/// integer; a multi-lane reset sends the list, in the same lane order as `seeds` and `episode_ids`.
 pub fn reset_options_for(
     contract: &EnvContract,
     option_key: &str,
@@ -110,47 +92,34 @@ pub fn reset_options_for(
 pub struct RuntimeSessionSpec {
     /// Correlation label for telemetry and logs; routing uses `env_id`.
     pub session_id: String,
-    /// The connected env container, UUIDv7 (minted by the runtime on attach).
-    /// The single routing key: replaces the old `route_id` + positional lane.
-    /// (Repurposed from the former descriptive-name field; the human env name
-    /// now lives only in the language SDK's own contract type.)
+    /// The connected env container, UUIDv7 (minted by the runtime on attach). The route's routing
+    /// key.
     pub env_id: String,
     pub env_component_id: String,
     pub model_component_id: String,
-    /// Workflow edition negotiated at the env handshake, already resolved to the
-    /// typed arm whose semantics this session runs under. Wire names are parsed
-    /// once, where they arrive, by
-    /// [`rlmesh_proto::parse_retained_edition`] — that is where the runtime
-    /// refuses an edition it was not built to drive, so a name outside the
-    /// retained list never reaches this field.
+    /// Workflow edition negotiated at the env handshake, resolved to the typed arm this session runs under.
+    /// Wire names are parsed by [`rlmesh_proto::parse_retained_edition`], which refuses an edition
+    /// this runtime cannot drive.
     pub workflow_edition: Edition,
     pub env_contract: EnvContract,
     pub num_envs: usize,
     pub base_seed: Option<i64>,
-    /// What a `base_seed` derivation keys on besides the base and the episode's
-    /// slot (see [`episode_seed`](super::episode_seed)): the environment, never
-    /// the model or a per-launch id, so two models over one environment draw
-    /// the same episodes. An environment id is a suitable key.
+    /// What a `base_seed` derivation keys on besides the base and the episode's slot (see [`episode_seed`](super::episode_seed)): the environment, never the model.
+    /// Two models over one environment so draw the same episodes; an environment id is a suitable
+    /// key.
     pub seed_key: String,
-    /// Explicit per-episode reset seeds, consumed in episode-start order (a
-    /// vector reset claims one per lane). Overrides `base_seed` derivation when
-    /// non-empty; episodes beyond the list reset unseeded. Requires
-    /// driver-owned resets (autoreset `DISABLED`): under `NEXT_STEP` the env
-    /// seeds its own rolls, so the list would silently not apply.
+    /// Explicit per-episode reset seeds, consumed in episode-start order (a vector reset claims one per lane). Overrides `base_seed` derivation.
+    /// Episodes beyond the list reset unseeded. Requires driver-owned resets (autoreset
+    /// `DISABLED`).
     pub episode_seeds: Vec<i64>,
     pub max_episodes: Option<u64>,
-    /// First trial ordinal this route's episodes walk; `None` is the default
-    /// base, 0 (so is an explicit `Some(0)`). Under driver-owned resets
-    /// (autoreset `DISABLED`) the driver always mints one ordinal per episode
-    /// start (`base`, `base + 1`, ...), reports it on the episode events and
-    /// summaries, and delivers it as `ResetRequest.options["trial_index"]` to an
-    /// env that declared the key (see [`ENV_RESET_OPTIONS_KEY`]) -- an env that
-    /// did not never sees it. A sharded run gives each shard its own base so the
-    /// shards together walk a benchmark's trials once each, instead of every
-    /// shard re-deriving an index from a hashed seed. Under `NEXT_STEP` autoreset
-    /// the env restarts its own lanes, so no ordinal is minted at all: the
-    /// default base is inert there, and a non-zero base is rejected by
-    /// [`validate`](Self::validate) since it could never be walked.
+    /// First trial ordinal this route's episodes walk; `None` and `Some(0)` both start at 0.
+    ///
+    /// Under driver-owned resets the driver mints one ordinal per episode start (`base`,
+    /// `base + 1`, ...), reports it on episode events and summaries, and delivers it under the
+    /// trial-index reset option to an env that declared it ([`ENV_RESET_OPTIONS_KEY`]). A sharded run
+    /// gives each shard its own base. Under `NEXT_STEP` autoreset no ordinal is minted, and
+    /// [`validate`](Self::validate) rejects a non-zero base.
     pub trial_index_base: Option<u64>,
     /// Truncate any episode after this many steps (runtime-enforced; the lane
     /// is reset and the episode reported `truncated`). Requires driver-owned
@@ -163,14 +132,11 @@ pub struct RuntimeSessionSpec {
     /// Close the model (`ModelHandler::on_close`) when the run ends, within
     /// the close timeout: for a model this run alone owns (a served model
     /// joined for it then leaves its host rather than being counted lost).
-    /// Leave unset for a model other runs share.
     pub close_model_on_end: bool,
     pub limits: RuntimeLimits,
-    /// The env advertised the `subset_step` handshake capability: every lane
-    /// can be reset and stepped on its own. The driver then runs one episode
-    /// loop per lane (a lane is its own group) instead of stepping the vector
-    /// in lockstep, and episode seeds/indices come from a route-global slot
-    /// counter so the scored set is fixed by the budget alone.
+    /// The env advertised the `subset_step` handshake capability: every lane can be reset and stepped on its own.
+    /// The driver then runs one episode loop per lane, and seeds and trial indices come from a
+    /// route-global slot counter so the scored set is fixed by the budget alone.
     pub subset_step: bool,
 }
 
@@ -254,16 +220,7 @@ impl RuntimeSessionSpec {
                 );
             }
         }
-        // The runtime drives one of the editions it was built for. Wire names are
-        // already refused at the parse boundary, so this re-checks the typed value
-        // for the one route that skips it: every field here is public, so a caller
-        // can name an arm this build implements but no longer retains. Same
-        // authority, same wording — membership, not equality with CURRENT, since a
-        // retained older edition (a graceful downgrade) is a valid session floor.
         rlmesh_proto::parse_retained_edition(self.workflow_edition.base())?;
-        // An autoreset mode this build does not understand (e.g. a newer peer's
-        // mode) must fail loudly at session setup, never silently fold to
-        // DISABLED and change lifecycle semantics.
         if AutoresetMode::try_from(self.env_contract.autoreset_mode).is_err() {
             return Err(format!(
                 "unknown autoreset mode {} on the wire; this build supports \
@@ -271,11 +228,6 @@ impl RuntimeSessionSpec {
                 self.env_contract.autoreset_mode
             ));
         }
-        // SAME_STEP is reserved on the wire but not yet driven by the runtime:
-        // the driver currently aliases NEXT_STEP|SAME_STEP to a purely
-        // observational path, while the env server never rolls SAME_STEP episode
-        // ids -> done lanes would stall. Reject it here so it cannot reach the
-        // runtime under a false assumption of support.
         if self.env_contract.autoreset_mode == AutoresetMode::SameStep as i32 {
             return Err(
                 "SAME_STEP autoreset is reserved but not yet supported by the runtime; \
@@ -283,14 +235,6 @@ impl RuntimeSessionSpec {
                     .to_string(),
             );
         }
-        // A lockstep vectorized session (one group of N lanes) requires
-        // NEXT_STEP autoreset: the env resets each done lane itself. Under
-        // DISABLED the driver would have to reset just the done lanes, which a
-        // stock gymnasium vector env cannot do (a full reset clobbers the
-        // still-running lanes). A lane endpoint (`subset_step`) is driven one
-        // group per lane instead, where DISABLED is the norm. Reject the
-        // combination up front instead of failing mid-run the first time lanes
-        // terminate at different steps. (SAME_STEP is already rejected above.)
         if self.num_envs > 1
             && !self.subset_step
             && self.env_contract.autoreset_mode != AutoresetMode::NextStep as i32
@@ -323,11 +267,7 @@ impl RuntimeSessionSpec {
     }
 
     /// Returns the observation space, or `None` if the spec has not been
-    /// populated/validated (`env_contract.observation_space` is unset).
-    ///
-    /// All `RuntimeSessionSpec` fields are public, so an unvalidated spec is
-    /// trivial to construct; this accessor never panics. The driver validates
-    /// the spec before running and uses the infallible internal accessor.
+    /// populated/validated (`env_contract.observation_space` is unset). Never panics.
     pub fn observation_space(&self) -> Option<&SpaceSpec> {
         self.env_contract
             .spec
@@ -337,8 +277,6 @@ impl RuntimeSessionSpec {
 
     /// Returns the action space, or `None` if the spec has not been
     /// populated/validated (`env_contract.action_space` is unset).
-    ///
-    /// See [`RuntimeSessionSpec::observation_space`] for why this is fallible.
     pub fn action_space(&self) -> Option<&SpaceSpec> {
         self.env_contract
             .spec
@@ -346,34 +284,26 @@ impl RuntimeSessionSpec {
             .and_then(|spec| spec.action_space.as_ref())
     }
 
-    /// Observation space for internal use after [`validate`](Self::validate)
-    /// has confirmed it is present.
     pub(crate) fn observation_space_validated(&self) -> &SpaceSpec {
         debug_assert!(
             self.observation_space().is_some(),
             "observation_space accessed before validate()"
         );
-        // LazyLock<SpaceSpec> derefs to &SpaceSpec on the unreachable None path.
         self.observation_space()
             .unwrap_or_else(|| &EMPTY_SPACE_SPEC)
     }
 
-    /// Action space for internal use after [`validate`](Self::validate) has
-    /// confirmed it is present.
     pub(crate) fn action_space_validated(&self) -> &SpaceSpec {
         debug_assert!(
             self.action_space().is_some(),
             "action_space accessed before validate()"
         );
-        // LazyLock<SpaceSpec> derefs to &SpaceSpec on the unreachable None path.
         self.action_space().unwrap_or_else(|| &EMPTY_SPACE_SPEC)
     }
 }
 
-/// One completed episode's summary, recorded in completion order across all
-/// lanes. The pull counterpart of the `episode_completed` hook event, so a
-/// caller without hooks (e.g. the in-process `run_local` loop) still gets
-/// per-episode results on the report.
+/// One completed episode's summary, recorded in completion order across all lanes.
+/// The pull counterpart of the `episode_completed` hook event, for a caller without hooks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EpisodeSummary {
     /// 1-based slot ordinal within the session, in completion order.
@@ -383,11 +313,9 @@ pub struct EpisodeSummary {
     /// The explicit seed this episode was reset with (`episode_seeds` /
     /// `base_seed` derivation), `None` for an unseeded or autoreset-rolled one.
     pub seed: Option<i64>,
-    /// The trial ordinal this episode walked (`trial_index_base` + its
-    /// episode-start position). Minted for every driver-owned reset whether or
-    /// not the env declared the reset option, so a coverage audit can read the
-    /// sweep off the report either way; `None` only under `NEXT_STEP` autoreset,
-    /// where the env restarts its own lanes and no ordinal is minted.
+    /// The trial ordinal this episode walked (`trial_index_base` + its episode-start position).
+    /// Minted for every driver-owned reset whether or not the env declared the option; `None`
+    /// only under `NEXT_STEP` autoreset.
     pub trial_index: Option<u64>,
     pub step_count: i64,
     pub cumulative_reward: f64,
@@ -425,7 +353,7 @@ pub struct RuntimeReport {
 }
 
 /// Per-op timeouts and the telemetry window for one session. Serialized with
-/// explicit millisecond field names (`*Ms`); legacy unsuffixed fields are rejected.
+/// explicit millisecond field names (`*Ms`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeLimits {
@@ -478,10 +406,6 @@ pub struct RuntimeLimits {
         deserialize_with = "duration_millis::deserialize"
     )]
     pub service_close_timeout: Duration,
-    /// How often the background ticker pushes Window + Session telemetry
-    /// snapshots to `on_telemetry`, on a wall clock. `0` disables live streaming
-    /// (the final session snapshot is still delivered at session end); any
-    /// non-zero value below 1ms is floored to 1ms.
     #[serde(
         default = "default_telemetry_window",
         rename = "telemetryWindowMs",
@@ -630,7 +554,6 @@ mod tests {
     fn validate_rejects_a_trial_base_the_env_owns_the_resets_for() {
         let mut spec = valid_spec();
         spec.trial_index_base = Some(5);
-        // Driver-owned resets (the default DISABLED/UNSPECIFIED) carry the ordinal.
         assert!(spec.validate().is_ok());
 
         spec.env_contract.autoreset_mode = AutoresetMode::NextStep as i32;
@@ -666,9 +589,6 @@ mod tests {
 
     #[test]
     fn validate_accepts_the_default_trial_base_under_next_step() {
-        // The ordinal is on by default, so the default base must not fail a run
-        // the env owns the resets for -- whether it arrives unset or as an
-        // explicit 0 (the Python surface always passes an integer).
         let mut spec = valid_spec();
         spec.env_contract.autoreset_mode = AutoresetMode::NextStep as i32;
         for base in [None, Some(0)] {
@@ -680,16 +600,9 @@ mod tests {
 
     #[test]
     fn reset_options_key_is_the_published_string() {
-        // Pinned against the Python mirror (`rlmesh.ENV_RESET_OPTIONS_KEY`, itself
-        // re-exported from this constant) by
-        // `python/rlmesh/tests/unit/test_reset_options.py`.
         assert_eq!(super::ENV_RESET_OPTIONS_KEY, "rlmesh.env.v1.reset_options");
     }
 
-    /// The spec carries a typed edition, so a made-up name is refused one step
-    /// earlier — at the shared parse boundary the env client and every other
-    /// string-carrying caller go through — naming the arrived string and the
-    /// retained list. That refusal is what an operator actually sees.
     #[test]
     fn an_edition_the_runtime_cannot_drive_is_refused_by_name() {
         let error = rlmesh_proto::parse_retained_edition("2099.01")
@@ -701,8 +614,6 @@ mod tests {
             "expected an edition-refusal error naming the retained list, got: {error}"
         );
 
-        // The edition the build implements is accepted, by base name and by this
-        // build's cohort spelling of it, and validates.
         let mut spec = valid_spec();
         for name in [
             rlmesh_proto::CURRENT_WORKFLOW_EDITION,
@@ -717,8 +628,6 @@ mod tests {
     #[test]
     fn space_accessors_return_none_on_unvalidated_spec() {
         let mut spec = valid_spec();
-        // An unvalidated spec is trivially constructible since all fields are
-        // public; the accessors must not panic.
         spec.env_contract = EnvContract::default();
 
         assert!(spec.observation_space().is_none());
@@ -734,8 +643,6 @@ mod tests {
 
     #[test]
     fn validate_accepts_vectorized_next_step_runtime_sessions() {
-        // num_envs > 1 is supported with NEXT_STEP autoreset: the env resets each
-        // done lane itself, so the driver never needs per-lane reset.
         let mut spec = valid_spec();
         spec.num_envs = 4;
         spec.env_contract.num_envs = 4;
@@ -746,9 +653,6 @@ mod tests {
 
     #[test]
     fn validate_rejects_disabled_vectorized_sessions() {
-        // DISABLED (and the UNSPECIFIED default) with num_envs > 1 needs per-lane
-        // reset, which stock gymnasium vector envs cannot do. Reject up front
-        // rather than failing mid-run on the first staggered termination.
         for mode in [AutoresetMode::Disabled, AutoresetMode::Unspecified] {
             let mut spec = valid_spec();
             spec.num_envs = 4;
@@ -765,8 +669,6 @@ mod tests {
 
     #[test]
     fn validate_rejects_same_step_autoreset() {
-        // SAME_STEP is reserved but unsupported; validation must reject it so it
-        // cannot reach the runtime and stall lanes.
         let mut spec = valid_spec();
         spec.env_contract.autoreset_mode = AutoresetMode::SameStep as i32;
 
@@ -823,7 +725,6 @@ mod tests {
         assert!(error.to_string().contains("envConnectTimeout"));
     }
 
-    /// An env contract whose metadata declares `reset_options = declared`.
     fn contract_declaring(declared: MetaValue) -> EnvContract {
         EnvContract {
             spec: Some(EnvSpec {

@@ -1,20 +1,15 @@
 //! The embodiment runtime language bindings wrap: one robot map declared,
 //! every part published, every commandable part served by an edge.
 //!
-//! [`Robot::declare`] sends the authored map (the host normalises it),
-//! then declares a publisher for every part (an image publisher, with its
-//! bitrate budget and JPEG encoder, for `u8 [H, W, 3]` images) and one
-//! [`Edge`] per command group (or per ungrouped commandable part).
-//! Publishers exist from the start, so the host's publication plans are
-//! installed and acknowledged before any controller asks for a lease
-//! (install before authority).
+//! [`Robot::declare`] sends the authored map, then declares a publisher for every part (an
+//! image publisher with its bitrate budget and JPEG encoder for `u8 [H, W, 3]` images) and one
+//! [`Edge`] per command group. Publishers exist from the start, so the host's publication plans
+//! are installed before any controller asks for a lease.
 //!
-//! The robot's control loop calls [`Robot::due`] once per control tick per
-//! command group: that call *is* the edge tick, so what it returns is
-//! exactly what the `_applied` stream records. Nothing here calls back into
-//! the robot's code from another thread: a group handover is returned with
-//! the tick, the robot switches its control mode, then calls
-//! [`Robot::handover_done`].
+//! The robot's control loop calls [`Robot::due`] once per control tick per command group: that
+//! call is the edge tick, so what it returns is exactly what the `_applied` stream records.
+//! Nothing calls back into the robot's code from another thread: a group handover is returned
+//! with the tick, the robot switches its control mode, then calls [`Robot::handover_done`].
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -30,7 +25,6 @@ use crate::edge::queue::QueuedAction;
 use crate::edge::runtime::Edge;
 use crate::wire::EdgeMode;
 
-/// How one part is published.
 enum Outlet {
     Sample(SamplePublisher),
     Image(ImagePublisher),
@@ -83,9 +77,6 @@ impl Published {
         participant: &Participant,
         robot_json: &str,
     ) -> Result<Self, SessionError> {
-        // The host lists parts by channel id, and a re-declared part gets a
-        // new, higher one: keep the authored order to put them back. The
-        // host parses the map the same way, so a map it would accept parses.
         let authored = authored_paths(robot_json)?;
         let view = participant.declare_parts(robot_json).await?;
         let me = participant.id().clone();
@@ -139,11 +130,11 @@ impl Published {
     }
 
     /// Publishes one sample of the part at `path`, captured at `capture_ns`
-    /// (this participant's clock), from each field's bytes in declaration
-    /// order (one for a single-field part; UTF-8 for text). Copies the
-    /// values, so the caller may reuse its buffers at once. Returns
-    /// the sample's seq, or `None` when the plan coalesced it or an image
-    /// went to its encoder (which assigns the seq when it sends).
+    /// (this participant's clock), from each field's bytes in declaration order
+    /// (one for a single-field part; UTF-8 for text). Copies the values, so the
+    /// caller may reuse its buffers at once. Returns the sample's seq, or `None`
+    /// when the plan coalesced it or an image went to its encoder (which assigns
+    /// the seq when it sends).
     pub fn publish(
         &self,
         path: &str,

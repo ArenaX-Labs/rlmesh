@@ -1,5 +1,3 @@
-//! Attaching, presence and loss.
-
 use super::*;
 
 #[test]
@@ -120,7 +118,6 @@ fn a_lost_holder_stops_only_its_parts_of_one_robot() {
         told.to_string(),
         "holder policy lost (HOLDER_LOST): released robot:cmd1, robot:cmd3"
     );
-    // The last holder gone leaves an armed session with no lease.
     f.auth.participant_lost(&pid("script"), 2);
     assert_eq!((f.auth.mode(), f.auth.epoch()), (Mode::Armed, epoch));
     assert_eq!(f.auth.mode_reason().code, ReasonCode::LastRelease);
@@ -197,18 +194,13 @@ fn presence_is_heartbeats_and_a_lost_robot_stays_in_the_roster() {
         }
     };
     let everyone = ["robot", "policy", "operator", "script", "viewer"];
-    // A liveliness delete is only a hint: a heartbeat after it keeps the
-    // participant present.
     f.auth.presence_hint(&pid("robot"), 10);
     beat(&mut f, &everyone, 50);
     assert!(f.auth.expire(140).is_empty());
     beat(&mut f, &everyone, 140);
-    // Without one, a robot is lost a lease grace after the hint.
     f.auth.presence_hint(&pid("robot"), 150);
     beat(&mut f, &everyone[1..], 200);
     f.auth.expire(251);
-    // Only the robot stops: its lease ends and it is held; the session
-    // has no lease left, so it is ARMED.
     assert_eq!(f.auth.mode(), Mode::Armed);
     assert_eq!(
         f.auth.held(&pid("robot")).map(|r| (r.code, r.by.as_str())),
@@ -231,11 +223,9 @@ fn presence_is_heartbeats_and_a_lost_robot_stays_in_the_roster() {
         Fixture::status(f.run("robot", Command::Clear, 252)),
         CtlStatus::NotAttached
     );
-    // Re-attaching makes it present again.
     let back = attach("robot", vec![Role::Embodiment], PriorityClass::Scripted);
     f.run("robot", back, 260).expect("re-attach");
     assert!(f.auth.is_attached(&pid("robot")));
-    // Anyone silent past the presence grace is lost; a non-robot leaves.
     f.auth.expire(260 + 1_000_000_001);
     let view = f.auth.snapshot(Vec::new(), 0);
     assert!(view.participant(&pid("viewer")).is_none());

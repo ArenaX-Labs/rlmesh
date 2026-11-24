@@ -24,12 +24,8 @@ import rlmesh
 import rlmesh.adapters as adapt
 from rlmesh.numpy import Model, RemoteEnv
 
-# --- 1. The environment, written without any knowledge of a model. ----------
-
 
 class CubePickEnv:
-    """A toy 5-step arm env: wrist camera + end-effector state, 7-dim action."""
-
     def __init__(self) -> None:
         self.metadata: dict[str, Any] = {"render_modes": []}
         self.observation_space = gym.spaces.Dict(
@@ -75,7 +71,6 @@ class CubePickEnv:
         return None
 
 
-# The env's tags: roles plus the facts the spaces cannot carry.
 ENV_TAGS = adapt.EnvTags(
     observation={
         "wrist_rgb": adapt.ImageTag(adapt.IMAGE_PRIMARY),
@@ -93,12 +88,8 @@ ENV_TAGS = adapt.EnvTags(
 )
 
 
-# --- 2. The model, written without any knowledge of an environment. ---------
-
 MODEL_SPEC = adapt.ModelSpec(
     input={
-        # This checkpoint wants a 224x224 image, a list state with rot6d rotation,
-        # and the instruction under its own key. Each key is a payload slot.
         "image": adapt.Image(adapt.IMAGE_PRIMARY, size=224),
         "proprio": adapt.Concat(
             adapt.EEF_POS,
@@ -117,29 +108,23 @@ MODEL_SPEC = adapt.ModelSpec(
 
 
 def predict(payload: dict[str, Any]) -> Any:
-    """The policy. ``payload`` already arrives in MODEL_SPEC's format."""
     assert payload["image"].shape == (224, 224, 3)
     assert len(payload["proprio"]) == 10  # pos(3) + rot6d(6) + grip(1)
-    # A real policy runs the network here; we return a zero 10-dim action.
     return np.zeros(MODEL_SPEC.output.dim, dtype=np.float32)
 
 
 def main() -> None:
     env = CubePickEnv()
-    # Publish the tags in the served contract (validated against the
-    # env's spaces up front).
     server = rlmesh.EnvServer(env, ":0", tags=ENV_TAGS)
     server.start()
     try:
-        # The adapter the model would get against this env, for illustration
-        # (the client closes first: an open RemoteEnv holds the env's lease).
+        # Close the client first: an open RemoteEnv holds the env's lease.
         with RemoteEnv(server.address) as client:
             contract = client.env_contract
         print("Resolved adapter:")
         print(adapt.resolve_from_contract(contract, MODEL_SPEC).explain())
         print("\nRunning one episode:")
 
-        # No glue: the adapter is resolved from the env's published tags.
         Model(predict, spec=MODEL_SPEC).run(server.address, episodes=1)
 
         print("\nDone.")

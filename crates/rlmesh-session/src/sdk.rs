@@ -1,9 +1,4 @@
 //! What every language binding shares (Python's extension, the Node addon):
-//! the embedded host, joining as a robot (directly, or from the home
-//! daemon's lobby), a policy or a recorder, closing them, running scenes,
-//! publishing a robot's fields, a due command's fields, the run-time
-//! options, the loop timer and the names errors and counters carry. A
-//! binding only converts values to and from its language.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,7 +53,6 @@ impl ErrorKind {
     }
 }
 
-/// `CamelCase` as `snake_case` (or `SCREAMING_CASE`).
 fn snake(camel: &str, upper: bool) -> String {
     let mut out = String::with_capacity(camel.len() + 4);
     for (i, c) in camel.chars().enumerate() {
@@ -274,7 +268,6 @@ impl EmbeddedHost {
     }
 
     /// Stops the host, if this process runs it (participants see it leave).
-    /// Idempotent.
     pub async fn close(&self) -> Result<(), SessionError> {
         if let Some(mut placed) = self.placed.lock().await.take() {
             placed.close().await?;
@@ -283,9 +276,9 @@ impl EmbeddedHost {
     }
 }
 
-/// Joins as robot `name` and declares `robot_json` (the authored map).
-/// Every robot `name` this process joins to one host shares its e-stop
-/// latch, so a stop outlives a rejoin until it is cleared locally.
+/// Joins as robot `name` and declares `robot_json` (the authored map). Every
+/// robot `name` this process joins to one host shares its e-stop latch, so a
+/// stop outlives a rejoin until it is cleared locally.
 pub async fn connect_robot(
     address: &SessionAddress,
     name: &str,
@@ -312,14 +305,9 @@ pub async fn connect_robot(
 /// [`keep_joined`] when it rejoins, emptied when it closes.
 pub type RobotSlot = Arc<std::sync::Mutex<Option<Arc<Robot>>>>;
 
-/// How long each rejoin waits for the host.
 const REJOIN_ATTACH: Duration = Duration::from_secs(5);
-/// How often the robot's presence is checked.
 const PRESENCE_CHECK: Duration = Duration::from_millis(250);
 
-/// Whether the host has dropped `robot` (its roster entry gone or absent,
-/// or the host itself gone); `None` when another process took its name
-/// over, which it never takes back.
 fn dropped(robot: &Robot) -> Option<bool> {
     let participant = robot.participant();
     if participant.host_lost().is_some() {
@@ -339,11 +327,10 @@ fn dropped(robot: &Robot) -> Option<bool> {
     })
 }
 
-/// Keeps the robot in `slot` joined to the session at `address`: when the
-/// host drops it (a Wi-Fi gap longer than its presence grace) or goes away
-/// and comes back, it joins again as `name`, declares `robot_json` and is
-/// swapped into `slot`, so the binding's next call uses it. Runs until the
-/// slot empties (the robot closed) or another process takes the name over.
+/// Keeps the robot in `slot` joined to the session at `address`: when the host
+/// drops it or goes away and comes back, it joins again as `name`, declares
+/// `robot_json` and is swapped into `slot`, so the binding's next call uses it.
+/// Runs until the slot empties or another process takes the name over.
 pub fn keep_joined(
     slot: RobotSlot,
     address: SessionAddress,
@@ -372,8 +359,6 @@ pub fn keep_joined(
                 Some(true) => {}
             }
             tracing::warn!(robot = %name, "the host dropped this robot: joining again");
-            // Its old presence would refuse the new one; the binding keeps
-            // the old robot (its edge holds, then goes safe) until then.
             robot.participant().withdraw();
             drop(robot);
             loop {
@@ -403,15 +388,14 @@ pub fn keep_joined(
 }
 
 #[cfg(feature = "fleet")]
-/// How long a robot from the lobby waits for its run's host.
 const RUN_ATTACH: Duration = Duration::from_secs(10);
 
 #[cfg(feature = "fleet")]
 /// Waits in the lobby of the home daemon `home` names (`None`: this
 /// machine's) as robot `name` until a run assigns it, then joins the run and
-/// declares `robot_json`: the robot, and its run's session. A refused join
-/// (its pin, another map) is reported to the daemon by the next wait, which
-/// goes on waiting; `timeout` (`None`: none) bounds it all.
+/// declares `robot_json`: the robot, and its run's session. A refused join is
+/// reported to the daemon by the next wait, which goes on waiting; `timeout`
+/// (`None`: none) bounds it all.
 ///
 /// # Errors
 /// What waiting, attaching or declaring failed with, a refusal aside.
@@ -424,9 +408,6 @@ pub async fn robot_from_lobby(
     robot_from_lobby_at(&find_home(home).await?, name, robot_json, timeout).await
 }
 
-/// The e-stop latch of robot `name` in this process, for the host whose
-/// key is `home`: one per robot process, so it outlives each
-/// participant (a rejoin, a lobby's run) until cleared locally.
 fn process_latch(home: [u8; 32], name: &str) -> Arc<crate::participant::LocalLatch> {
     type Latches =
         std::collections::HashMap<([u8; 32], String), Arc<crate::participant::LocalLatch>>;
@@ -516,7 +497,6 @@ pub fn leave_name(leave: &Leave) -> String {
 }
 
 #[cfg(feature = "fleet")]
-/// A run's stages, as [`run_stage_name`] names them.
 const RUN_STAGES: [RunStage; 11] = [
     RunStage::Checking,
     RunStage::Hosting,
@@ -769,11 +749,10 @@ pub async fn bind_policy(
         .map(|(controller, _)| controller)
 }
 
-/// [`bind_policy`] for a policy that also publishes annotations: it joins
-/// as a controller and an embodiment, declares `publishes_json` (an
-/// authored map of parts, none commandable) under its own name, and
-/// returns their publishers. Its own parts are never bound to it; other
-/// policies may read them.
+/// [`bind_policy`] for a policy that also publishes annotations: it joins as a
+/// controller and an embodiment, declares `publishes_json` (an authored map of
+/// parts, none commandable) under its own name, and returns their publishers.
+/// Its own parts are never bound to it; other policies may read them.
 pub async fn bind_policy_publishing(
     address: &SessionAddress,
     name: &str,
@@ -886,12 +865,6 @@ pub async fn bind_built_policy(
     }
 }
 
-/// The refusal for a session address that is a lockstep robot's
-/// participant address: `host:port/cartpole` names session `cartpole`, which
-/// holds nothing, when it meant robot `cartpole` of the default session. Only
-/// asked of a session with no robot yet, so a policy waiting for its robot
-/// pays nothing more. This participant cannot read the default session's
-/// roster, so it asks the robot's lockstep key there instead.
 async fn lockstep_robot_named(
     address: &SessionAddress,
     participant: &crate::participant::Participant,
@@ -1039,7 +1012,6 @@ mod tests {
         let rate = Rate::new(100.0).expect("rate");
         assert_eq!(rate.next(0), (0, 0));
         assert_eq!(rate.next(5_000_000), (10_000_000, 0));
-        // 35 ms later than the next slot: three periods skipped.
         let (next, late) = rate.next(55_000_000);
         assert_eq!((next, late, rate.missed()), (50_000_000, 5_000_000, 3));
     }

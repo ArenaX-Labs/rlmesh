@@ -1,11 +1,3 @@
-"""BYO prebuilt container: ``SandboxModel(image://<tag>)`` runs the tag directly.
-
-A prebuilt image carries its own baked ``runtime.json``; the serve path must run
-the tag with no recipe build and WITHOUT ``RLMESH_BOOTSTRAP_JSON`` (which would
-override the container's baked spec). The container hosts a session, which
-the model serves in.
-"""
-
 from __future__ import annotations
 
 from typing import Any
@@ -19,7 +11,6 @@ import rlmesh._sandbox.session as session_mod
 
 @pytest.fixture(autouse=True)
 def _session_port(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Containers publish on 40000 and serve at once."""
     monkeypatch.setattr(session_mod, "_sandbox_session_port", lambda: 40000)
     monkeypatch.setattr(session_mod, "_sandbox_host_identity", lambda: ("secret", "k"))
     monkeypatch.setattr(model_mod, "wait_serving", lambda *_args, **_kwargs: None)
@@ -40,12 +31,6 @@ class _ImageProc:
 def _serve_dispatch(
     captured: dict[str, list[str]],
 ) -> Any:
-    """Fake ``subprocess.run`` for the serve path: dispatch on argv.
-
-    ``docker image inspect`` reports the image as local (no pre-pull);
-    ``docker run -d ...`` returns the container id.
-    """
-
     def fake_run(cmd: list[str], **_kwargs: Any) -> Any:
         if cmd[:3] == ["docker", "image", "inspect"]:
             return _ImageProc()
@@ -69,7 +54,6 @@ def test_image_source_serve_starts_a_published_container(
     cmd = captured["run"]
     assert cmd[:3] == ["docker", "run", "-d"]
     assert cmd[-1] == "my-model:latest"
-    # Publishes the session's ports on loopback, and serves in it as model.
     assert "127.0.0.1:40000:40000" in cmd
     assert "RLMESH_NAME=model" in cmd
     assert "--cap-drop" in cmd and "no-new-privileges" in cmd
@@ -83,7 +67,6 @@ def test_gpus_requests_the_device_on_serve(
     captured: dict[str, list[str]] = {}
     monkeypatch.setattr(_sources.subprocess, "run", _serve_dispatch(captured))
 
-    # serve, with an int count normalized to a string
     model_mod.SandboxModel(
         "image://m:latest", runtime=rlmesh.SandboxRuntime(gpus=2)
     ).serve()

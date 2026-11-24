@@ -1,5 +1,3 @@
-// The echo env of python/rlmesh/tests/conformance/native_gate.py, for the C#
-// gate program and the Unity host's.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -48,7 +46,6 @@ static class Gate
         _ => 8,
     };
 
-    // A space and a value in it.
     static (Space, Func<Value>) BoxOf(Bound low, Bound high, long[] shape, DType dtype = DType.Float32) =>
         (new Box(low, high, shape, new() { Dtype = dtype }),
          () => new Tensor(new byte[shape.Aggregate(1L, (n, d) => n * d) * ItemSize(dtype)], shape, dtype));
@@ -63,7 +60,6 @@ static class Gate
              return value;
          });
 
-    // The gate's SPACES, by name.
     internal static (Space, Func<Value>) Space(string row) => row switch
     {
         "box_f32_bounded" => BoxOf(-1.0, 2.0, new long[] { 3 }),
@@ -94,7 +90,6 @@ static class Gate
         _ => BoxOf(-1, 1, new long[] { 3 }),
     };
 
-    // The gate's rich_info(t).
     internal static Metadata RichInfo(long t) => new()
     {
         ["nested"] = new Metadata
@@ -111,8 +106,6 @@ static class Gate
         ["is_success"] = t >= 3,
     };
 
-    /// <summary>Answers the gate's call `args` with `serve(env, address)` for
-    /// `env ROW ADDRESS`; anything else is unsupported (D-45).</summary>
     internal static int Run(string[] args, Action<IEnv, string> serve)
     {
         try

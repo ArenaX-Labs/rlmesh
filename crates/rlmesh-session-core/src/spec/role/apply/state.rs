@@ -1,5 +1,3 @@
-//! A model state input from its sources.
-
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -21,10 +19,7 @@ fn reshape(shape_spec: &[i64], len: usize) -> Result<Vec<usize>, ApplyError> {
         } else if dim < 0 {
             return Err(err(format!("invalid reshape dimension {dim}")));
         } else {
-            // checked: reshape elements come from the wire uncapped (unlike the
-            // MAX_DIM-bounded count fields), so a pathological spec can overflow
-            // usize here. With the workspace's overflow-checks=true that would
-            // panic the per-step apply path; a clean error beats an abort.
+            // checked: reshape elements are uncapped on the wire, so the product can overflow usize.
             known = known
                 .checked_mul(dim as usize)
                 .ok_or_else(|| err(format!("reshape dimensions {shape_spec:?} overflow")))?;
@@ -49,11 +44,6 @@ fn reshape(shape_spec: &[i64], len: usize) -> Result<Vec<usize>, ApplyError> {
     Ok(out)
 }
 
-/// `value * scale + offset` per element ([`convert::affine`]), each of scale
-/// and offset a scalar times/plus an optional per-axis value, then negated
-/// when `invert` and less `threshold`. The per-axis widths were checked at
-/// resolve; a runtime value of another width already failed the piece-width
-/// assertion before this runs.
 #[allow(
     clippy::too_many_arguments,
     reason = "a side's correction fields, in the order they apply"
@@ -123,8 +113,6 @@ impl StatePlan {
             }
             if let Some(fill) = piece.fill {
                 let mut value = vec![fill as f32; piece.dim.unwrap_or(0) as usize];
-                // The scalar affine was folded into `fill` at resolve; a per-axis
-                // one has no scalar to fold into and applies here.
                 apply_affine(
                     &mut value,
                     None,
@@ -138,17 +126,11 @@ impl StatePlan {
                 continue;
             }
             let mut value = read(piece)?;
-            // Slice the env field out of its leaf, before any rotation or
-            // model-side index/dim. Only a StateLayout field sets src_offset; a
-            // whole-leaf state leaves it None and reads the entire runtime value.
             if let Some(offset) = piece.src_offset {
                 let start = offset as usize;
                 let end = piece
                     .src_dim
                     .map_or(value.len(), |dim| start + dim as usize);
-                // The slice was validated against the space width at resolve time;
-                // a runtime value shorter than that is an env contract violation.
-                // Erroring beats silently feeding the model a truncated field.
                 if end > value.len() {
                     return Err(err(format!(
                         "state layout field '{}' needs indices [{start}, {end}) but the \
@@ -159,9 +141,6 @@ impl StatePlan {
                 }
                 value = value[start..end].to_vec();
             }
-            // Permute the named axes into the model's order. The env leaf's width
-            // was label-checked at join, so an index past the runtime value is an
-            // env contract violation.
             if let Some(gather) = &piece.gather {
                 let mut gathered = Vec::with_capacity(gather.len());
                 for &index in gather {
@@ -201,11 +180,6 @@ impl StatePlan {
                     *entry = (sum - f64::from(*entry)) as f32;
                 }
             }
-            // The resolved widths are the state's layout: a host-side custom
-            // encoding slices itself out of the assembled vector by them. A runtime
-            // value of another width would shift every later piece, so say so here
-            // instead of handing the model a quietly re-laid-out state (and
-            // before a per-axis affine is zipped against it).
             if let Some(width) = piece.width
                 && value.len() != width as usize
             {
@@ -216,9 +190,6 @@ impl StatePlan {
                     value.len()
                 )));
             }
-            // The model-side affine sits after the range map: `range` bridges two
-            // declared scales, `scale`/`offset` is the model's own convention
-            // (e.g. RoboTwin's `1 - 2g` gripper, a per-joint stand pose).
             apply_affine(
                 &mut value,
                 piece.scale,
@@ -230,8 +201,7 @@ impl StatePlan {
             );
             state.extend(value);
         }
-        // The container clamp sits after every part's own transforms and before
-        // the pad, so a pad slot is never clamped into a non-zero value.
+        // The container clamp sits after every part's transforms and before the pad, so a pad slot is never clamped to non-zero.
         if let Some((low, high)) = plan.clip {
             let (low, high) = (low as f32, high as f32);
             for entry in &mut state {
@@ -262,7 +232,6 @@ impl StatePlan {
     }
 }
 
-/// Affinely map values from the `src` range into the `dst` range, in `f32`.
 pub(super) fn map_range(
     value: &mut [f32],
     src: (f64, f64),
@@ -286,7 +255,6 @@ mod tests {
     use crate::spec::role::path::NodePath;
     use crate::wire::part::DType;
 
-    /// The state of `plan` over one env leaf of `values`.
     fn state(plan: &StatePlan, values: &[f32]) -> Vec<f32> {
         let tensor = plan
             .apply(&mut |_| Ok(values.to_vec()), None)
@@ -341,7 +309,6 @@ mod tests {
         assert!((values[0] + 1.0).abs() < 1e-6, "{values:?}");
         assert!(values[1].abs() < 1e-6, "{values:?}");
         assert!((values[2] - 1.0).abs() < 1e-6, "{values:?}");
-        // Padding to exactly the state's width is allowed; to less is not.
         let padded = StatePlan {
             pad_to: Some(3),
             ..plan.clone()
@@ -379,21 +346,15 @@ mod tests {
 
     #[test]
     fn reshape_dim_product_overflow_is_a_clean_error() {
-        // A pathological reshape spec overflows the usize product; it must
-        // return an ApplyError, not panic (overflow-checks=true) on the hot path.
         let err = reshape(&[i64::MAX, i64::MAX], 4).unwrap_err();
         assert!(err.to_string().contains("overflow"), "got: {err}");
     }
 
     #[test]
     fn slices_a_layout_field_out_of_a_flat_leaf() {
-        // A flat width-8 obs; the gripper field is at offset 3, width 1, then a
-        // model index picks element 0 of that field.
         let plan = StatePlan {
             placement: NodePath::root().push_key("state"),
             pieces: vec![StatePiece {
-                // A root (single-leaf) source: keyed under the reserved envelope
-                // key, with the layout slice offset applied below.
                 source: NodePath::root(),
                 src_offset: Some(3),
                 src_dim: Some(1),

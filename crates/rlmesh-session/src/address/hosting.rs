@@ -78,7 +78,6 @@ impl Placed {
 
     /// Stops the host, if this process runs it (participants see it leave).
     pub async fn close(&mut self) -> Result<(), SessionError> {
-        // Before the port is let go: a host that takes it next leaves its own.
         self.key_file.take();
         if let Some((host, transport)) = self.hosted.take() {
             forget_local_host(&self.address);
@@ -90,8 +89,6 @@ impl Placed {
 }
 
 impl Drop for Placed {
-    /// A placed session dropped unclosed (its owner cancelled or unwound)
-    /// still stops the host it runs, on the runtime it is dropped on.
     fn drop(&mut self) {
         self.key_file.take();
         let Some((host, transport)) = self.hosted.take() else {
@@ -107,10 +104,6 @@ impl Drop for Placed {
     }
 }
 
-/// The session hosts this process runs, by the address participants join
-/// them at: the transport and the key. A participant joining one rides its
-/// sessions instead of a loopback link: a link has a lease, which a starved
-/// process can let lapse, and then loses the host it is running itself.
 type LocalHosts = HashMap<SocketAddr, (Transport, AddressKey)>;
 
 pub(super) fn local_hosts() -> &'static std::sync::Mutex<LocalHosts> {
@@ -126,8 +119,6 @@ pub(super) fn local_host(base: SocketAddr) -> Option<Transport> {
         .map(|(transport, _)| Transport::ridden(transport))
 }
 
-/// The host this process runs whose key is `key`, however the address
-/// naming it is spelled (a container's published port, a LAN address).
 pub(super) fn local_host_keyed(key: &AddressKey) -> Option<Transport> {
     local_hosts()
         .lock()
@@ -137,7 +128,6 @@ pub(super) fn local_host_keyed(key: &AddressKey) -> Option<Transport> {
         .map(|(transport, _)| Transport::ridden(transport))
 }
 
-/// This process stopped hosting at `address`: forget its transport.
 fn forget_local_host(address: &SessionAddress) {
     local_hosts()
         .lock()
@@ -145,15 +135,10 @@ fn forget_local_host(address: &SessionAddress) {
         .remove(&address.base);
 }
 
-/// Whether a session host answers on `base` (its listener accepts).
-/// Generous for a slow link, where a TCP connect takes a round trip; a port
-/// nothing listens on refuses at once. Asynchronous: a connect that waits
-/// out a dropped SYN must not hold the thread polling the join.
 pub(super) async fn listening(base: SocketAddr) -> bool {
     accepts(joinable(base)).await
 }
 
-/// Whether a TCP connect to `addr` succeeds within [`LISTEN_PROBE`].
 async fn accepts(addr: SocketAddr) -> bool {
     matches!(
         tokio::time::timeout(LISTEN_PROBE, tokio::net::TcpStream::connect(addr)).await,
@@ -161,18 +146,10 @@ async fn accepts(addr: SocketAddr) -> bool {
     )
 }
 
-/// How long [`listening`] waits for a TCP connect.
 const LISTEN_PROBE: Duration = Duration::from_secs(2);
 
-/// How long a port must keep a probe's connection open to be a session
-/// host's listener ([`holds`]).
 const HOLD_PROBE: Duration = Duration::from_millis(250);
 
-/// Whether `addr` accepts a TCP connect and keeps it open for
-/// [`HOLD_PROBE`]. A session host's listener waits for the client to speak;
-/// a port forwarder whose target does not listen yet (a container runtime's
-/// proxy in front of a container still starting) accepts and closes at once,
-/// which fails every link as fast as a refusal does.
 async fn holds(addr: SocketAddr) -> bool {
     use tokio::io::AsyncReadExt as _;
     let connect = tokio::time::timeout(LISTEN_PROBE, tokio::net::TcpStream::connect(addr));
@@ -186,22 +163,10 @@ async fn holds(addr: SocketAddr) -> bool {
     )
 }
 
-/// How many rounds a host listening at its base may refuse every link
-/// before [`open_client`] calls it [`refused_link`]: a second round rules
-/// out a host still opening its listener.
 const REFUSED_ROUNDS: u32 = 2;
 
-/// How long one attempt at a link may take before [`open_client`] gives up
-/// on it and tries again, whatever the join's own deadline: an open whose
-/// handshake reply never comes (a lost segment, a host that dropped it) is
-/// not left waiting out a join timeout of many minutes. A slowed link opens
-/// its four classes in a few seconds.
 const OPEN_ATTEMPT: Duration = Duration::from_secs(15);
 
-/// A host that listens at `base` but refused every link offered it: the
-/// key this participant joins with is not that host's (a wrong or stale
-/// one, or none where it gates links). Final, unlike a host that does not
-/// listen yet: retrying with the same key cannot link.
 pub(crate) fn refused_link(base: SocketAddr) -> SessionError {
     SessionError::Rejected(crate::wire::CtlError::new(
         crate::wire::CtlStatus::Unauthenticated,
@@ -213,26 +178,18 @@ pub(crate) fn refused_link(base: SocketAddr) -> SessionError {
     ))
 }
 
-/// What a peer that is no session host said: an HTTP/2 server (a gRPC one,
-/// as RLMesh 0.1 serves), or something else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Foreign {
     Http2,
     Other,
 }
 
-/// The HTTP/2 client connection preface.
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
-/// How long a join runs before [`open_client`] probes its peer: a healthy
-/// join is done by then and never sends a session host a stray preface.
 pub(super) const PROBE_AFTER: Duration = Duration::from_secs(1);
 
-/// How long a peer gets to answer an HTTP/2 preface ([`probe`]).
 const PREFACE_PROBE: Duration = Duration::from_secs(1);
 
-/// What `head`, the first bytes a peer sent, says it is: a SETTINGS frame on
-/// stream 0 opens every HTTP/2 server's side of a connection.
 pub(crate) fn foreign(head: &[u8]) -> Foreign {
     match head {
         [_, _, _, 0x04, _, 0, 0, 0, 0, ..] => Foreign::Http2,
@@ -240,7 +197,6 @@ pub(crate) fn foreign(head: &[u8]) -> Foreign {
     }
 }
 
-/// Up to 9 bytes `stream` sends within `within` (an HTTP/2 frame header).
 async fn first_bytes(stream: &mut tokio::net::TcpStream, within: Duration) -> Vec<u8> {
     use tokio::io::AsyncReadExt as _;
     let mut head = [0; 9];
@@ -255,11 +211,6 @@ async fn first_bytes(stream: &mut tokio::net::TcpStream, within: Duration) -> Ve
     head[..read].to_vec()
 }
 
-/// Whether the peer at `addr` is no session host, and what it is, by what
-/// it answers an HTTP/2 preface with: an HTTP/2 server its SETTINGS (sent
-/// at once, spoken to or not), another server whatever it answers garbage
-/// with. A session host says nothing: it reads a frame that never
-/// completes. `None`: silent, as a session host is.
 async fn probe(addr: SocketAddr) -> Option<Foreign> {
     use tokio::io::AsyncWriteExt as _;
     let connect = tokio::time::timeout(LISTEN_PROBE, tokio::net::TcpStream::connect(addr));
@@ -269,9 +220,6 @@ async fn probe(addr: SocketAddr) -> Option<Foreign> {
     (!head.is_empty()).then(|| foreign(&head))
 }
 
-/// `error`, unless the peer at `base` is no session host, when it is
-/// [`not_session`]: a join that fails before or without linking (no key to
-/// link with) still names a 0.1 server rather than the missing key.
 pub(super) async fn or_not_session(base: SocketAddr, error: SessionError) -> SessionError {
     if !listening(base).await {
         return error;
@@ -282,7 +230,6 @@ pub(super) async fn or_not_session(base: SocketAddr, error: SessionError) -> Ses
     }
 }
 
-/// The failure of a join whose peer at `base` is no session host.
 pub(crate) fn not_session(base: SocketAddr, foreign: Foreign) -> SessionError {
     SessionError::NotSession(match foreign {
         Foreign::Http2 => format!(
@@ -309,29 +256,6 @@ pub async fn connect(base: SocketAddr, timeout: Duration) -> Result<Transport, S
         })
 }
 
-/// Joins the host at `base` as a Zenoh client by `deadline`, presenting
-/// `link` on any network. Whether a host gates its links isn't known from
-/// its address: a launched or loopback host gates every link, and one bound
-/// beyond loopback otherwise (`insecure`, rlmeshd's LAN listener) gates
-/// none, since Zenoh can't gate one listener and not another, and refuses a
-/// password it never asked for. The handshake that follows authenticates
-/// the host either way.
-///
-/// Once the host listens, each round makes one attempt with the password and
-/// one without (only the latter with no `link`), each allowed until
-/// `deadline` or [`OPEN_ATTEMPT`], whichever comes first, so a slow host is
-/// never cut short and a lost handshake is tried again. A refusal comes back
-/// within a round trip, a slow link only later: an attempt that fails before
-/// its bound was refused. A host listening at `base` that refuses every
-/// attempt, round after round, gates its links with another key:
-/// [`refused_link`], final. A port that drops a connection as soon as it
-/// accepts it is no such host ([`holds`]): the join keeps trying. Running
-/// out of time is a timeout (a Zenoh error), which a retry may get past.
-///
-/// A peer that is no session host fails the join as [`not_session`], final:
-/// one that answers an HTTP/2 preface ([`probe`]: beside a join still open
-/// after [`PROBE_AFTER`], and after a join that fails, so a healthy join
-/// opens no extra connection).
 pub(super) async fn open_client(
     base: SocketAddr,
     link: Option<LinkAuth>,
@@ -351,8 +275,6 @@ pub(super) async fn open_client(
         biased;
         joined = join_client(base, link, deadline) => match joined {
             Ok(transport) => Ok(transport),
-            // A peer that refused the join before the probe ran (a key it
-            // can't find) may be no session host at all: ask it first.
             Err(error) => Err(or_not_session(base, error).await),
         },
         foreign = delayed => Err(not_session(base, foreign)),
@@ -364,9 +286,6 @@ async fn join_client(
     link: Option<LinkAuth>,
     deadline: tokio::time::Instant,
 ) -> Result<Transport, SessionError> {
-    // One attempt, as Zenoh clients make, bounded by `until`: Zenoh's own
-    // handshake timeout is lifted to it, so it never ends a slow open early,
-    // which would read as a refusal.
     let open = |link, until: tokio::time::Instant| {
         let left = until.saturating_duration_since(tokio::time::Instant::now());
         let tuning = TransportTuning {
@@ -397,7 +316,6 @@ async fn join_client(
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let mut last = None;
-        // Whether every attempt failed before its bound: refused, not slow.
         let mut answered = true;
         for attempt in attempts {
             let until = deadline.min(tokio::time::Instant::now() + OPEN_ATTEMPT);
@@ -415,8 +333,6 @@ async fn join_client(
         if tokio::time::Instant::now() >= deadline {
             return Err(last.unwrap_or_else(|| SessionError::Zenoh("no answer in time".into())));
         }
-        // Only a listener that holds a connection open refused the link: a
-        // forwarder in front of a host still starting drops it as quickly.
         let by_host = answered
             && tokio::time::timeout_at(deadline, holds(joinable(base)))
                 .await
@@ -434,19 +350,11 @@ async fn join_client(
 /// keys (or the ones its launcher passed in [`HOST_IDENTITY_VAR`]): the
 /// returned address carries them, the invite for other processes.
 ///
-/// It listens on loopback only unless `insecure`,
-/// or a launcher passed its keys (a sandbox's container, whose published
-/// ports its launcher's participants dial with them, from this machine or
-/// another): LAN sessions are rlmeshd's. On loopback, and when launched on
-/// any interface, every link must present the password the key derives, so
-/// only holders of the keyed address link at all. An `insecure` host beyond
-/// loopback gates no link: Zenoh gates every listener of a router or none,
-/// and a board's zenoh-pico has no `usrpwd`, so there the handshake alone
-/// admits, as on any LAN link.
-///
-/// It offers boards the datagram path as [`BOARD_DATA_VAR`](crate::host::BOARD_DATA_VAR) says, else as
-/// [`BoardData::default`] does, on UDP at `base`'s port number; with `udp`,
-/// a port that won't open leaves them on TCP.
+/// It listens on loopback only, unless `insecure` or a launcher passed its keys. On loopback,
+/// and when launched on any interface, every link must present the password the key derives;
+/// an `insecure` host beyond loopback gates no link, and the handshake alone admits. Boards
+/// are offered the datagram path as [`BOARD_DATA_VAR`](crate::host::BOARD_DATA_VAR) says, else
+/// as [`BoardData::default`] does, on UDP at `base`'s port number.
 pub async fn host_at(
     base: SocketAddr,
     name: &str,
@@ -542,7 +450,6 @@ async fn serve_at(
     options: &HostingOptions,
     #[cfg(feature = "record")] rolling: Option<crate::record::Rolling>,
 ) -> Result<Placed, SessionError> {
-    // Refused before anything listens.
     let board_data = options.board_data()?;
     let launched = launched_identity()?;
     if !base.ip().is_loopback() && !insecure && launched.is_none() {
@@ -587,8 +494,6 @@ async fn serve_at(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(address.base, (transport.clone(), key.clone()));
-    // A launched host's key is its launcher's to hand out; one bound beyond
-    // loopback is joined from elsewhere, by its address.
     let key_file = (base.ip().is_loopback() && !launched)
         .then(|| KeyFile::write(address.base, &key))
         .flatten();
@@ -655,20 +560,10 @@ pub async fn open_listener_with(
     opened
 }
 
-/// The variable naming a directory, private to this user, for the link gate
-/// a session host writes ([`dictionary`]), ahead of every default.
 pub(crate) const RUNTIME_DIR_VAR: &str = "RLMESH_RUNTIME_DIR";
 
-/// The name prefix of the directory a link gate gets of its own in the
-/// system temp directory.
 const PRIVATE_DIR_PREFIX: &str = ".rlmesh-link-";
 
-/// Writes the `user:password` file a gated host's Zenoh reads at open; the
-/// caller removes it right after ([`discard_dictionary`]). It holds the
-/// link password, so it lives only where no other user can read it or plant
-/// a link: [`RUNTIME_DIR_VAR`], else the user's runtime or cache directory,
-/// else a fresh directory of its own in the system temp directory (a
-/// container with no home and a read-only root has neither of the others).
 fn dictionary(password: &zeroize::Zeroizing<String>) -> Result<std::path::PathBuf, SessionError> {
     static OPENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = OPENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -693,7 +588,6 @@ fn dictionary(password: &zeroize::Zeroizing<String>) -> Result<std::path::PathBu
     )
 }
 
-/// `rlmesh` in the user's runtime directory, then in their cache directory.
 fn default_runtime_dirs() -> impl Iterator<Item = std::path::PathBuf> {
     [dirs::runtime_dir(), dirs::cache_dir()]
         .into_iter()
@@ -701,9 +595,6 @@ fn default_runtime_dirs() -> impl Iterator<Item = std::path::PathBuf> {
         .map(|dir| dir.join("rlmesh"))
 }
 
-/// The directories, private to this user, a host's files for this user's
-/// other processes go in, in order: [`RUNTIME_DIR_VAR`] alone when set,
-/// else [`default_runtime_dirs`].
 pub(super) fn runtime_dirs() -> Vec<std::path::PathBuf> {
     match std::env::var_os(RUNTIME_DIR_VAR) {
         Some(dir) => vec![dir.into()],
@@ -711,8 +602,6 @@ pub(super) fn runtime_dirs() -> Vec<std::path::PathBuf> {
     }
 }
 
-/// Writes the link gate `name` into the first of `dirs` that takes it, else
-/// into a private directory of its own in `temp`.
 fn gate_in(
     dirs: impl IntoIterator<Item = std::path::PathBuf>,
     temp: &std::path::Path,
@@ -742,9 +631,6 @@ fn gate_in(
     })
 }
 
-/// A new directory in `temp` that only this user can enter, under a name no
-/// one can predict. Created rather than opened, so whatever another user
-/// planted under that name (a link) is refused, never followed.
 fn private_temp_dir(temp: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     let mut random = [0_u8; 16];
     rlmesh_session_core::crypto::Rng::fill_bytes(&mut crate::host::OsRng, &mut random)
@@ -761,8 +647,6 @@ fn private_temp_dir(temp: &std::path::Path) -> std::io::Result<std::path::PathBu
     Ok(dir)
 }
 
-/// Removes a link gate [`dictionary`] wrote, with the directory it made of
-/// its own for it.
 fn discard_dictionary(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
     if let Some(dir) = path.parent().filter(|dir| {
@@ -774,11 +658,10 @@ fn discard_dictionary(path: &std::path::Path) {
 }
 
 /// Reaches the session `address` names by the hosting rule: joins the local
-/// host on [`well_known_port`] (or on the explicit local port) when one
-/// listens, else hosts the session in this process there; a bind that
-/// loses a race joins the winner. Another machine's host is joined. Leases
-/// in a session this process hosts lapse `lease_grace` after their holder's
-/// last heartbeat.
+/// host on [`well_known_port`] (or the address's explicit local port) when one
+/// listens, else hosts the session in this process there; a bind that loses a
+/// race joins the winner. Another machine's host is joined. Leases in a session
+/// this process hosts lapse `lease_grace` after their holder's last heartbeat.
 pub async fn place(address: &Address, lease_grace: Duration) -> Result<Placed, SessionError> {
     place_with(address, lease_grace, &HostingOptions::default()).await
 }
@@ -816,14 +699,11 @@ pub async fn place_with(
             }
             base
         }
-        // An explicit port: hosted here, unless another process (or this
-        // one) already holds it.
         Placement::Host(base) if base.port() != 0 && listening(base).await => return join(base),
         Placement::Host(base) => base,
     };
     match host_at_with(base, name, lease_grace, address.insecure, options).await {
         Ok(placed) => Ok(placed),
-        // Another process holds the port: join it.
         Err(_) if base.port() != 0 && listening(base).await => join(base),
         Err(err) => Err(err),
     }
@@ -837,15 +717,12 @@ mod tests {
 
     use super::*;
 
-    /// Set in the child process [`gate_without_home`] runs.
     const CHILD: &str = "RLMESH_TEST_LINK_GATE_CHILD";
 
     fn mode(path: &Path) -> u32 {
         std::fs::metadata(path).expect("stat").permissions().mode() & 0o777
     }
 
-    /// A path no directory can be made under, whoever runs the test: a
-    /// plain file stands where the directory would.
     fn blocked(scratch: &Path, name: &str) -> std::path::PathBuf {
         let path = scratch.join(name);
         std::fs::write(&path, b"").expect("write a blocking file");
@@ -899,8 +776,6 @@ mod tests {
         assert!(error.to_string().contains(RUNTIME_DIR_VAR), "{error}");
     }
 
-    /// The child half of [`gate_without_home`]: hosts on loopback, which
-    /// writes the gate, in whatever environment the parent gave it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn gate_child() {
         if std::env::var_os(CHILD).is_none() {
@@ -947,8 +822,6 @@ mod tests {
 
     const KEYLESS_CHILD: &str = "RLMESH_TEST_KEYLESS_CHILD";
 
-    /// The child half of [`a_keyless_join_takes_a_key_only_for_a_loopback_host`]:
-    /// runs with a scratch rlmeshd state directory holding a `local` key.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn keyless_child() {
         use crate::address::credentials::credential;
@@ -964,7 +837,6 @@ mod tests {
         .expect("the scratch daemon key")
         .parse()
         .expect("a key");
-        // A host this process runs beyond loopback (as a launched container's is).
         let wide = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
         let mut host = host_at(wide, "lan", Duration::from_millis(250), true)
             .await
@@ -972,19 +844,15 @@ mod tests {
         let port = host.address.base.port();
         let hosted = host.address.key.clone().expect("hosted key");
         let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-        // Dialed on loopback, a keyless join finds this process's own key...
         assert_eq!(
             credential(loopback, None).expect("hosted key"),
             hosted.credential()
         );
-        // ...and for a loopback port nothing here hosts, rlmeshd's.
         let other = SocketAddr::from((Ipv4Addr::LOCALHOST, port.wrapping_add(7)));
         assert_eq!(
             credential(other, None).expect("daemon key"),
             daemon.credential()
         );
-        // Dialed at any other address, the same host, the same port: no key
-        // stands in, so the join is refused before it reaches the host.
         let remote = SocketAddr::from(([192, 0, 2, 7], port));
         let refused = credential(remote, None).expect_err("no key beyond loopback");
         assert_eq!(
@@ -992,8 +860,6 @@ mod tests {
             Some(CtlStatus::Unauthenticated),
             "{refused}"
         );
-        // A key the address carries is presented on any network; without
-        // one, nothing stands in for it there.
         assert_eq!(
             crate::address::link_auth(remote, Some(&hosted)).map(|link| link.password),
             Some(hosted.link_password())
@@ -1002,11 +868,6 @@ mod tests {
         host.close().await.expect("close");
     }
 
-    /// Whether a join without a key is accepted is decided by the joining
-    /// process alone, from the address it dials: on loopback it may use a
-    /// key it already holds (a host it runs, rlmeshd's 0600 file); beyond
-    /// loopback, none. The host never waives the handshake for anyone
-    /// (`an_embedded_host_stays_on_loopback_and_links_only_with_its_key`).
     #[test]
     fn a_keyless_join_takes_a_key_only_for_a_loopback_host() {
         let scratch = tempfile::tempdir().unwrap();
@@ -1061,7 +922,6 @@ mod tests {
         let text = host_without_home(&blocked_temp, &cache, Some(&runtime));
         assert!(!text.contains("panicked"), "{text}");
         assert!(runtime.is_dir());
-        // Only the (empty) directory its key file was in is left.
         let left: Vec<_> = std::fs::read_dir(&runtime)
             .unwrap()
             .map(|entry| entry.unwrap().file_name())

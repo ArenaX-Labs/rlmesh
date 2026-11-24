@@ -1,5 +1,3 @@
-"""``rlmesh.realtime.parts`` builds the robot map's plain dicts, key for key."""
-
 from __future__ import annotations
 
 import json

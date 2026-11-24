@@ -1,9 +1,5 @@
-//! Pairing over the network: a machine's (the laptop's side,
-//! [`pair`]; the host's pairing endpoint, [`PairService`]; the host file a
-//! paired machine keeps, [`HostFile`], which its participants attach with,
-//! [`paired_credential`]), and a browser token's, whose key
-//! stays on the machine whose gateway serves the browser, beside a hash of
-//! the token ([`BrowserToken`]).
+//! Pairing over the network: a machine's ([`pair`], [`PairService`],
+//! [`HostFile`], [`paired_credential`]) and a browser token's.
 
 use std::path::{Path, PathBuf};
 
@@ -164,7 +160,6 @@ impl BrowserToken {
     }
 }
 
-/// The `[browsers]` table of the file at `path` (none yet: empty).
 fn read_browsers(path: &Path) -> Result<toml::Table, SessionError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => Zeroizing::new(text),

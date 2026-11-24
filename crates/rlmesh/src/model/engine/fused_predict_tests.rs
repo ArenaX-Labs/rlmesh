@@ -1,5 +1,3 @@
-//! Corner selection, lane math and chunk capping, driven by a counting model.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rlmesh_adapters::v1::Value;
@@ -10,11 +8,6 @@ use super::*;
 use crate::Error;
 use crate::model::types::ModelRouteContext;
 
-/// Counts corner calls and emits `native_chunk`-frame `Value::List` chunks
-/// from the chunk corners (or single Numbers from the plain corners), so
-/// corner selection, lane math, and chunk capping are observable without an
-/// adapter resolver. `short` drops one batched output to exercise the
-/// lane-count guard.
 struct CountingPredict {
     batch: bool,
     chunk: bool,
@@ -25,7 +18,6 @@ struct CountingPredict {
     chunk_calls: AtomicUsize,
     batch_calls: AtomicUsize,
     chunk_batch_calls: AtomicUsize,
-    /// The row-aligned episode ids each batched-corner call was handed.
     batched_ids: Mutex<Vec<Vec<String>>>,
 }
 
@@ -128,7 +120,6 @@ fn lanes(count: usize) -> Vec<Value> {
     (0..count).map(|lane| Value::Number(lane as f64)).collect()
 }
 
-/// Row-aligned episode identity for `count` lanes: `ep0..ep{count-1}`.
 fn episodes(count: usize) -> Vec<EpisodeInfo> {
     (0..count)
         .map(|lane| EpisodeInfo {
@@ -183,9 +174,6 @@ fn dispatch_horizon_one_uses_plain_batch() {
     assert!(frames.iter().all(|lane| lane.len() == 1));
 }
 
-/// The chunk-preserving corner precedence a declined fusion falls back to:
-/// a chunk + batch model (no batched chunk corner) at horizon > 1 keeps its
-/// per-lane chunk corner and full replay frames.
 #[test]
 fn dispatch_horizon_gt_one_prefers_per_lane_chunk_over_batch() {
     let counting = CountingPredict::new(true, true, false, 10, false);
@@ -230,8 +218,6 @@ fn dispatch_reports_lane_count_mismatch() {
     );
 }
 
-/// The batched corners see the SAME row-aligned episode identity the per-lane
-/// ones do: a fused batch is N independent episodes, so identity is per row.
 #[test]
 fn batched_corners_receive_row_aligned_episodes() {
     let counting = CountingPredict::new(true, false, true, 10, false);
@@ -265,8 +251,6 @@ fn batched_corners_receive_row_aligned_episodes() {
     );
 }
 
-/// A request whose episode rows do not match its lanes is malformed: fail
-/// rather than mis-attribute a lane's state to another episode.
 #[test]
 fn dispatch_rejects_episode_rows_that_do_not_match_the_lanes() {
     let counting = CountingPredict::new(true, false, false, 10, false);
@@ -289,9 +273,6 @@ fn dispatch_rejects_episode_rows_that_do_not_match_the_lanes() {
     assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 0);
 }
 
-/// The behavior-parity fusion gate: a bucket fuses ONLY when the batched
-/// corner it would run is the corner a direct predict picks, so grouping
-/// never changes which model function runs.
 #[test]
 fn bucket_fuses_only_when_the_direct_corner_is_batched() {
     let chunk_batch = CountingPredict::new(true, true, true, 10, false);
@@ -323,9 +304,6 @@ fn bucket_fuses_only_when_the_direct_corner_is_batched() {
     assert!(!bucket_fuses(per_lane_only.as_ref(), 4));
 }
 
-/// A fused corner failure is cloned per group (not rebuilt from its
-/// message), so the model's recoverable flag survives to the wire and the
-/// annotation carries the group's own input signature.
 #[test]
 fn fused_error_broadcast_preserves_recoverability() {
     let error = Error::model_recoverable("transient OOM, retry");
@@ -342,8 +320,6 @@ fn fused_error_broadcast_preserves_recoverability() {
     }
 }
 
-/// Spec-less routes bypass the engine corners entirely: each group serves
-/// through the preserved raw path, one result per group, in order.
 #[tokio::test]
 async fn grouped_predict_serves_spec_less_groups_per_group() {
     let counting = CountingPredict::new(true, false, true, 10, false);

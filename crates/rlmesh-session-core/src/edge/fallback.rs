@@ -1,61 +1,42 @@
-//! The fallback ladder of one command group, run once per control tick on
-//! edge-local time.
+//! The fallback ladder of one command group, run once per control tick on edge-local time.
 //!
-//! A group is one or more commandable parts that drive the same actuators
-//! (an ungrouped part is a group of one). The host leases at most one member
-//! at a time; only that **active** member produces output, and every other
-//! member's queue is purged on every tick.
+//! A group is one or more commandable parts that drive the same actuators (an ungrouped part is
+//! a group of one). The host leases at most one member at a time; only that **active** member
+//! produces output, and every other member's queue is purged on every tick.
 //!
-//! - `Idle`: no lease, or nothing applied under it yet. The wait timer is
-//!   not armed, so a fresh grant does not trip SAFE before the first chunk.
-//!   A preempting holder's wait isn't timed from the old holder's last
-//!   action either: the edge holds as below, without the timeout, until its
-//!   first action.
-//! - `Driving`: an action is due and dispatched. A latched part (`latch`)
-//!   stays here on its last target once its queue runs out, for as long as
-//!   the lease that commanded it is held: no age expiry and no wait. When
+//! - `Idle`: no lease, or nothing applied under it yet. The wait timer is not armed, so a fresh
+//!   grant does not trip SAFE before the first chunk; a preempting holder's wait is not timed
+//!   from the old holder's last action either.
+//! - `Driving`: an action is due and dispatched. A latched part (`latch`) stays here on its last
+//!   target once its queue runs out, for as long as the lease that commanded it is held; when
 //!   that lease ends, the ladder below takes over, timed from then.
-//! - `Hold`: nothing valid is due. The edge waits at most `hold_max` for a
-//!   valid action. A position-type part (`hold_last`) repeats its last
-//!   dispatched target meanwhile: the robot approved that by declaring
-//!   `hold_max`, and it holds after a preemption too. Any other mode runs the
-//!   safe behaviour instead (an expired or preempted velocity or torque
-//!   command is never continued, not even for one tick), and a delta mode
-//!   dispatches nothing.
-//! - `Safe`: the safe behaviour, latched until the epoch moves on (a
-//!   session re-arm) or the host grants the group a lease newer than any
-//!   it had seen when it latched (the robot re-armed on its own: the host
-//!   grants none to a robot it holds). Entered when the wait exceeds `hold_max`, when the lease
-//!   lapses by the edge's clock, when a handover overruns `hold_max`, or
-//!   when the host says SAFE. When the active member's lease was released
-//!   (not lapsed), the ladder still holds and then runs the safe behaviour,
-//!   but unlatched: the next lease on the group resumes it.
-//! - `Estop`: the robot process latched a local e-stop
-//!   ([`Fallback::set_latch`]), or the session is in ESTOP. The
-//!   local latch comes first, ahead of having no host view at all: it works
-//!   with no network. Clearing it leaves the ladder to the host's view (an
-//!   edge with none stays Idle).
+//! - `Hold`: nothing valid is due. The edge waits at most `hold_max` for a valid action. A
+//!   position-type part (`hold_last`) repeats its last dispatched target meanwhile, after a
+//!   preemption too; any other mode runs the safe behaviour instead (an expired or preempted
+//!   velocity or torque command is never continued), and a delta mode dispatches nothing.
+//! - `Safe`: the safe behaviour, latched until the epoch moves on (a session re-arm) or the host
+//!   grants the group a lease newer than any it had seen when it latched. Entered when the wait
+//!   exceeds `hold_max`, when the lease lapses by the edge's clock, when a handover overruns
+//!   `hold_max`, or when the host says SAFE. A released (not lapsed) lease still holds and then
+//!   runs the safe behaviour, but unlatched: the next lease on the group resumes it.
+//! - `Estop`: the robot process latched a local e-stop ([`Fallback::set_latch`]), or the session
+//!   is in ESTOP. The local latch works with no network and takes precedence over having no host
+//!   view; clearing it leaves the ladder to the host's view (an edge with none stays Idle).
 //!
-//! **Handover.** When the lease moves from member A to member B, A's queue
-//! is purged and the group dispatches nothing until the robot has switched
-//! its control mode and neutralised A's target ([`Fallback::handover_done`]);
-//! if that takes longer than `hold_max`, the group goes Safe.
+//! **Handover.** When the lease moves from member A to member B, A's queue is purged and the
+//! group dispatches nothing until the robot has switched its control mode and neutralised A's
+//! target ([`Fallback::handover_done`]); if that takes longer than `hold_max`, the group goes
+//! Safe.
 //!
-//! Every deadline is absolute. The wait is measured from when the queue's
-//! coverage actually ended (the last action's slot end, its `valid_until`, or
-//! the preemption), not from when a tick first noticed: after a CPU stall the
-//! edge acts on the real elapsed time at its next tick. Behaviour *during* a
-//! full process stall cannot be bounded by the edge itself: that needs an
-//! external or device watchdog.
+//! Every deadline is absolute: the wait is measured from when the queue's coverage actually
+//! ended, so after a CPU stall the edge acts on the real elapsed time at its next tick. Behaviour
+//! during a full process stall cannot be bounded by the edge itself; that needs an external or
+//! device watchdog.
 //!
-//! **Listening.** A process that stalled was not receiving either: the
-//! chunks and lease renewals sent meanwhile reach it only after its first
-//! tick back. A runtime that sees its own ticks stall may say so
-//! ([`Fallback::set_listening`]): while it does, a dry queue or a lapsed
-//! lease holds without latching Safe. What the robot is given is exactly
-//! what `Hold` gives it (the last position target, or the safe behaviour);
-//! only the latch waits, and nothing drives under a lease the edge cannot
-//! see as live.
+//! **Listening.** A stalled process was not receiving either. A runtime that sees its own ticks
+//! stall may say so ([`Fallback::set_listening`]): while it does, a dry queue or a lapsed lease
+//! holds as in `Hold` without latching Safe, and nothing drives under a lease the edge cannot see
+//! as live.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -81,16 +62,15 @@ fn mode_index(mode: EdgeMode) -> usize {
 pub enum SafeCause {
     /// No valid action arrived within `hold_max`.
     QueueDry,
-    /// The lease expired by the edge's own clock (the host's renewals
-    /// stopped reaching it), or could no longer be timed.
+    /// The lease expired by the edge's own clock (the host's renewals stopped reaching it), or
+    /// could no longer be timed.
     LeaseLapsed,
-    /// The robot's handover between group members took longer than
-    /// `hold_max`.
+    /// The robot's handover between group members took longer than `hold_max`.
     HandoverTimeout,
     /// The host's view says SAFE.
     HostSafe,
-    /// The active member's lease was released and nothing replaced it
-    /// within `hold_max` (unlatched).
+    /// The active member's lease was released and nothing replaced it within `hold_max`
+    /// (unlatched).
     Released,
 }
 
@@ -103,8 +83,7 @@ impl SafeCause {
         )
     }
 
-    /// Its code on the wire. [`Self::HostSafe`] has none of its own: the
-    /// host's `mode_reason` says why.
+    /// Its code on the wire.
     pub fn code(self) -> ReasonCode {
         match self {
             Self::QueueDry => ReasonCode::QueueDry,
@@ -146,8 +125,8 @@ pub struct LeaseView {
     pub member: usize,
     /// The current token.
     pub token: LeaseToken,
-    /// Its conservative expiry in the edge clock; `None` when it cannot be
-    /// timed (no clock mapping).
+    /// Its conservative expiry in the edge clock; `None` when it cannot be timed (no clock
+    /// mapping).
     pub expires_ns: Option<i64>,
 }
 
@@ -191,19 +170,17 @@ pub struct Decision {
     pub mode: EdgeMode,
     /// The member the decision concerns (the active or last-driven one).
     pub member: Option<usize>,
-    /// The action to dispatch: the one due (`Driving`; under
-    /// [`Delivery::Once`] only on its first tick), or the held target
-    /// (`Hold`, position-type).
+    /// The action to dispatch: the one due (`Driving`; under [`Delivery::Once`] only on its
+    /// first tick), or the held target (`Hold`, position-type).
     pub action: Option<QueuedAction>,
     /// Whether to run the safe behaviour this tick.
     pub run_safe: bool,
     /// Set on the tick the edge went safe.
     pub went_safe: Option<SafeCause>,
-    /// Set on the tick a handover starts: the robot switches its control
-    /// mode, then calls [`Fallback::handover_done`].
+    /// Set on the tick a handover starts: the robot switches its control mode, then calls
+    /// [`Fallback::handover_done`].
     pub handover: Option<Handover>,
-    /// Why the edge is in its mode (Safe, Estop): its own cause, or the
-    /// host's.
+    /// Why the edge is in its mode (Safe, Estop): its own cause, or the host's.
     pub reason: ReasonCode,
 }
 
@@ -213,42 +190,22 @@ pub struct Fallback {
     hold_max_ns: i64,
     members: Vec<MemberLadder>,
     mode: EdgeMode,
-    /// The epoch the edge latched SAFE in.
     safe_epoch: Option<Epoch>,
-    /// The newest lease token the group had seen when it latched: a later
-    /// one is a grant after the latch, which releases it.
     safe_token: LeaseToken,
-    /// The newest lease token the group has seen.
     newest_token: LeaseToken,
     safe_cause: Option<SafeCause>,
-    /// The code of that latch (the host's for [`SafeCause::HostSafe`]).
     safe_reason: ReasonCode,
-    /// The robot process's local e-stop.
     latch: Option<ReasonCode>,
-    /// A local e-stop was latched since the last tick, or its fence holds:
-    /// no authority from before it drives again, cleared or not.
     stopped: bool,
-    /// The newest epoch seen while latched, or stopped and in ESTOP: only a
-    /// later one (the host's disarm and arm after the e-stop) releases the
-    /// fence.
     stop_epoch: Option<Epoch>,
-    /// Safe without the latch: the lease was released.
     parked: bool,
-    /// A new holder's token, until its first action is due: its wait is not
-    /// timed from the old holder's last action.
     awaiting: Option<LeaseToken>,
-    /// The last dispatched action and its member.
     last: Option<(usize, QueuedAction)>,
-    /// When valid coverage ended (edge clock), while waiting.
     dry_since_ns: Option<i64>,
-    /// The last tick a latched target was applied: it covers up to here.
     latched_ns: Option<i64>,
-    /// The member that last held the lease.
     active: Option<usize>,
-    /// A handover in progress: since when, and whether it was announced.
     handover: Option<(Handover, i64, bool)>,
     last_tick_ns: Option<i64>,
-    /// The runtime is catching up after its own stall: hold, do not latch.
     listening: bool,
     modes: [ModeStats; 5],
 }
@@ -291,12 +248,10 @@ impl Fallback {
         self.safe_cause
     }
 
-    /// Latches (`Some`, with its code) or clears the robot process's local
-    /// e-stop: from the next tick every queue is purged and the group runs
-    /// Estop until it is cleared. A clear leaves the edge idle until the
-    /// host's authority moves to a later epoch (a disarm and an arm), so a
-    /// lease from before the stop never drives again, and a latch cleared
-    /// before the next tick still purges and fences.
+    /// Latches (`Some`, with its code) or clears the robot process's local e-stop: from the
+    /// next tick every queue is purged and the group runs Estop until it is cleared. A clear
+    /// leaves the edge idle until the host's authority moves to a later epoch, so a lease from
+    /// before the stop never drives again; a latch cleared before the next tick still purges.
     pub fn set_latch(&mut self, latch: Option<ReasonCode>) {
         self.stopped |= latch.is_some();
         self.latch = latch;
@@ -315,15 +270,13 @@ impl Fallback {
             .collect()
     }
 
-    /// The robot finished a handover: the group may dispatch again. A no-op
-    /// when none is in progress (or it already timed out).
+    /// The robot finished a handover: the group may dispatch again.
     pub fn handover_done(&mut self) {
         self.handover = None;
     }
 
-    /// Whether the runtime is catching up after its own stall (see the
-    /// module docs): a dry queue or a lapsed lease then holds instead of
-    /// latching Safe. The caller bounds how long it says so.
+    /// Whether the runtime is catching up after its own stall (see the module docs): a dry
+    /// queue or a lapsed lease then holds instead of latching Safe.
     pub fn set_listening(&mut self, listening: bool) {
         self.listening = listening;
     }
@@ -333,9 +286,8 @@ impl Fallback {
         self.hold_max_ns
     }
 
-    /// Runs one tick at edge time `now_ns`: purges inactive members, fences
-    /// and drains the active member's queue against `view`, and decides
-    /// what the robot dispatches. `queues` has one queue per member.
+    /// Runs one tick at edge time `now_ns`: purges inactive members, fences and drains the
+    /// active member's queue against `view`, and decides what the robot dispatches.
     pub fn tick(
         &mut self,
         now_ns: i64,
@@ -369,8 +321,6 @@ impl Fallback {
             self.dry_since_ns = None;
             self.handover = None;
             self.parked = false;
-            // A latch cleared before any tick saw it still fences from the
-            // ESTOP it caused: the next view may already be re-armed.
             if (self.latch.is_some() || self.stopped)
                 && let Some(view) = view
             {
@@ -404,15 +354,12 @@ impl Fallback {
                 decision.reason = self.safe_reason;
                 return decision;
             }
-            // Re-armed: a fresh epoch, or a lease granted after the latch,
-            // releases it.
             self.safe_epoch = None;
             self.safe_cause = None;
         }
         if view.mode == Mode::Safe {
             return self.go_safe(view, SafeCause::HostSafe, queues);
         }
-        // Only the leased member produces output.
         let active = view.lease.map(|l| l.member);
         for (i, queue) in queues.iter_mut().enumerate() {
             if Some(i) != active {
@@ -454,8 +401,6 @@ impl Fallback {
             return self.hold(now_ns, view, None, queues);
         };
         match lease.expires_ns {
-            // Lapsed, but its renewal may be among what a stalled runtime
-            // has yet to take in: nothing drives, and the latch waits.
             Some(expires) if now_ns > expires && self.listening && self.last.is_some() => {
                 return self.hold(now_ns, view, Some(lease), queues);
             }
@@ -463,17 +408,12 @@ impl Fallback {
                 return self.go_safe(view, SafeCause::LeaseLapsed, queues);
             }
             Some(_) => {}
-            // Untimeable: harmless before anything was applied, a lapse after.
             None if self.last.is_none() => {
                 clear(queues);
                 return self.idle(Some(lease.member));
             }
             None => return self.go_safe(view, SafeCause::LeaseLapsed, queues),
         }
-        // A new holder (a preemption, a re-grant): the edge holds (or runs
-        // the safe behaviour) as before, but its wait is not timed from the
-        // old holder's last action: hold_max counts from the new holder's
-        // first one, as after a fresh grant.
         if self.last.as_ref().is_some_and(|(member, last)| {
             *member == lease.member && last.chunk.lease_token != lease.token
         }) && self.awaiting != Some(lease.token)
@@ -500,7 +440,6 @@ impl Fallback {
             );
         }
         if self.last.is_none() {
-            // A lease with nothing applied under it yet.
             return self.decision(EdgeMode::Idle, Some(lease.member), None, false);
         }
         if let Some(latched) = self.latched(now_ns, view.epoch, lease) {
@@ -509,7 +448,6 @@ impl Fallback {
         self.hold(now_ns, view, Some(lease), queues)
     }
 
-    /// A latched member's last target, while the lease it came under is held.
     fn latched(&mut self, now_ns: i64, epoch: Epoch, lease: LeaseView) -> Option<Decision> {
         let (member, last) = self.last.clone()?;
         let held = member == lease.member
@@ -523,8 +461,6 @@ impl Fallback {
         Some(self.decision(EdgeMode::Driving, Some(member), Some(last), false))
     }
 
-    /// Nothing valid is due: wait for one, at most `hold_max` from when
-    /// coverage ended.
     fn hold(
         &mut self,
         now_ns: i64,
@@ -539,8 +475,6 @@ impl Fallback {
         let current = lease.is_some_and(|l| {
             l.member == member && last.chunk.epoch == epoch && last.chunk.lease_token == l.token
         });
-        // Coverage ended when the last action's slot ended, when it went
-        // void, or (preempted, released) by now at the latest.
         let mut covered_until = last.end_ns().min(last.chunk.valid_until_ns);
         if let Some(latched) = self.latched_ns {
             covered_until = covered_until.max(latched);
@@ -549,7 +483,6 @@ impl Fallback {
             covered_until = covered_until.min(now_ns);
         }
         let dry_since = *self.dry_since_ns.get_or_insert(covered_until.min(now_ns));
-        // A new holder that sent nothing yet: no timeout from the old one's.
         let new_holder = lease.is_some_and(|l| self.awaiting == Some(l.token));
         if !new_holder && !self.listening && now_ns.saturating_sub(dry_since) >= self.hold_max_ns {
             if lease.is_some() {
@@ -567,9 +500,6 @@ impl Fallback {
         let ladder = self.ladder(member);
         let every_tick = ladder.delivery == Delivery::EveryTick;
         let repeat = ladder.hold_last && every_tick;
-        // A delta part dispatches nothing while it waits (the robot keeps
-        // its target); anything else that may not hold runs its safe
-        // behaviour.
         self.decision(
             EdgeMode::Hold,
             Some(member),
@@ -726,7 +656,6 @@ mod tests {
         )
     }
 
-    /// A latched ladder that drove one action at 0 and then 2 s of silence.
     fn latched_for_two_seconds() -> (Fallback, Vec<ActionQueue>) {
         let (mut f, mut q) = latched(5 * MS);
         q[0].splice(splice(1, 0, 1, 3 * MS), 0);
@@ -808,7 +737,6 @@ mod tests {
         for t in 1..=3 {
             assert_eq!(f.tick(t * MS, held(1), &mut q).mode, EdgeMode::Driving);
         }
-        // Coverage ends at 4 ms: hold the last target until 9 ms.
         for t in 4..9 {
             let d = f.tick(t * MS, held(1), &mut q);
             assert_eq!(d.mode, EdgeMode::Hold, "at {t} ms");
@@ -820,14 +748,12 @@ mod tests {
             (d.mode, d.went_safe),
             (EdgeMode::Safe, Some(SafeCause::QueueDry))
         );
-        // Latched: new chunks in the same epoch are not acted on.
         q[0].splice(splice(1, 10 * MS, 3, i64::MAX), 0);
         let d = f.tick(10 * MS, held(1), &mut q);
         assert_eq!(
             (d.mode, d.went_safe, d.run_safe),
             (EdgeMode::Safe, None, true)
         );
-        // Re-armed (epoch 2), new lease: idle until the first action.
         let rearmed = Some(TickView {
             epoch: Epoch(2),
             mode: Mode::Active,
@@ -854,7 +780,6 @@ mod tests {
 
     #[test]
     fn an_expired_target_is_held_only_by_a_position_part() {
-        // Ten 1 ms actions, void from 3 ms (the last seven never queue).
         for (hold_last, repeats) in [(true, true), (false, false)] {
             let (mut f, mut q) = ladder(50 * MS, hold_last);
             q[0].splice(splice(1, 0, 10, 3 * MS), 0);
@@ -865,7 +790,6 @@ mod tests {
             assert_eq!(d.mode, EdgeMode::Hold);
             assert_eq!(d.action.is_some(), repeats, "hold_last {hold_last}");
             assert_eq!(d.run_safe, !repeats);
-            // The wait counts from the expiry (3 ms), not from this tick.
             assert_eq!(f.tick(53 * MS, held(1), &mut q).mode, EdgeMode::Safe);
         }
     }
@@ -875,9 +799,6 @@ mod tests {
         let (mut f, mut q) = ladder(20 * MS, false);
         q[0].splice(splice(1, 0, 100, i64::MAX), 0);
         assert_eq!(f.tick(0, held(1), &mut q).mode, EdgeMode::Driving);
-        // Token 2 takes over: the model's queued actions are fenced and its
-        // last command is not continued; the safe behaviour runs while the
-        // edge waits for the operator.
         let d = f.tick(MS, held(2), &mut q);
         assert_eq!((d.mode, q[0].stats().fenced), (EdgeMode::Hold, 100));
         assert!(d.action.is_none() && d.run_safe);
@@ -885,7 +806,6 @@ mod tests {
         let d = f.tick(2 * MS, held(2), &mut q);
         assert_eq!(d.mode, EdgeMode::Driving);
         assert_eq!(d.action.map(|a| a.chunk.lease_token), Some(LeaseToken(2)));
-        // A position part holds its target across the same preemption.
         let (mut f, mut q) = ladder(20 * MS, true);
         q[0].splice(splice(1, 0, 100, i64::MAX), 0);
         f.tick(0, held(1), &mut q);
@@ -899,13 +819,10 @@ mod tests {
         let (mut f, mut q) = ladder(20 * MS, true);
         q[0].splice(splice(1, 0, 1, i64::MAX), 0);
         assert_eq!(f.tick(0, held(1), &mut q).mode, EdgeMode::Driving);
-        // Token 2 takes over and sends nothing for longer than hold_max: the
-        // part holds its target, and nothing latches.
         for t in [MS, 30 * MS, 60 * MS] {
             let d = f.tick(t, held(2), &mut q);
             assert_eq!((d.mode, d.went_safe), (EdgeMode::Hold, None), "at {t}");
         }
-        // Its first action drives; from then on its own silence counts.
         q[0].splice(splice(2, 61 * MS, 1, i64::MAX), 61 * MS);
         assert_eq!(f.tick(61 * MS, held(2), &mut q).mode, EdgeMode::Driving);
         let d = f.tick(100 * MS, held(2), &mut q);
@@ -920,8 +837,6 @@ mod tests {
         let (mut f, mut q) = ladder(100 * MS, true);
         q[0].splice(splice(1, 0, 2, i64::MAX), 0);
         assert_eq!(f.tick(MS, held(1), &mut q).mode, EdgeMode::Driving);
-        // The process stalls from 1 ms to 500 ms. Coverage ended at 2 ms, so
-        // the 100 ms wait is long over: SAFE at once, no hold.
         let d = f.tick(500 * MS, held(1), &mut q);
         assert_eq!(
             (d.mode, d.went_safe),
@@ -931,8 +846,6 @@ mod tests {
 
     #[test]
     fn a_listening_edge_holds_through_what_it_has_not_taken_in_yet() {
-        // Back from the same stall, but the runtime says it is listening:
-        // the edge holds the last target and does not latch.
         let (mut f, mut q) = ladder(100 * MS, true);
         q[0].splice(splice(1, 0, 2, i64::MAX), 0);
         assert_eq!(f.tick(MS, held(1), &mut q).mode, EdgeMode::Driving);
@@ -943,7 +856,6 @@ mod tests {
             d.action.is_some(),
             "the last position target, as Hold gives"
         );
-        // Nothing arrived by the time the listening ends: SAFE as before.
         f.set_listening(false);
         let d = f.tick(600 * MS, held(1), &mut q);
         assert_eq!(
@@ -951,8 +863,6 @@ mod tests {
             (EdgeMode::Safe, Some(SafeCause::QueueDry))
         );
 
-        // A lease that lapsed by the edge's clock while its renewal was on
-        // the way: held, not latched, and driven again once renewed.
         let (mut f, mut q) = ladder(50 * MS, true);
         q[0].splice(splice(1, 0, 100, i64::MAX), 0);
         let expiring = view(Some(lease(0, 1, 20 * MS)));
@@ -962,7 +872,6 @@ mod tests {
         assert_eq!((d.mode, d.went_safe), (EdgeMode::Hold, None));
         let renewed = view(Some(lease(0, 1, 500 * MS)));
         assert_eq!(f.tick(22 * MS, renewed, &mut q).mode, EdgeMode::Driving);
-        // Never renewed: SAFE when the listening ends.
         f.set_listening(false);
         let d = f.tick(501 * MS, renewed, &mut q);
         assert_eq!(
@@ -977,8 +886,6 @@ mod tests {
         q[0].splice(splice(1, 0, 100, i64::MAX), 0);
         let expiring = view(Some(lease(0, 1, 20 * MS)));
         assert_eq!(f.tick(MS, expiring, &mut q).mode, EdgeMode::Driving);
-        // The edge's copy of the lease expires at 20 ms: it goes safe at once,
-        // without holding, though its queue still reaches 100 ms.
         let d = f.tick(21 * MS, expiring, &mut q);
         assert_eq!(
             (d.mode, d.went_safe),
@@ -1009,7 +916,6 @@ mod tests {
         q[0].splice(splice(1, 0, 100, i64::MAX), 0);
         assert_eq!(f.tick(MS, held(1), &mut q).mode, EdgeMode::Driving);
         f.set_latch(Some(ReasonCode::EstopLocal));
-        // No view at all (the host is gone): still Estop, the queue purged.
         let d = f.tick(2 * MS, None, &mut q);
         assert_eq!(
             (d.mode, d.run_safe, d.reason),
@@ -1017,13 +923,8 @@ mod tests {
         );
         assert!(q[0].is_empty());
         f.set_latch(None);
-        // Cleared with no view: Idle, no authority, no motion.
         assert_eq!(f.tick(3 * MS, None, &mut q).mode, EdgeMode::Idle);
-        // With the lease still shown, nothing was kept to resume.
         assert_eq!(f.tick(4 * MS, held(1), &mut q).mode, EdgeMode::Idle);
-        // The host hasn't seen the stop yet: a fresh chunk under the same
-        // token doesn't drive, and neither does a latch cleared between two
-        // ticks.
         q[0].splice(splice(1, 5 * MS, 100, i64::MAX), 0);
         assert_eq!(f.tick(5 * MS, held(1), &mut q).mode, EdgeMode::Idle);
         assert!(q[0].is_empty(), "the fence purges it");
@@ -1031,7 +932,6 @@ mod tests {
         f.set_latch(None);
         q[0].splice(splice(1, 6 * MS, 100, i64::MAX), 0);
         assert_eq!(f.tick(6 * MS, held(1), &mut q).mode, EdgeMode::Idle);
-        // Disarmed and armed again: a later epoch's lease drives.
         let rearmed = Some(TickView {
             epoch: Epoch(2),
             ..held(2).expect("view")
@@ -1041,8 +941,6 @@ mod tests {
         q[0].splice(next, 0);
         assert_eq!(f.tick(7 * MS, rearmed, &mut q).mode, EdgeMode::Driving);
 
-        // Latched and cleared before a tick, then the host's ESTOP: the next
-        // arm releases the fence even when no tick saw the session disarmed.
         let (mut f, mut q) = ladder(50 * MS, true);
         f.set_latch(Some(ReasonCode::EstopLocal));
         f.set_latch(None);
@@ -1081,11 +979,9 @@ mod tests {
         let (mut f, mut q) = ladder(5 * MS, true);
         q[0].splice(splice(1, 0, 3, i64::MAX), 0);
         assert_eq!(f.tick(0, held(1), &mut q).mode, EdgeMode::Driving);
-        // Released at 1 ms: the target is held for hold_max...
         let d = f.tick(MS, view(None), &mut q);
         assert_eq!((d.mode, d.action.is_some()), (EdgeMode::Hold, true));
         assert!(q[0].is_empty(), "the released queue is purged");
-        // ...then the safe behaviour runs, unlatched and unreported.
         let d = f.tick(6 * MS, view(None), &mut q);
         assert_eq!(
             (d.mode, d.went_safe, d.run_safe),
@@ -1093,7 +989,6 @@ mod tests {
         );
         assert!(!SafeCause::Released.needs_report());
         assert_eq!(f.tick(7 * MS, view(None), &mut q).mode, EdgeMode::Safe);
-        // The next lease resumes the group in the same epoch.
         assert_eq!(f.tick(8 * MS, held(2), &mut q).mode, EdgeMode::Idle);
         q[0].splice(splice(2, 9 * MS, 2, i64::MAX), 9 * MS);
         assert_eq!(f.tick(9 * MS, held(2), &mut q).mode, EdgeMode::Driving);
@@ -1128,8 +1023,6 @@ mod tests {
         let d = f.tick(0, view(Some(lease(0, 1, i64::MAX))), &mut q);
         assert_eq!((d.mode, d.member), (EdgeMode::Driving, Some(0)));
         assert!(q[1].is_empty(), "the inactive member is purged");
-        // The lease moves to member 1: member 0 is purged, nothing is
-        // dispatched (no hold, no safe) until the robot reports the switch.
         q[1].splice(splice(2, MS, 50, i64::MAX), MS);
         let at_1 = view(Some(lease(1, 2, i64::MAX)));
         let d = f.tick(MS, at_1, &mut q);
@@ -1148,7 +1041,6 @@ mod tests {
         f.handover_done();
         let d = f.tick(3 * MS, at_1, &mut q);
         assert_eq!((d.mode, d.member), (EdgeMode::Driving, Some(1)));
-        // Back to member 0, and the robot never finishes: Safe after hold_max.
         let at_0 = view(Some(lease(0, 3, i64::MAX)));
         assert!(f.tick(4 * MS, at_0, &mut q).handover.is_some());
         assert_eq!(f.tick(13 * MS, at_0, &mut q).mode, EdgeMode::Hold);

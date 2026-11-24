@@ -91,8 +91,6 @@ pub const PARTS: &[&str] = &[LEFT_ARM, RIGHT_ARM, HEAD, TORSO, BASE, LEFT_LEG, R
 
 /// How a model paces its actions, as Python's `Timing`: `execution` is the
 /// execution horizon (actions of each predicted chunk executed before
-/// re-planning) a run uses when neither the run nor the model's `load()`
-/// names one, in `1..=1024`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Timing {
     /// The spec's default execution horizon; `None` leaves it to the run (1).
@@ -149,8 +147,6 @@ impl ModelSpec {
     }
     /// The same spec, accepting the named projections (lossy fits) in
     /// `allow`: `drop_action`, `select_state`, `rebind_camera`,
-    /// `flip_gripper`, `convert_units`. A pairing that needs one the spec does
-    /// not allow is refused.
     pub fn with_allow<S: Into<String>>(mut self, allow: impl IntoIterator<Item = S>) -> Self {
         self.allow = allow.into_iter().map(Into::into).collect();
         self

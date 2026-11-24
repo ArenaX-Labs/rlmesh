@@ -1,7 +1,5 @@
 //! The wire-level env traits: the async request/result shape the transport
 //! adapters serve. The Python binding implements it; authors implement the
-//! sync Gymnasium [`crate::Env`] instead, which the server adapts onto this
-//! shape. Reached through [`crate::binding::env`].
 
 use async_trait::async_trait;
 
@@ -16,11 +14,8 @@ use crate::binding::spaces::{
 };
 use rlmesh_proto::EndpointPhases;
 
-/// A single environment.
-///
-/// This is the default RLMesh environment shape: one reset, one action, and one
-/// transition per endpoint. Use [`VectorEnv`] only when the implementation is
-/// deliberately a local batched/vectorized environment.
+/// A single environment: one reset, one action and one transition per endpoint. Use
+/// [`VectorEnv`] only for a deliberately batched local environment.
 #[async_trait]
 pub trait Env: Send {
     /// The space observations belong to.
@@ -49,9 +44,6 @@ pub trait Env: Send {
     ) -> std::result::Result<RenderResult, spaces::EnvRuntimeError>;
 
     /// Release resources and return metadata for any final episodes.
-    ///
-    /// Called once by the server when the *server* stops — not on each client
-    /// session close (see `RemoteEnv::close`).
     async fn close(
         &mut self,
         req: CloseRequest,
@@ -59,11 +51,9 @@ pub trait Env: Send {
 
     /// The phase split of the op just completed, cleared by the read.
     ///
-    /// Override it to report where an op's time went — decoding the request into
-    /// the shape your code wants, your own work, encoding the result — and the
-    /// server stamps the split on the response beside `endpoint_total_ns`. The
-    /// default measures nothing, and the layer above then reports the whole call
-    /// as `user_ns`.
+    /// Override it to report where an op's time went (decoding the request, your own work,
+    /// encoding the result); the server stamps the split on the response beside
+    /// `endpoint_total_ns`. The default measures nothing, so the whole call reports as `user_ns`.
     fn take_last_phases(&mut self) -> EndpointPhases {
         EndpointPhases::default()
     }
@@ -72,10 +62,9 @@ pub trait Env: Send {
 /// A vectorized environment: one implementation steps `num_envs`
 /// sub-environments in lockstep.
 ///
-/// This is an explicit local batching optimization. Each `reset`/`step` carries
-/// batched inputs (one seed/action per sub-environment) and returns batched
-/// outputs (one observation, reward, terminated/truncated flag per
-/// sub-environment). Host it with the vector wire adapter.
+/// Each `reset`/`step` carries one seed or action per sub-environment and returns one
+/// observation, reward and terminated/truncated flag per sub-environment. Host it with the
+/// vector wire adapter.
 #[async_trait]
 pub trait VectorEnv: Send + Sync {
     /// The space each observation in a batch belongs to.
@@ -95,7 +84,6 @@ pub trait VectorEnv: Send + Sync {
 
     /// Reset only the sub-environments named in `req.env_indices` (a partial /
     /// per-lane reset), leaving the others running. An empty `env_indices`
-    /// delegates to `reset`.
     async fn reset_subset(
         &mut self,
         req: VectorResetRequest,
@@ -134,11 +122,9 @@ pub trait VectorEnv: Send + Sync {
 
     /// The phase split of the op just completed, cleared by the read.
     ///
-    /// Override it to report where an op's time went — decoding the request into
-    /// the shape your code wants, your own work, encoding the result — and the
-    /// server stamps the split on the response beside `endpoint_total_ns`. The
-    /// default measures nothing, and the layer above then reports the whole call
-    /// as `user_ns`.
+    /// Override it to report where an op's time went (decoding the request, your own work,
+    /// encoding the result); the server stamps the split on the response beside
+    /// `endpoint_total_ns`. The default measures nothing, so the whole call reports as `user_ns`.
     fn take_last_phases(&mut self) -> EndpointPhases {
         EndpointPhases::default()
     }

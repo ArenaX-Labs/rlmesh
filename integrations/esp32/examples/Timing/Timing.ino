@@ -1,7 +1,3 @@
-// What the session's crypto costs on this board: the attach handshake, a
-// signed authority state, and the chunk and sample of each control tick.
-// Open the Serial Monitor at 115200.
-
 #include <RLMesh.h>
 #include <WiFi.h>
 
@@ -9,7 +5,6 @@
 #error "RLMesh examples: select Tools > Partition Scheme > Minimal SPIFFS and keep the bundled partitions.csv"
 #endif
 
-// One control tick at 100 Hz.
 const uint32_t kTickUs = 10000;
 
 void row(const char* what, uint32_t us) {
@@ -19,7 +14,6 @@ void row(const char* what, uint32_t us) {
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  // The hardware RNG is cryptographic only with the radio on.
   WiFi.mode(WIFI_STA);
 
   uint32_t v = rlmesh_device_version();
@@ -44,7 +38,6 @@ void setup() {
                 (unsigned long)(tick * 1000 / kTickUs % 10));
   Serial.printf("heap: %lu free, %lu lowest\n", (unsigned long)ESP.getFreeHeap(),
                 (unsigned long)ESP.getMinFreeHeap());
-  // The library sets loopTask's stack to 12 KB.
   Serial.printf("stack: %lu bytes never used\n", (unsigned long)uxTaskGetStackHighWaterMark(NULL));
 }
 

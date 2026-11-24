@@ -1,11 +1,7 @@
 //! The CLI's profile store: `config.toml` (profiles, the default, each
 //! profile's platform and cached identity) and the credentials, kept in the
 //! OS keychain or, without one, in an owner-only `credentials.json`.
-//!
-//! Hidden binding plumbing (R-25): the CLI drives it, `Client` reads it.
 
-// The CLI's config and credential records; `docs/reference/cli.md` documents
-// the files they serialize to.
 #![allow(missing_docs)]
 
 use super::http::normalize_base_url;
@@ -61,8 +57,6 @@ impl Config {
         }
     }
 
-    /// Points docker's credential helper for `host` at `profile`. One host maps
-    /// to one profile, so the most recent `registry login` wins.
     fn set_registry_host(&mut self, profile: &str, host: &str) -> Result<()> {
         if !self.profiles.contains_key(profile) {
             bail!("no profile named {profile:?}");
@@ -94,7 +88,6 @@ impl Config {
     }
 }
 
-// Lenient on missing fields so a config written by an older CLI still loads.
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq, Eq)]
 #[serde(default)]
 pub struct Identity {
@@ -319,7 +312,6 @@ impl ProfileStore {
             .or_default();
         configured_profile.platform_url = Some(platform_url);
         configured_profile.token_endpoint = profile.token_endpoint.clone();
-        // A re-login whose /v1/me failed keeps the identity it had.
         if let Some(identity) = identity {
             configured_profile.identity = Some(identity);
         }
@@ -447,12 +439,7 @@ impl CredentialsStore {
             return Ok(Some(credentials.clone()));
         }
 
-        // The keychain wins over the file fallback: `save` writes the
-        // keychain and only then removes the file entry, so a file entry that
-        // outlives a failed removal is stale. A payload that doesn't parse
-        // (an older CLI's schema) reads as signed out rather than failing
-        // every profile-touching command; other keychain failures (locked
-        // keychain, denied prompt) fall through to the file.
+        // The keychain wins over the file fallback; an unparsable payload reads as signed out.
         if let Some(entry) = self.keychain_entry(profile)
             && let Ok(payload) = entry.get_password()
         {
@@ -566,7 +553,6 @@ fn credentials_path(settings: &Settings) -> Result<PathBuf> {
     Ok(dir.join("credentials.json"))
 }
 
-/// Creates `dir` (and parents) owner-only.
 pub(crate) fn ensure_private_dir(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir)
         .with_context(|| format!("creating config directory {}", dir.display()))?;
@@ -650,7 +636,6 @@ mod tests {
         assert_eq!(mode(path.parent().unwrap()), 0o700);
         assert_eq!(fs::read(&path).unwrap(), b"{}");
 
-        // Rewriting in place keeps the file owner-only.
         write_private(&path, b"{\"rotated\":true}").unwrap();
         assert_eq!(mode(&path), 0o600);
         assert_eq!(fs::read(&path).unwrap(), b"{\"rotated\":true}");

@@ -1,4 +1,3 @@
-// The ESP32's C++/Rust boundary against the shared USB provisioning vectors.
 #include <stdio.h>
 
 #include <string>
@@ -34,7 +33,6 @@ static void bytes(Buf& out, const json::Value& v, bool length) {
   out.insert(out.end(), b.begin(), b.end());
 }
 
-// Independent construction in C++ pins the record layout, including its version.
 static Buf record(const json::Value& msg) {
   Buf out = {2, static_cast<uint8_t>(msg["flags"].integer)};
   bytes(out, msg["host_key"], false);

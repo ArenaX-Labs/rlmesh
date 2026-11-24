@@ -61,9 +61,8 @@ pub struct ProbePeer {
     pub language: String,
     pub language_version: String,
     pub capabilities: Vec<String>,
-    /// The describe envelope the SDK stamps on its handshake `PeerInfo.extra`.
-    /// A registry that receives an image without a describe label can complete
-    /// it from this, as the label would have carried it.
+    /// The describe envelope the SDK stamps on its handshake `PeerInfo.extra`. A registry that
+    /// receives an image without a describe label can complete it from this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub describe: Option<serde_json::Value>,
 }
@@ -132,21 +131,12 @@ pub struct RenderRequest {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Observed {
-    /// The model's native chunk length K: how many per-step actions one chunk
-    /// corner call returns. `None` under the elastic contract (K is unknown:
-    /// the model honoured every horizon asked for, so nothing bounds it).
-    ///
-    /// `actionHorizon` is the pre-rc.9 name and still decodes, so an older
-    /// report keeps its number; new reports emit `nativeChunk` only.
     #[serde(
         default,
         alias = "actionHorizon",
         skip_serializing_if = "Option::is_none"
     )]
     pub native_chunk: Option<u32>,
-    /// The model returned exactly as many actions as were asked for at every
-    /// horizon tried, so no ceiling was reached and `native_chunk` is unset — a
-    /// declared chunk is a floor, not a lie.
     #[serde(
         default,
         alias = "actionHorizonElastic",
@@ -174,10 +164,8 @@ pub struct Observed {
     /// false because the model samples.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seeded_reproducible: Option<bool>,
-    /// Episodes seeded *differently* answered differently: the seed actually
-    /// reaches the sampler. `None` for a model with a zero determinism floor,
-    /// where two seeds agreeing proves nothing — only a sampling model can
-    /// demonstrate that the seed moves its output.
+    /// Episodes seeded *differently* answered differently: the seed reaches the sampler. `None` for a model with a zero determinism floor,
+    /// where two seeds agreeing proves nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed_sensitive: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -205,10 +193,7 @@ pub struct BaselinePoint {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Recommendation {
-    /// The model's native chunk K, when the probe established one. Replaces the
-    /// old `maxActionChunk`, which read as "the largest horizon you may ask
-    /// for" and was silently the largest one the probe happened to try: a
-    /// ceiling was indistinguishable from a sweep that never reached it.
+    /// The model's native chunk K, when the probe established one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_chunk: Option<u32>,
     /// No ceiling was found, so any horizon is servable and `native_chunk` says
@@ -227,7 +212,6 @@ pub struct Recommendation {
 impl Recommendation {
     pub fn derive(observed: &Observed, baseline: &[BaselinePoint]) -> Self {
         Self {
-            // A chunk of 1 is "no chunking": carrying it would read as a cap.
             native_chunk: observed.native_chunk.filter(|chunk| *chunk > 1),
             native_chunk_elastic: observed.native_chunk_elastic.filter(|elastic| *elastic),
             render_requests: observed.render_requests.clone(),
@@ -237,11 +221,11 @@ impl Recommendation {
     }
 }
 
-/// Picks the sweep point with the best lane throughput whose p50 stays within
-/// the latency budget: 250 ms, or twice the single-predict p50 when that is
-/// slower. A larger batch only takes over by gaining at least 10% over the
-/// best so far, and a point that falls short is stepped over rather than
-/// ending the walk, so one warm-up outlier cannot hide the gain past it.
+/// Picks the sweep point with the best lane throughput whose p50 stays within the latency budget.
+///
+/// The budget is 250 ms, or twice the single-predict p50 when that is slower. A larger batch takes
+/// over only by gaining at least 10% over the best so far; a point that falls short is stepped
+/// over rather than ending the walk.
 pub fn knee_batch_size(baseline: &[BaselinePoint], max_ok_batch: Option<u32>) -> Option<u32> {
     let first = baseline.first()?;
     let ceiling_ms = KNEE_LATENCY_CEILING_MS.max(first.p50_ms * KNEE_LATENCY_OVER_SINGLE);
@@ -278,8 +262,6 @@ mod tests {
         }
     }
 
-    /// The xvla/libero sweep on a B300: batch 4 is a warm-up outlier and the
-    /// real gain sits past it.
     fn xvla_sweep() -> [BaselinePoint; 6] {
         [
             timed_point(1, 49.0, 3.9),
@@ -291,8 +273,6 @@ mod tests {
         ]
     }
 
-    /// The smolvla/abot sweep: p50 grows linearly with the batch, so no size
-    /// buys throughput.
     fn smolvla_sweep() -> [BaselinePoint; 4] {
         [
             timed_point(1, 5.2, 192.0),
@@ -376,9 +356,6 @@ mod tests {
         );
     }
 
-    /// An elastic model has no ceiling: `nativeChunk` must stay absent so a
-    /// consumer cannot mistake a swept number for a cap, and the elastic flag
-    /// must ride along to say why.
     #[test]
     fn an_elastic_model_recommends_no_chunk_but_says_it_is_elastic() {
         let elastic = Observed {
@@ -394,7 +371,6 @@ mod tests {
         assert!(json.get("maxActionChunk").is_none(), "{json}");
         assert_eq!(json["nativeChunkElastic"], true);
 
-        // A bounded model says the opposite, and says nothing about elasticity.
         let bounded = Observed {
             native_chunk: Some(20),
             native_chunk_elastic: Some(false),
@@ -405,8 +381,6 @@ mod tests {
         assert!(json.get("nativeChunkElastic").is_none(), "{json}");
     }
 
-    /// Reports written before rc.9 named the same number `actionHorizon`; the
-    /// alias keeps them readable without emitting the old key again.
     #[test]
     fn the_pre_rc9_chunk_keys_still_decode() {
         let legacy = serde_json::json!({
@@ -421,8 +395,6 @@ mod tests {
         assert!(json.get("actionHorizon").is_none(), "{json}");
     }
 
-    /// The render requests are carried verbatim into the recommendation, which
-    /// a caller reads to set the env's camera dial.
     #[test]
     fn render_requests_reach_the_recommendation() {
         let observed = Observed {

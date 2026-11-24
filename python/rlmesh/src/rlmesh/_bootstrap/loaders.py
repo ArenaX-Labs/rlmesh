@@ -40,8 +40,6 @@ if TYPE_CHECKING:
 
     ServedEnv = EnvLike[Any, Any] | VectorServerEnvLike
 
-#: Distinct sys.modules name per hf env.py load (two hf envs in one process
-#: must never clobber each other's module entry).
 _HF_ENV_MODULE_COUNTER = itertools.count()
 
 
@@ -370,8 +368,6 @@ def construct_authored_model(source: Any, /, **kwargs: object) -> Any:
         inst = source
 
     if not isinstance(inst, ModelBase):
-        # __init__ already constructed (and loaded) it; a second load() would
-        # double-load, and there is no binding channel for a duck-typed policy.
         if kwargs:
             raise TypeError(
                 f"{type(inst).__name__} is not an rlmesh.Model subclass; construction "
@@ -381,14 +377,9 @@ def construct_authored_model(source: Any, /, **kwargs: object) -> Any:
         return inst
 
     model = cast("ModelBase[Any, Any]", inst)
-    # No declared params: the signature alone is the contract -- a keyword
-    # `load` does not take is refused, one it takes through **kwargs forwards.
     spec = model.params if model.params is not None else ParamSpec(extra="passthrough")
     resolved = resolve(spec, model.load, kwargs)
-    # The default ModelBase.load is a no-op: a non-empty binding would be silently
-    # swallowed (and the eager auto-load was already suppressed). Fail loud so the
-    # operator's requested variation is never silently dropped. (getattr identity
-    # via a name, mirroring base.py's overridden-method probe.)
+    # The default ModelBase.load is a no-op: a non-empty binding would be silently swallowed, so fail loudly.
     load_attr = "load"
     if resolved and getattr(type(model), load_attr) is getattr(ModelBase, load_attr):
         raise TypeError(
@@ -397,7 +388,6 @@ def construct_authored_model(source: Any, /, **kwargs: object) -> Any:
             "apply them; implement load(**kwargs) to consume the binding"
         )
     model.load(**resolved)
-    # The declarations load() may set (native_chunk) are read once, here.
     model._finish_load()  # pyright: ignore[reportPrivateUsage]
     return model
 

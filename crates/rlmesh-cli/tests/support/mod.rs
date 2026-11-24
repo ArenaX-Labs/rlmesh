@@ -1,7 +1,6 @@
 //! A scriptable mock of the managed platform plus the identity provider it
 //! advertises, and a harness that confines the CLI to a temp directory.
 
-// Test scaffolding: panicking on an unexpected state is the point.
 #![allow(dead_code, clippy::unwrap_used)]
 
 use axum::Router;
@@ -39,7 +38,7 @@ pub enum RevokeMode {
     MethodNotAllowed,
 }
 
-/// What the mock says next. Mutable from tests through `Mock::script`.
+/// What the mock says next.
 pub struct Script {
     /// Replies to successive device-code polls; an empty queue grants.
     pub token_replies: VecDeque<TokenReply>,
@@ -196,8 +195,8 @@ impl Mock {
             .collect()
     }
 
-    /// Mints a session the platform accepts, with an access token that
-    /// expires `access_ttl` seconds from now (negative: already expired).
+    /// Mints a session the platform accepts, with an access token that expires
+    /// `access_ttl` seconds from now (negative: already expired).
     pub fn mint_session(&self, access_ttl: i64) -> (String, String) {
         self.script().mint_with_ttl(access_ttl)
     }
@@ -321,7 +320,6 @@ fn grant(script: &mut Script) -> Response {
         "refresh_token": refresh_token,
         "token_type": "Bearer",
         "expires_in": script.access_ttl,
-        // Provider-specific extras the CLI must ignore.
         "user": {"id": USER_ID, "email": "ignored@example.com"},
         "organization_id": script.org_id,
     }))
@@ -484,8 +482,8 @@ impl Harness {
         )
     }
 
-    /// A subprocess invocation of one of the crate's binaries, confined to
-    /// the same directories and insulated from the developer's environment.
+    /// A subprocess invocation of one of the crate's binaries, confined to the same
+    /// directories and insulated from the developer's environment.
     pub fn command(&self, bin: &str) -> Command {
         let mut command = Command::new(bin);
         command
@@ -507,8 +505,8 @@ impl Harness {
         self.dir.path().join("data").join("credentials.json")
     }
 
-    /// Writes a config.toml with one profile pointed at the mock, pinned to
-    /// the mock's token endpoint unless `token_endpoint` overrides it.
+    /// Writes a config.toml with one profile pointed at the mock, pinned to the
+    /// mock's token endpoint unless `token_endpoint` overrides it.
     pub fn seed_profile(
         &self,
         name: &str,

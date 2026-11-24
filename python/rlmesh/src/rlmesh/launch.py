@@ -9,24 +9,6 @@ forms::
     import os, subprocess
     from rlmesh import launch
 
-    identity, _key = launch.launch_identity()
-    address = launch.launched_address(identity, "127.0.0.1:7600", "env")
-    subprocess.Popen(
-        [
-            "docker",
-            "run",
-            "-e",
-            "RLMESH_HOST_IDENTITY",
-            "-e",
-            "RLMESH_ADDRESS=0.0.0.0:7600",
-            "-p",
-            "127.0.0.1:7600-7603:7600-7603",
-            "my-env:latest",
-        ],
-        env={**os.environ, "RLMESH_HOST_IDENTITY": identity},
-    )
-    # rlmesh.RemoteEnv(address) once it serves.
-
 The identity is a secret: pass it through the environment, never argv, and
 keep it out of logs. The keyed address is a credential too: its holder joins
 the session, from this machine or any other that reaches the host's ports.
