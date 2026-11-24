@@ -50,4 +50,19 @@ refreshes it (`test` and `test:affected` do this themselves).
   changelog is hand-written (`mise run changelog:draft` only drafts bullets).
 - Unreleased work may be fenced if CI builds and tests it; nothing half-built ships.
 
+## Comments
+
+Write almost none. Don't narrate history (incidents, dates, names, PR or
+issue numbers, design-doc ids, "previously" or "no longer"), restate the code,
+describe test cases, or leave commented-out code. Keep a one-line, timeless
+comment only for what the code can't show: an invariant, an ordering, locking
+or concurrency constraint, a security rule, or a surprising external fact.
+
+Public docs are the product, so keep them concise rather than absent:
+rustdoc on public items (several crates deny `missing_docs`), PyO3 `///`
+(Python `__doc__` and the stubs), public Python docstrings, clap help text, C
+header, C# and JSDoc API docs, and proto comments. Keep their usage sections
+(Errors, Panics, Safety, arguments) and doctests. Tool directives, `TODO:`
+lines and license headers stay.
+
 Maintainer docs: `docs/local-dev.md`, `docs/testing.md`, `CONTRIBUTING.md`.
