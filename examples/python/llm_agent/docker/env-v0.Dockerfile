@@ -17,8 +17,10 @@ WORKDIR /app
 COPY chat_env.py serve_v0.py ./
 
 ARG ENV_ID=wordle
+ARG MAX_TURNS=
 # A sandbox runs the container as the host user, who has no home here.
 ENV ENV_ID=${ENV_ID} \
+    MAX_TURNS=${MAX_TURNS} \
     HOME=/tmp \
     RLMESH_OUTPUT_DIR=/rlmesh/output/env \
     RLMESH_ADDRESS=0.0.0.0:7447 \
@@ -26,4 +28,4 @@ ENV ENV_ID=${ENV_ID} \
     RLMESH_READY_FILE=/tmp/rlmesh-ready.json
 EXPOSE 7447
 HEALTHCHECK --interval=2s --start-period=300s CMD test -f /tmp/rlmesh-ready.json
-ENTRYPOINT ["sh", "-c", "exec python serve_v0.py --env \"$ENV_ID\" --address \"$RLMESH_ADDRESS/$RLMESH_NAME\""]
+ENTRYPOINT ["python", "-m", "rlmesh.serve", "--env", "serve_v0:EnvironmentEnv"]

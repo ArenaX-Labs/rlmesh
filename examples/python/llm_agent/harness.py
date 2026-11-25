@@ -117,7 +117,13 @@ class LLMHarness(rlmesh.Model):
         super().__init__()
 
     def predict(self, observation: str, context: PredictContext) -> str:
-        obs = json.loads(observation)
+        try:
+            obs = json.loads(observation)
+        except ValueError:
+            obs = None
+        if not isinstance(obs, dict):
+            # A probe samples random text; answer it without the LLM.
+            return json.dumps({"role": "assistant", "content": ""})
         tools: list[dict[str, Any]] = obs["tools"]
         messages: list[Message] = context["state"].setdefault("messages", [])
         messages.extend(obs["messages"])

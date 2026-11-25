@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import time
 from typing import Any
 
@@ -69,12 +70,15 @@ class _BridgeClient(vf.Client):
 class EnvironmentEnv(ChatTaskEnv):
     """One rollout of a v0 environment per episode."""
 
-    def __init__(self, env_id: str, max_turns: int | None = None) -> None:
+    def __init__(self, env_id: str | None = None, max_turns: int | None = None) -> None:
         super().__init__()
-        self.env = vf.load_environment(env_id)
-        if max_turns is not None:
-            self.env.max_turns = max_turns
-        self.dataset = self.env.get_eval_dataset()
+        self.env_id = env_id or os.environ.get("ENV_ID") or "wordle"
+        raw = os.environ.get("MAX_TURNS")
+        self.max_turns = (
+            max_turns if max_turns is not None else int(raw) if raw else None
+        )
+        self.env: Any = None
+        self.dataset: Any = None
         self.loop = asyncio.new_event_loop()
         self.client = _BridgeClient(self)
         self.rollout: asyncio.Task[Any] | None = None
@@ -83,6 +87,12 @@ class EnvironmentEnv(ChatTaskEnv):
 
     def start(self, index: int) -> Turn:
         self._abandon()
+        if self.env is None:
+            env = vf.load_environment(self.env_id)
+            if self.max_turns is not None:
+                env.max_turns = self.max_turns
+            self.dataset = env.get_eval_dataset()
+            self.env = env
         row = self.dataset[index % len(self.dataset)]
         self.task_id = str(row.get("example_id", index))
         rollout = self.rollout = self.loop.create_task(self._run(row))
@@ -203,7 +213,9 @@ def _response(reply: Message) -> Any:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Serve a v0 environment.")
-    parser.add_argument("--env", default="wordle", help="hub environment name")
+    parser.add_argument(
+        "--env", help="hub environment name (default $ENV_ID, then wordle)"
+    )
     parser.add_argument("--max-turns", type=int, help="override the env's turn limit")
     parser.add_argument("--address", default=DEFAULT_ADDRESS, help="bind address")
     args = parser.parse_args()

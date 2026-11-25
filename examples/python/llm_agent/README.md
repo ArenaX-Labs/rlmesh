@@ -93,7 +93,7 @@ python eval.py 127.0.0.1:5555 -n 2 --model qwen3:4b --max-tokens 4096
 
 The simulator must support tools (`llama3` does not; the telecom customer calls some). A 4B customer often writes `###STOP` without the closing `###`, which tau2 does not count as hanging up, so `--max-steps` ends the chat as truncated after that many agent replies (`stop_condition` `max_steps`, reward 0) instead of running to tau2's own 500-step limit (`tau2_max_steps`, also truncated). A chat the customer ends within the cap is scored normally.
 
-The simulator's calls go from the env straight to that server, so the transcript holds only the agent's side; the simulator's messages appear there as observations. tau2 fetches its domain data with `git` into `~/.cache/tau2-bench` on first start. The final `info` carries `rewards` (`tau2_reward`), `metrics`, `stop_condition` (`user_completed` when the customer ends the chat) and any `errors`. A 4B agent rarely solves a task, so expect a reward of 0.
+The simulator's calls go from the env straight to that server, so the transcript holds only the agent's side; the simulator's messages appear there as observations. tau2 fetches its domain data with `git` into `~/.cache/tau2-bench` on first start. The final `info` carries `rewards` (`tau2_reward`), `metrics`, `stop_condition` (`user_completed` when the customer ends the chat) and any `errors`. A 4B agent rarely solves a task, so expect a reward of 0. One process serves one tau2 env, since the bridge patches the interception server's module-global client: serve it with `RLMESH_NUM_ENVS=1` (a second instance fails on its first reset).
 
 Hitting the env's turn limit (`max_turns`) ends the episode as truncated when that limit is above 1; single-turn envs (`max_turns=1`) end there normally.
 
@@ -108,7 +108,7 @@ Both sides write under `$RLMESH_OUTPUT_DIR` (default `./runs/<timestamp>`):
 
 ## Docker
 
-The harness and each env server also ship as images, run the way RLMesh Managed runs them: `harness.Dockerfile` serves `LLMHarness` with `python -m rlmesh.serve`, and `env-v1.Dockerfile` and `env-v0.Dockerfile` serve a taskset and an environment. Build them from this directory:
+The harness and each env server also ship as images, run the way RLMesh Managed runs them, with `python -m rlmesh.serve`: `harness.Dockerfile` serves `LLMHarness`, `env-chat.Dockerfile` `AdditionTask`, `env-v1.Dockerfile` a taskset (`serve_v1:TasksetEnv`; its `environment` target serves `serve_v1:V1EnvEnv`), and `env-v0.Dockerfile` an environment (`serve_v0:EnvironmentEnv`). Each env class takes its settings from the variables below, so it builds with no arguments, and loads its taskset or environment on the first reset. Build them from this directory:
 
 ```bash
 docker build -f docker/harness.Dockerfile -t llm-harness .
@@ -116,7 +116,7 @@ docker build -f docker/env-v0.Dockerfile -t llm-env-v0 .
 docker build -f docker/env-v1.Dockerfile -t llm-env-v1 .
 docker build -f docker/env-v1.Dockerfile -t llm-env-humaneval \
   --build-arg TASKSET=primeintellect/humaneval --build-arg RUNTIME=subprocess .
-docker build -f docker/env-v1.Dockerfile -t llm-env-tau2 \
+docker build -f docker/env-v1.Dockerfile -t llm-env-tau2 --target environment \
   --build-arg ENV_ID=primeintellect/tau2-bench .
 ```
 
@@ -158,8 +158,30 @@ A sandbox passes no environment variables through, so the images bake these in (
 | `TASKSET`           | env-v1 (build arg)  | `primeintellect/math500`                                                        |
 | `RUNTIME`           | env-v1 (build arg)  | empty; `subprocess` runs humaneval's tests in the container (needs PyPI access) |
 | `ENV_ID`            | env-v0 (build arg)  | `wordle`                                                                        |
-| `ENV_ID`            | env-v1 (build arg)  | empty; `primeintellect/tau2-bench` serves that environment instead of `TASKSET` |
-| `MAX_STEPS`         | env-v1 (run time)   | empty; `--max-steps` for an `ENV_ID` episode (`docker run -e`)                  |
+| `ENV_ID`            | env-v1 (build arg)  | empty; the `environment` target's environment (`primeintellect/tau2-bench`)     |
+| `DOMAIN`            | env-v1 (run time)   | empty; `--domain` for the `environment` target (`docker run -e`)                |
+| `MAX_STEPS`         | env-v1 (build arg)  | empty; `--max-steps` for the `environment` target                               |
+| `MAX_TURNS`         | env-v0 (build arg)  | empty; `--max-turns`                                                            |
 | `RLMESH_OUTPUT_DIR` | all                 | `/rlmesh/output/model` (harness), `/rlmesh/output/env` (env)                    |
 
 Each image sets `RLMESH_READY_FILE`, so `docker ps` shows it healthy once it serves.
+
+### Managed platform
+
+`docker/publish.sh` builds each image for `linux/amd64` (the platform runs only that), bakes its `dev.rlmesh.describe` label inside the image, where the class builds, and pushes it as an OCI image, which the platform registry requires:
+
+```bash
+NS=registry.example.com/myteam
+docker/publish.sh "$NS" v1             # all five images
+docker/publish.sh "$NS" v1 --no-push   # build and stamp only
+rlmesh check-image "$NS/llm-env-chat:v1"
+```
+
+It publishes `llm-harness` (model), `llm-env-chat`, `llm-env-math500`, `llm-env-tau2` and `llm-env-wordle`; names after the tag (and `--no-push`) publish only those. No key is baked: the platform injects `OPENAI_*` and `ANTHROPIC_*` into the model container from an `api_key` connection named in `models[].connections`. The push-time probe runs with no key and sends random text, which the harness answers with an empty message and the chat env scores 0. An evaluation request:
+
+```json
+{
+  "models": [{ "model": "<ns>/llm-harness", "connections": ["conn_…"] }],
+  "tasks": [{ "taskId": "math500/0", "env": "<ns>/llm-env-math500", "episodes": 2 }]
+}
+```

@@ -3,9 +3,9 @@
 #   docker build -f docker/env-v1.Dockerfile -t llm-env-v1 .
 #   docker build -f docker/env-v1.Dockerfile -t llm-env-humaneval \
 #     --build-arg TASKSET=primeintellect/humaneval --build-arg RUNTIME=subprocess .
-#   docker build -f docker/env-v1.Dockerfile -t llm-env-tau2 \
+#   docker build -f docker/env-v1.Dockerfile -t llm-env-tau2 --target environment \
 #     --build-arg ENV_ID=primeintellect/tau2-bench .
-FROM python:3.11-slim
+FROM python:3.11-slim AS base
 COPY --from=ghcr.io/astral-sh/uv:0.11.0 /uv /uvx /bin/
 # tau2 installs from git and fetches its domain data with git at startup.
 RUN apt-get update && apt-get install -y --no-install-recommends git \
@@ -25,10 +25,12 @@ COPY chat_env.py serve_v1.py ./
 ARG TASKSET=primeintellect/math500
 ARG RUNTIME=
 ARG ENV_ID=
+ARG MAX_STEPS=
 # A sandbox runs the container as the host user, who has no home here.
 ENV TASKSET=${TASKSET} \
     RUNTIME=${RUNTIME} \
     ENV_ID=${ENV_ID} \
+    MAX_STEPS=${MAX_STEPS} \
     HOME=/tmp \
     RLMESH_OUTPUT_DIR=/rlmesh/output/env \
     RLMESH_ADDRESS=0.0.0.0:7447 \
@@ -36,4 +38,9 @@ ENV TASKSET=${TASKSET} \
     RLMESH_READY_FILE=/tmp/rlmesh-ready.json
 EXPOSE 7447
 HEALTHCHECK --interval=2s --start-period=300s CMD test -f /tmp/rlmesh-ready.json
-ENTRYPOINT ["sh", "-c", "if [ -n \"$ENV_ID\" ]; then set -- --env \"$ENV_ID\"; else set -- --taskset \"$TASKSET\"; fi; exec python serve_v1.py \"$@\" ${RUNTIME:+--runtime \"$RUNTIME\"} ${MAX_STEPS:+--max-steps \"$MAX_STEPS\"} --address \"$RLMESH_ADDRESS/$RLMESH_NAME\""]
+
+FROM base AS environment
+ENTRYPOINT ["python", "-m", "rlmesh.serve", "--env", "serve_v1:V1EnvEnv"]
+
+FROM base AS taskset
+ENTRYPOINT ["python", "-m", "rlmesh.serve", "--env", "serve_v1:TasksetEnv"]

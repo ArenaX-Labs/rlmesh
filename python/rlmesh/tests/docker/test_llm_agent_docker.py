@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 import rlmesh
@@ -98,3 +101,42 @@ def test_harness_image_solves_addition_env_image(
     assert "seed=0 steps=1 reward=1.000 success=True" in capsys.readouterr().out
     assert len(list((output / "transcripts").glob("*.jsonl"))) == 1
     assert len(list((output / "env").glob("*.jsonl"))) == 1
+
+
+def test_publish_stamps_the_describe_label_and_entrypoint() -> None:
+    tag = uuid4().hex[:8]
+    ref = f"localhost/test/llm-env-chat:{tag}"
+    try:
+        subprocess.run(
+            [
+                EXAMPLE / "docker/publish.sh",
+                "localhost/test",
+                tag,
+                "llm-env-chat",
+                "--no-push",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=1200,
+        )
+        config = json.loads(
+            docker("image", "inspect", ref, "--format", "{{json .Config}}")
+        )
+        describe = json.loads(config["Labels"]["dev.rlmesh.describe"])
+        assert (describe["kind"], describe["target"]["entrypoint"]) == (
+            "env",
+            "chat_env:AdditionTask",
+        )
+        assert "error" not in describe["env_spec"]
+        assert config["Entrypoint"] == [
+            "python",
+            "-m",
+            "rlmesh.serve",
+            "--env",
+            "chat_env:AdditionTask",
+        ]
+    finally:
+        subprocess.run(
+            ["docker", "rmi", ref],
+            capture_output=True,
+        )

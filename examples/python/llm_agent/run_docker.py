@@ -22,6 +22,10 @@ HERE = Path(__file__).resolve().parent
 def build(dockerfile: str, tag: str, build_args: list[str]) -> None:
     """Build ``docker/<dockerfile>`` from this directory as ``tag``."""
     flags = [flag for arg in build_args for flag in ("--build-arg", arg)]
+    if dockerfile == "env-v1.Dockerfile" and any(
+        arg.startswith("ENV_ID=") and arg != "ENV_ID=" for arg in build_args
+    ):
+        flags += ["--target", "environment"]
     subprocess.run(
         ["docker", "build", "-f", f"docker/{dockerfile}", "-t", tag, *flags, "."],
         cwd=HERE,

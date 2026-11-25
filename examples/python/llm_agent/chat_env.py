@@ -55,8 +55,8 @@ class Turn:
 class ChatTaskEnv:
     """Base env: one step is one assistant message; subclasses run the task."""
 
-    observation_space = rlmesh.spaces.Text(1_000_000, min_length=0)
-    action_space = rlmesh.spaces.Text(1_000_000, min_length=0)
+    observation_space = rlmesh.spaces.Text(1_000_000, min_length=1)
+    action_space = rlmesh.spaces.Text(1_000_000, min_length=1)
 
     def __init__(self) -> None:
         self.log_dir = output_dir() / "env"
@@ -80,7 +80,7 @@ class ChatTaskEnv:
         return _observation(turn), {"task_id": self.task_id}
 
     def step(self, action: str) -> tuple[str, float, bool, bool, dict[str, Any]]:
-        turn = self.respond(json.loads(action))
+        turn = self.respond(_message(action))
         if turn.rewards is None:
             return _observation(turn), 0.0, False, False, {}
         success = turn.reward >= 1.0 if turn.success is None else turn.success
@@ -98,6 +98,10 @@ class ChatTaskEnv:
 
     def close(self) -> None:
         pass
+
+    def make(self) -> ChatTaskEnv:
+        """Return a new env of this class, so ``rlmesh.serve`` and ``rlmesh._describe`` can use the class as a factory (one env per lane)."""
+        return type(self)()
 
 
 def openai_messages(messages: list[Message]) -> list[Message]:
@@ -122,6 +126,15 @@ def openai_messages(messages: list[Message]) -> list[Message]:
 
 def _observation(turn: Turn) -> str:
     return json.dumps({"messages": turn.messages, "tools": turn.tools})
+
+
+def _message(action: str) -> Message:
+    """Parse an action; anything but a JSON object (a probe's random text) is an empty reply."""
+    try:
+        reply = json.loads(action)
+    except ValueError:
+        return {}
+    return reply if isinstance(reply, dict) else {}
 
 
 class AdditionTask(ChatTaskEnv):
