@@ -162,7 +162,6 @@ mod editions;
 pub mod env;
 mod error;
 pub mod ext;
-mod floor;
 mod lifecycle;
 /// The v2 session protocol engine the bindings drive; hidden and semver-exempt.
 #[doc(hidden)]

@@ -88,7 +88,6 @@ fn resolve(route: &str, horizon: u32) -> ModelRequest {
         contract_json: contract_to_json(&contract()).to_string(),
         execution_horizon: horizon,
         delivers_history: false,
-        workflow_edition: String::new(),
         reads_advisories: false,
     })
 }
@@ -173,15 +172,6 @@ async fn a_served_model_answers_each_group_of_a_predict_with_its_own_outcome() {
     };
     assert!(outcomes[0].is_err());
 
-    let ModelRequest::Resolve(mut pinned) = resolve("c", 1) else {
-        unreachable!()
-    };
-    pinned.workflow_edition = "1999.01".into();
-    let ModelReply::Fault(fault) = call(ModelRequest::Resolve(pinned)).await else {
-        panic!("a fault")
-    };
-    assert!(fault.message.contains("1999.01"), "{fault:?}");
-
     model.close().await;
     cancel.cancel();
     served.await.unwrap().unwrap();
@@ -207,7 +197,6 @@ async fn a_served_model_is_a_handler_a_driver_drives_like_a_local_one() {
             ResolveOptions {
                 execution_horizon: 3,
                 delivers_history: false,
-                workflow_edition: None,
             },
         )
         .await
@@ -275,7 +264,6 @@ async fn a_served_model_answers_in_the_session_it_is_invited_into() {
                     ResolveOptions {
                         execution_horizon: 1,
                         delivers_history: false,
-                        workflow_edition: None,
                     },
                 )
                 .await
@@ -330,7 +318,7 @@ async fn a_served_model_answers_in_the_session_it_is_invited_into() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_served_model_declares_its_workflow_editions_in_the_roster() {
+async fn a_served_model_declares_its_workflow_edition_in_the_roster() {
     let binding = ModelBinding::bind(":0/echo").await.unwrap();
     let address = binding.address();
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -341,9 +329,7 @@ async fn a_served_model_declares_its_workflow_editions_in_the_roster() {
         .await
         .unwrap();
 
-    let offer = model.workflow_editions().expect("the model's editions");
-    assert_eq!(offer.preferred.as_deref(), Some(declared));
-    assert!(!offer.editions.is_empty(), "{offer:?}");
+    assert_eq!(model.workflow_edition().as_deref(), Some(declared));
 
     model.close().await;
     cancel.cancel();
@@ -493,7 +479,6 @@ async fn predicts_from_several_sessions_coalesce_into_one_handler_call() {
                 ResolveOptions {
                     execution_horizon: 1,
                     delivers_history: false,
-                    workflow_edition: None,
                 },
             )
             .await

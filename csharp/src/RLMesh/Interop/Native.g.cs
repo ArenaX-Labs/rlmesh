@@ -204,18 +204,6 @@ namespace RLMesh.Interop
         [NativeTypeName("const char *")]
         public sbyte* workflow_edition;
 
-        [NativeTypeName("const char *")]
-        public sbyte* workflow_edition_base;
-
-        [NativeTypeName("const char *const *")]
-        public sbyte** supported_workflow_editions;
-
-        [NativeTypeName("size_t")]
-        public UIntPtr supported_workflow_editions_len;
-
-        [NativeTypeName("const char *")]
-        public sbyte* build_cohort;
-
         public RLMeshBuildSource build_source;
 
         [NativeTypeName("uint32_t")]
@@ -378,7 +366,7 @@ namespace RLMesh.Interop
     {
         public RLMeshBoundType type_;
 
-        [NativeTypeName("__AnonymousRecord_rlmesh_L857_C3")]
+        [NativeTypeName("__AnonymousRecord_rlmesh_L851_C3")]
         public _value_e__Union value;
 
         [StructLayout(LayoutKind.Explicit)]
@@ -1783,9 +1771,6 @@ namespace RLMesh.Interop
         [NativeTypeName("int64_t")]
         public long num_envs;
 
-        [NativeTypeName("const char *")]
-        public sbyte* workflow_edition;
-
         [NativeTypeName("const RLMeshValue *")]
         public RLMeshValue* make_kwargs;
 
@@ -2438,9 +2423,6 @@ namespace RLMesh.Interop
 
         public RLMeshRunHooks* hooks;
 
-        [NativeTypeName("const char *")]
-        public sbyte* workflow_edition;
-
         [NativeTypeName("const RLMeshExtCancelToken *")]
         public RLMeshExtCancelToken* cancel;
 
@@ -2501,9 +2483,6 @@ namespace RLMesh.Interop
         [NativeTypeName("size_t")]
         public UIntPtr struct_size;
 
-        [NativeTypeName("const char *")]
-        public sbyte* workflow_edition;
-
         [NativeTypeName("uint32_t")]
         public uint execution_horizon;
 
@@ -2547,9 +2526,6 @@ namespace RLMesh.Interop
         public byte has_request_timeout_seconds;
 
         public double request_timeout_seconds;
-
-        [NativeTypeName("const char *")]
-        public sbyte* workflow_edition;
     }
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -3976,9 +3952,6 @@ namespace RLMesh.Interop
         public static extern RLMeshStatus rlmesh_remote_env_env_id([NativeTypeName("const RLMeshRemoteEnv *")] RLMeshRemoteEnv* remote_env, RLMeshBytes* @out);
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-        public static extern RLMeshStatus rlmesh_remote_env_selected_workflow_edition([NativeTypeName("const RLMeshRemoteEnv *")] RLMeshRemoteEnv* remote_env, RLMeshBytes* @out);
-
-        [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         [return: NativeTypeName("const RLMeshEnvContract *")]
         public static extern RLMeshEnvContract* rlmesh_remote_env_env_contract([NativeTypeName("const RLMeshRemoteEnv *")] RLMeshRemoteEnv* remote_env);
 
@@ -4022,9 +3995,6 @@ namespace RLMesh.Interop
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern RLMeshStatus rlmesh_remote_vector_env_env_id([NativeTypeName("const RLMeshRemoteVectorEnv *")] RLMeshRemoteVectorEnv* remote_vector_env, RLMeshBytes* @out);
-
-        [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-        public static extern RLMeshStatus rlmesh_remote_vector_env_selected_workflow_edition([NativeTypeName("const RLMeshRemoteVectorEnv *")] RLMeshRemoteVectorEnv* remote_vector_env, RLMeshBytes* @out);
 
         [DllImport("rlmesh_capi", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         [return: NativeTypeName("const RLMeshEnvContract *")]

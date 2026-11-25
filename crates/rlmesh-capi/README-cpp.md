@@ -274,7 +274,7 @@ try {
 
 ## Workflow editions
 
-Every served env and model runs at a workflow edition, which pins what a session means across upgrades. Declare one (a static `workflow_edition` on a policy or factory, `ServeOptions::workflow_edition`, the `workflow_edition` member of the run and binding options, or the `RLMESH_WORKFLOW_EDITION` environment variable); a participant that declares none floats to the newest edition and warns once. See the [documentation](https://rlmesh.dev/docs/).
+Every served env and model runs at a workflow edition, a row of behavioural defaults it keeps across upgrades: the `RLMESH_WORKFLOW_EDITION` environment variable, else its declaration (a static `workflow_edition` on a policy or factory, or `ServeOptions::workflow_edition`), else the build's current edition. See the [documentation](https://rlmesh.dev/docs/).
 
 ## Compatibility
 

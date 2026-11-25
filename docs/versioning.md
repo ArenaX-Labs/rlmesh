@@ -27,13 +27,34 @@ RLMesh publishes its Rust crates to crates.io so the Python extension can build.
 npm remain in the tree with CI coverage, but publication is fenced. C ABI 7 is
 cut when the native bindings ship. See [release scope](release.md#github-releases).
 
-## Workflow editions and the version contract
+## The four versions
 
-The package version and the workflow edition answer different questions. The version says which Python API a release ships and follows SemVer above; the edition says what a session means, is declared once in an env's or model's source, and stays put across upgrades. A minor release may mint a new edition when a real semantic change requires one (at most one per release). Every release of a line keeps offering the editions sealed in that line, so a declared participant keeps running at its edition across patch upgrades. Before 1.0 a new minor may also stop offering an older edition or replace the wire (0.2 did both), so a minor upgrade can need a rebuild; keeping editions across every release is the 1.0 goal. The guarantee and its current limits are in [compatibility](compatibility.md); declaring an edition is in [workflow editions](editions/index.md).
+A build carries four version numbers. Each answers one question:
 
-Frozen container images reproduce their results on their matching runner. An
-edition locks defaults within its release line; it does not make a 0.1 image
-compatible with 0.2. Interoperation between the 0.1 and 0.2 protocols is not implemented.
+| Version             | Example              | Answers                                                                                                                                                                    |
+| ------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Package version     | `0.2.0`              | Which API a release ships, under SemVer above.                                                                                                                             |
+| Protocol generation | `rlmesh-realtime-v1` | Which wire family a build speaks. Two generations never talk.                                                                                                              |
+| Wire revision       | `2`                  | Whether two builds of one generation can talk. It is the only compatibility gate inside a generation: builds with the same revision talk, whatever their package versions. |
+| Workflow edition    | `2026.10`            | Which row of behavioural defaults a participant declared. It is declared in source and never negotiated; see [workflow editions](editions/index.md).                       |
+
+`rlmesh.build_info()` reports all four.
+
+## Release channels
+
+- **alpha** may break anything, the wire included.
+- **beta** freezes the wire for its minor: every later build of that minor speaks the same wire revision.
+- **rc** takes fixes only.
+
+## What interoperates
+
+- Before 1.0, every 0.2.x build talks to every 0.2.x build. Nothing is promised across minors: 0.3 may replace the wire.
+- Prereleases interoperate whenever their wire revisions match.
+- From 1.0, any 1.x runtime runs any image built on 1.0 or later, and every 1.x release keeps every edition it has shipped.
+
+A new edition is created only when a default actually changes, never on a schedule or with a version bump.
+
+Frozen container images reproduce their results on their matching runner. Interoperation between the 0.1 and 0.2 protocols is not implemented.
 
 ## How changes ship
 

@@ -4,9 +4,7 @@ package_family = "0.2"
 
 [workflow]
 # TODO: 2026.10 is provisional
-base_edition = "2026.10"
-current_edition = "2026.10-0.2.0-alpha.1"
-supported_editions = ["2026.10-0.2.0-alpha.1"]
+current_edition = "2026.10"
 
 [workflow.dropped_editions]
 "2026.06" = "0.2 replaces the 0.1 gRPC protocol with realtime sessions"
@@ -17,7 +15,7 @@ spec = "docs/editions/2026.06.md"
 sealed_in = "0.1.0"
 spec_sha256 = "a3dcf2195f6b35819c91192396e94a445c039278d99e20db81fa2a2fe43664a2"
 
-[workflow.editions."2026.10-0.2.0-alpha.1"]
+[workflow.editions."2026.10"]
 status = "provisional"
 spec = "docs/editions/2026.10.md"
 

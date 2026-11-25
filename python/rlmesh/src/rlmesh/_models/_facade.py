@@ -177,7 +177,6 @@ class EnvTarget:
         binding: bool = False,
         trust: bool | None = None,
         instruction: str | None = None,
-        workflow_edition: str | None = None,
     ) -> None:
         from ._connect import classify_env_target
 
@@ -188,14 +187,13 @@ class EnvTarget:
         self.binding = binding
         self.trust = trust
         self.instruction = instruction
-        self.workflow_edition = workflow_edition
         self.env: Any = None
         self.server: Any = None
         self.client: Any = None
         self._lent = contextlib.ExitStack()
         self._previous: tuple[Any, Any, Any] | None = None
 
-    def open(self, edition: str | None) -> tuple[str, str | None, bool]:
+    def open(self) -> tuple[str, str | None, bool]:
         from .._sandbox.session import SandboxLifecycle, peer_session
         from ._connect import factory_env
 
@@ -243,7 +241,7 @@ class EnvTarget:
             if self.context is not None:
                 self.context.bind_client(payload, local=False)
             return address, None, False
-        edition = self._local_edition(payload, edition)
+        edition = self._local_edition(payload)
         if kind == "factory":
             self.env = factory_env(payload)
         self.server = model._serve_here(self.env, edition)
@@ -253,27 +251,12 @@ class EnvTarget:
             self.context.contract = self.server.env_contract
         return self.server.address, None, False
 
-    def _local_edition(self, source: object, model_edition: str | None) -> str | None:
-        """What the env served in this process declares: its own, else the model's.
-
-        A local env is a participant like a served one, so its declaration
-        resolves as serving resolves it -- the call's keyword,
-        ``RLMESH_WORKFLOW_EDITION``, the factory's (or env class's)
-        ``workflow_edition``, then its project's ``[tool.rlmesh]`` -- and an
-        edition this build cannot drive is refused here with serving's error.
-        Declaring nothing carries the model's resolved declaration instead, as
-        before: the run negotiates the same edition either way.
-        """
+    def _local_edition(self, source: object) -> str:
+        """The edition the env served in this process runs at, resolved as serving resolves it."""
         from .._editions import resolve_workflow_edition
 
-        origin = type(source)
-        declared = getattr(origin, "workflow_edition", None)
-        own = resolve_workflow_edition(
-            call=self.workflow_edition,
-            declared=declared if isinstance(declared, str) else None,
-            origin=origin,
-        )
-        return own if own is not None else model_edition
+        declared = getattr(type(source), "workflow_edition", None)
+        return resolve_workflow_edition(declared if isinstance(declared, str) else None)
 
     def release(self, close_env: bool) -> None:
         try:

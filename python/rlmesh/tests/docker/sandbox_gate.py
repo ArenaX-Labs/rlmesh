@@ -150,7 +150,8 @@ def check_same_build(images: GateImages) -> None:
     from rlmesh._rlmesh import build_info
 
     probe = (
-        "from rlmesh._rlmesh import build_info; print(build_info().workflow_edition)"
+        "from rlmesh._rlmesh import build_info; i = build_info(); "
+        "print(f'{i.version} wire {i.session_wire_revision}')"
     )
     inside = docker(
         "run",
@@ -163,7 +164,8 @@ def check_same_build(images: GateImages) -> None:
         "-c",
         probe,
     )
-    here = build_info().workflow_edition
+    info = build_info()
+    here = f"{info.version} wire {info.session_wire_revision}"
     if inside != here:
         pytest.fail(
             f"the gate's images run rlmesh build {inside!r} and this host runs "

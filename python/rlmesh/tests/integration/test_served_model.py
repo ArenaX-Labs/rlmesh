@@ -569,7 +569,7 @@ class Env:
 model = rlmesh.Model(sys.argv[1])
 for _ in range(4):
     results = model.run_routes(
-        [Env() for _ in range(32)], episodes=32, workflow_edition="2026.10"
+        [Env() for _ in range(32)], episodes=32
     )
     assert all(isinstance(r, rlmesh.RunResult) for r in results), results
 """

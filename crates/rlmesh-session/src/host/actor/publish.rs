@@ -397,7 +397,6 @@ mod tests {
             supports: supports.iter().map(ToString::to_string).collect(),
             requires: Vec::new(),
             workflow_edition: String::new(),
-            workflow_editions: Vec::new(),
             present: true,
             left: None,
             device: String::new(),

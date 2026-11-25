@@ -172,7 +172,7 @@ impl ModelBinding {
                 vec![Role::Controller],
                 PriorityClass::Model,
                 timeout,
-                service.editions.clone(),
+                service.workflow_edition.clone(),
             )
             .await?;
         service.serving_as(self.name.as_str(), self.address());
@@ -295,15 +295,12 @@ impl ModelConnection {
             .is_ok_and(|session| session.base == own.base && session.session == own.session)
     }
 
-    /// The workflow editions the model declared in its session, from the
+    /// The workflow edition the model declared in its session, from the
     /// roster; `None` when it declared none.
-    pub fn workflow_editions(&self) -> Option<rlmesh_proto::SessionOffer> {
+    pub fn workflow_edition(&self) -> Option<String> {
         let snapshot = self.participant.watch().borrow().clone()?;
         let model = snapshot.roster.into_iter().find(|p| p.id == self.model)?;
-        (!model.workflow_editions.is_empty()).then(|| rlmesh_proto::SessionOffer {
-            editions: model.workflow_editions,
-            preferred: Some(model.workflow_edition).filter(|edition| !edition.is_empty()),
-        })
+        Some(model.workflow_edition).filter(|edition| !edition.is_empty())
     }
 
     /// Leaves the model's session (asking an invited model to leave it).

@@ -63,7 +63,6 @@ pub struct RLMeshEnvFactoryAttributes {
 pub struct RLMeshEnvFactoryServeOptions {
     pub struct_size: usize,
     pub num_envs: i64,
-    pub workflow_edition: *const c_char,
     pub make_kwargs: *const RLMeshValue,
     pub cancel: *const RLMeshExtCancelToken,
     pub _reserved: u64,
@@ -625,7 +624,6 @@ pub unsafe extern "C" fn rlmesh_env_factory_serve(
             None => rlmesh::EnvFactoryServeOptions::default(),
             Some(o) => rlmesh::EnvFactoryServeOptions {
                 num_envs: o.num_envs,
-                workflow_edition: unsafe { ffi::text(o.workflow_edition) }?,
                 make_kwargs: ffi::dict(o.make_kwargs)?.unwrap_or_default(),
                 cancel: unsafe { o.cancel.as_ref() }.map(|t| t.0.clone()),
             },
@@ -682,7 +680,6 @@ pub unsafe extern "C" fn rlmesh_ext_env_factory_start(
             None => rlmesh::EnvFactoryServeOptions::default(),
             Some(o) => rlmesh::EnvFactoryServeOptions {
                 num_envs: o.num_envs,
-                workflow_edition: unsafe { ffi::text(o.workflow_edition) }?,
                 make_kwargs: ffi::dict(o.make_kwargs)?.unwrap_or_default(),
                 cancel: unsafe { o.cancel.as_ref() }.map(|t| t.0.clone()),
             },

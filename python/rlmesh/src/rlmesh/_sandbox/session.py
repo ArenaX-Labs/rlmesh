@@ -384,7 +384,6 @@ class SandboxLifecycle:
             *,
             connect_timeout_seconds: float | None,
             request_timeout_seconds: float | None = None,
-            workflow_edition: str | None = None,
         ) -> None: ...
 
     def _detach(self) -> None:

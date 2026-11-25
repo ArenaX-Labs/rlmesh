@@ -13,7 +13,6 @@ use super::{
     Served, Shared, State, lock,
 };
 use crate::adapters::EnvTags;
-use crate::editions::EditionSources;
 use crate::env::envelope::{DescribingHost, env_envelope};
 use crate::env::single_lane::SingleLaneEnv;
 use crate::env::sync_wire::{env_contract_of, vector_contract_of};
@@ -225,11 +224,7 @@ impl EnvServer {
         let serve = options.options.clone().unwrap_or_default();
         serve.validate()?;
 
-        let edition = crate::editions::resolve_native(EditionSources {
-            call: serve.workflow_edition.as_deref(),
-            option: None,
-            declared: None,
-        })?;
+        let edition = crate::editions::resolve_workflow_edition(serve.workflow_edition.as_deref())?;
 
         let binding_description = match factory.as_ref() {
             Some(publish) => publish.envelope.as_ref().ok().cloned(),
@@ -239,7 +234,7 @@ impl EnvServer {
                     None,
                     None,
                     &DescribingHost::rust(),
-                    edition.as_deref(),
+                    Some(&edition),
                     matches!(served, Served::Vector(_)),
                 )?)
             }
@@ -256,7 +251,7 @@ impl EnvServer {
         let close_timeout = serve.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE);
         let close_env_on_shutdown = options.close_env_on_shutdown;
         let options = ServeOptions {
-            workflow_edition: edition,
+            workflow_edition: Some(edition),
             ..serve
         };
         let (done, _) = tokio::sync::watch::channel(false);

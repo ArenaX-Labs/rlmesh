@@ -40,8 +40,6 @@ pub struct ModelResolve {
     pub execution_horizon: u32,
     /// Whether the driver sends the steps it replayed as history.
     pub delivers_history: bool,
-    /// The workflow edition the driver pinned (empty: unpinned).
-    pub workflow_edition: String,
     /// Whether the driver reads the route's resolve advisories.
     pub reads_advisories: bool,
 }

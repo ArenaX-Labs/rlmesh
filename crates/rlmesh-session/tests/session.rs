@@ -347,7 +347,6 @@ fn attach(name: &str, role: Role) -> Command {
         supports: Vec::new(),
         requires: Vec::new(),
         workflow_edition: String::new(),
-        workflow_editions: Vec::new(),
         estop: None,
     }
 }
@@ -2591,7 +2590,7 @@ async fn a_host_admits_its_own_wire_revision_or_none_and_refuses_another() {
         refusal.message,
         format!(
             "participant later speaks session wire revision {} (a later pre-release); this host \
-             speaks revision {WIRE_REVISION} (one port); rebuild both from the same release",
+             speaks revision {WIRE_REVISION} (declared editions); rebuild both from the same release",
             WIRE_REVISION + 1
         )
     );

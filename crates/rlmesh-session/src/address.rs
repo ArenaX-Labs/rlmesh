@@ -715,29 +715,22 @@ impl SessionAddress {
         priority: PriorityClass,
         host_timeout: Duration,
     ) -> Result<Participant, SessionError> {
-        self.join_declaring(
-            id,
-            roles,
-            priority,
-            host_timeout,
-            (String::new(), Vec::new()),
-        )
-        .await
+        self.join_declaring(id, roles, priority, host_timeout, String::new())
+            .await
     }
 
     /// [`Self::join`], declaring the workflow edition the participant runs
-    /// at (empty: none) and every one it runs, for the roster.
+    /// at (empty: none) for the roster.
     pub async fn join_declaring(
         &self,
         id: &str,
         roles: Vec<Role>,
         priority: PriorityClass,
         host_timeout: Duration,
-        (workflow_edition, workflow_editions): (String, Vec<String>),
+        workflow_edition: String,
     ) -> Result<Participant, SessionError> {
         self.join_with(id, roles, priority, host_timeout, |config| {
             config.workflow_edition = workflow_edition;
-            config.workflow_editions = workflow_editions;
         })
         .await
     }

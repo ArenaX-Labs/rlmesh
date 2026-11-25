@@ -51,9 +51,8 @@ message ParticipantInfo {
   // Features it implements and features it cannot run without.
   repeated string supports = 7;
   repeated string requires = 8;
-  // The workflow edition it declares (empty: none) and every one it runs.
+  // The workflow edition it declares (empty: none).
   string workflow_edition = 9;
-  repeated string workflow_editions = 10;
   // Its heartbeats arrive.
   bool present = 12;
   // The device its handshake authenticated (`local` in an embedded host).
@@ -718,10 +717,8 @@ message Attach {
   // Features it cannot run without; the host refuses the attach (CTL_STATUS_INCOMPATIBLE) when
   // it lacks one.
   repeated string requires = 6;
-  // The workflow edition it declares (empty: none) and every one it runs, which the roster
-  // shows the driver that negotiates a run's edition.
+  // The workflow edition it declares (empty: none), shown on the roster.
   string workflow_edition = 7;
-  repeated string workflow_editions = 8;
   // An embodiment's e-stop latch carried from its previous session: the session starts in
   // ESTOP.
   LocalEstop estop = 9;
@@ -1503,8 +1500,6 @@ message ModelResolve {
   uint32 execution_horizon = 3;
   // Whether the driver sends the steps it replayed as history.
   bool delivers_history = 4;
-  // The workflow edition the driver pinned; empty: unpinned.
-  string workflow_edition = 5;
   // The driver reads the route's resolve advisories; a model answers them on ModelResolved
   // only then.
   bool reads_advisories = 6;

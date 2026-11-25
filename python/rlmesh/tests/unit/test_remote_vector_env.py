@@ -109,9 +109,6 @@ class _FakeNativeClient:
     def env_id(self) -> str:
         return "env-id"
 
-    def edition_cell(self) -> Any:
-        return SimpleNamespace(get=lambda: "2026.06")
-
     def close(self) -> None:
         self.closed = True
 
@@ -122,12 +119,11 @@ def test_accessors_read_state_cached_at_construction(
     from rlmesh._native import RemoteVectorEnv
 
     fake = _FakeNativeClient(num_envs=3)
-    monkeypatch.setattr(RemoteVectorEnv, "_make_client", lambda self, a, c, r, e: fake)
+    monkeypatch.setattr(RemoteVectorEnv, "_make_client", lambda self, a, c, r: fake)
     env = RemoteVectorEnv("127.0.0.1:5555/env")
     fake.env_id = None  # type: ignore[method-assign]
     assert env.env_id == "env-id"
     assert env.num_envs == 3
-    assert env.selected_workflow_edition == "2026.06"
 
 
 def test_client_timeouts_pass_through_to_native(
@@ -142,7 +138,6 @@ def test_client_timeouts_pass_through_to_native(
         address: str,
         connect: float | None,
         request: float | None,
-        workflow_edition: str | None,
     ) -> Any:
         captured["connect"], captured["request"] = connect, request
         return _FakeNativeClient(num_envs=3)

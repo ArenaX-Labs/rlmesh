@@ -9,7 +9,6 @@ loudly if any version-bearing spot is missed.
 Usage:
     python scripts/bump_version.py X.Y.Z[-{alpha,beta,rc}.N]
     python scripts/bump_version.py --check   # run self-tests, change nothing
-    python scripts/bump_version.py --sync-editions   # copy the retained editions into rlmesh-proto
 """
 
 from __future__ import annotations
@@ -26,7 +25,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SEMVER = re.compile(r"^\d+\.\d+\.\d+(-(?:alpha|beta|rc)\.\d+)?$")
 SEMVER_PARTS = re.compile(r"^\d+\.\d+\.\d+(?:-(?P<channel>alpha|beta|rc)\.\d+)?$")
 HISTORY_DOCS = {"docs/changelog.md", "docs/compatibility.md", "docs/versioning.md"}
-PACKAGED_SUPPORTED_EDITIONS = ROOT / "crates/rlmesh-proto/supported_editions.txt"
 WORKFLOW_EDITION_BLOCK = re.compile(
     r'^\[workflow\.editions\."(?P<edition>[^"]+)"\]\n.*?(?=^\[[^\]]+\]|\Z)',
     re.DOTALL | re.MULTILINE,
@@ -82,61 +80,13 @@ def _workflow_edition_status(block: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _sealed_workflow_editions(text: str) -> list[str]:
-    sealed: list[str] = []
-    for match in WORKFLOW_EDITION_BLOCK.finditer(text):
-        if _workflow_edition_status(match.group(0)) == "sealed":
-            sealed.append(match.group("edition"))
-    return sealed
-
-
-def _dropped_workflow_editions(text: str) -> set[str]:
-    """Sealed editions ``[workflow.dropped_editions]`` names, never re-offered."""
-    workflow = tomllib.loads(text).get("workflow", {})
-    return set(workflow.get("dropped_editions", {}))
-
-
-def _workflow_supported_value(editions: list[str]) -> str:
-    return "[" + ", ".join(f'"{edition}"' for edition in editions) + "]"
-
-
-def _replace_workflow_edition_block(text: str, match: re.Match[str], block: str) -> str:
-    return text[: match.start()] + block + text[match.end() :]
-
-
-def _drop_provisional_workflow_edition_block(text: str, edition: str) -> str:
-    match = _workflow_edition_block(text, edition)
-    if match is None or _workflow_edition_status(match.group(0)) != "provisional":
-        return text
-    return _replace_workflow_edition_block(text, match, "")
-
-
-def _insert_workflow_edition_block(text: str, block: str) -> str:
-    seen_workflow_edition = False
-    for match in re.finditer(r"^\[[^\]]+\]\n", text, re.MULTILINE):
-        header = match.group(0).strip()
-        if header.startswith("[workflow.editions."):
-            seen_workflow_edition = True
-            continue
-        if seen_workflow_edition:
-            return text[: match.start()] + block + text[match.start() :]
-    return text.rstrip() + "\n\n" + block
-
-
 def _update_workflow_manifest(text: str, version: str) -> str:
-    status = _release_status(version)
-    base = _workflow_value(text, "base_edition")
-    old_edition = _workflow_value(text, "current_edition")
-    new_edition = base if status == "stable" else f"{base}-{version}"
-    spec = f"docs/editions/{base}.md"
-    supported = [new_edition]
-    dropped = _dropped_workflow_editions(text)
-    supported.extend(
-        edition
-        for edition in _sealed_workflow_editions(text)
-        if edition != new_edition and edition not in dropped
-    )
+    """Set the release status; a stable release seals a provisional current edition.
 
+    Editions do not follow versions: a new edition is cut by hand, only when a
+    default changes.
+    """
+    status = _release_status(version)
     text = re.sub(
         r'^status = "(alpha|beta|rc|stable)"$',
         f'status = "{status}"',
@@ -144,68 +94,21 @@ def _update_workflow_manifest(text: str, version: str) -> str:
         count=1,
         flags=re.MULTILINE,
     )
-    text = re.sub(
-        r'^current_edition = "[^"]+"$',
-        f'current_edition = "{new_edition}"',
-        text,
-        count=1,
-        flags=re.MULTILINE,
+    if status != "stable":
+        return text
+    edition = _workflow_value(text, "current_edition")
+    match = _workflow_edition_block(text, edition)
+    if match is None or _workflow_edition_status(match.group(0)) != "provisional":
+        return text
+    spec = f"docs/editions/{edition}.md"
+    block = (
+        f'[workflow.editions."{edition}"]\n'
+        'status = "sealed"\n'
+        f'spec = "{spec}"\n'
+        f'sealed_in = "{version}"\n'
+        f'spec_sha256 = "{_canonical_spec_sha256(ROOT / spec)}"\n\n'
     )
-    text = re.sub(
-        r"^supported_editions = \[[^\]]*\]$",
-        f"supported_editions = {_workflow_supported_value(supported)}",
-        text,
-        count=1,
-        flags=re.MULTILINE,
-    )
-
-    if status == "stable":
-        block = (
-            f'[workflow.editions."{new_edition}"]\n'
-            'status = "sealed"\n'
-            f'spec = "{spec}"\n'
-            f'sealed_in = "{version}"\n'
-            f'spec_sha256 = "{_canonical_spec_sha256(ROOT / spec)}"\n\n'
-        )
-    else:
-        block = (
-            f'[workflow.editions."{new_edition}"]\n'
-            'status = "provisional"\n'
-            f'spec = "{spec}"\n\n'
-        )
-
-    new_match = _workflow_edition_block(text, new_edition)
-    if new_match is not None:
-        if (
-            status == "stable"
-            and _workflow_edition_status(new_match.group(0)) == "sealed"
-        ):
-            return _drop_provisional_workflow_edition_block(text, old_edition)
-        return _replace_workflow_edition_block(text, new_match, block)
-
-    old_match = _workflow_edition_block(text, old_edition)
-    if old_match is None:
-        return _insert_workflow_edition_block(text, block)
-    if _workflow_edition_status(old_match.group(0)) == "sealed":
-        return _insert_workflow_edition_block(text, block)
-    return _replace_workflow_edition_block(text, old_match, block)
-
-
-def sync_packaged_supported_editions() -> None:
-    """Write rlmesh.toml's current edition, then its other retained editions, into
-    the file rlmesh-proto ships.
-
-    A crate built from crates.io has no rlmesh.toml, so its build script reads its
-    offer and, from the first line, its base edition from this file instead.
-    """
-    workflow = tomllib.loads((ROOT / "rlmesh.toml").read_text())["workflow"]
-    current = workflow["current_edition"]
-    editions = [current]
-    editions.extend(e for e in workflow["supported_editions"] if e != current)
-    PACKAGED_SUPPORTED_EDITIONS.write_text(
-        "".join(f"{edition}\n" for edition in editions)
-    )
-    print(f"  {PACKAGED_SUPPORTED_EDITIONS.relative_to(ROOT)}")
+    return text[: match.start()] + block + text[match.end() :]
 
 
 def current_version() -> str:
@@ -308,7 +211,6 @@ def bump(old: str, new: str) -> None:
     )
     text = _update_workflow_manifest(text, new)
     rlmesh_toml.write_text(text)
-    sync_packaged_supported_editions()
 
     for readme in sorted((ROOT / "crates").glob("*/README.md")):
         sub_file(
@@ -370,13 +272,11 @@ def selfcheck() -> None:
     members = {path.relative_to(ROOT).as_posix() for path in member_manifests(ROOT)}
     assert "crates/rlmesh-device/Cargo.toml" in members
 
-    sealed_manifest = """[release]
-status = "stable"
+    manifest = """[release]
+status = "rc"
 
 [workflow]
-base_edition = "2026.09"
-current_edition = "2026.06"
-supported_editions = ["2026.06"]
+current_edition = "2026.10"
 
 [workflow.editions."2026.06"]
 status = "sealed"
@@ -384,42 +284,21 @@ spec = "docs/editions/2026.06.md"
 sealed_in = "0.1.0"
 spec_sha256 = "already-sealed"
 
+[workflow.editions."2026.10"]
+status = "provisional"
+spec = "docs/editions/2026.10.md"
+
 [protocols."rlmesh-realtime-v1"]
 status = "provisional"
 """
-    prerelease_manifest = _update_workflow_manifest(
-        sealed_manifest,
-        "0.2.0-alpha.1",
-    )
-    assert (
-        'supported_editions = ["2026.09-0.2.0-alpha.1", "2026.06"]'
-        in prerelease_manifest
-    )
-    assert '[workflow.editions."2026.06"]' in prerelease_manifest
-    assert 'sealed_in = "0.1.0"' in prerelease_manifest
-    assert '[workflow.editions."2026.09-0.2.0-alpha.1"]' in prerelease_manifest
-    dropped_manifest = _update_workflow_manifest(
-        sealed_manifest.replace(
-            "\n[workflow.editions.",
-            '\n[workflow.dropped_editions]\n"2026.06" = "major break"\n\n'
-            "[workflow.editions.",
-            1,
-        ),
-        "0.2.0-alpha.1",
-    )
-    assert 'supported_editions = ["2026.09-0.2.0-alpha.1"]' in dropped_manifest
-    assert 'sealed_in = "0.1.0"' in dropped_manifest
-
-    stable_patch_manifest = sealed_manifest.replace(
-        'base_edition = "2026.09"',
-        'base_edition = "2026.06"',
-    )
-    stable_patch_manifest = _update_workflow_manifest(
-        stable_patch_manifest,
-        "0.1.1",
-    )
-    assert 'sealed_in = "0.1.0"' in stable_patch_manifest
-    assert 'sealed_in = "0.1.1"' not in stable_patch_manifest
+    prerelease = _update_workflow_manifest(manifest, "0.2.0-beta.1")
+    assert 'status = "beta"' in prerelease
+    assert prerelease.count('status = "provisional"') == 2
+    stable = _update_workflow_manifest(manifest, "0.2.0")
+    assert '[workflow.editions."2026.10"]\nstatus = "sealed"' in stable
+    assert 'sealed_in = "0.2.0"' in stable
+    assert 'spec_sha256 = "already-sealed"' in stable
+    assert _update_workflow_manifest(stable, "0.2.1") == stable
     print("bump_version self-check passed")
 
 
@@ -429,9 +308,6 @@ def main() -> None:
     arg = sys.argv[1]
     if arg == "--check":
         selfcheck()
-        return
-    if arg == "--sync-editions":
-        sync_packaged_supported_editions()
         return
     if not SEMVER.match(arg):
         sys.exit(

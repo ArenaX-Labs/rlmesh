@@ -11,7 +11,6 @@ use crate::ffi;
 use crate::model_api::RLMeshModel;
 use crate::run_api::{RLMeshEnvTarget, RLMeshModelTarget};
 use crate::value::handle::{RLMeshValue, into_handle, value_ref, write_out};
-use std::ffi::c_char;
 use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
@@ -21,7 +20,6 @@ use std::sync::{
 #[derive(Clone, Copy)]
 pub struct RLMeshBindOptions {
     pub struct_size: usize,
-    pub workflow_edition: *const c_char,
     pub execution_horizon: u32,
     pub close_env: bool,
     pub has_execution_horizon: bool,
@@ -250,7 +248,6 @@ pub unsafe extern "C" fn rlmesh_bind(
             options.close_env = o.close_env;
             options.execution_horizon = (o.has_execution_horizon || o.execution_horizon != 0)
                 .then_some(o.execution_horizon);
-            options.workflow_edition = unsafe { ffi::text(o.workflow_edition) }?;
             if !o.hooks.is_null() {
                 let bound = HooksBox(Box::into_raw(Box::new(unsafe {
                     crate::run_hooks::BoundHooks::new(o.hooks)

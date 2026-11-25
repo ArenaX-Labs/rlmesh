@@ -168,7 +168,6 @@ fn run_once(shape: &Shape) -> Traces {
                 execution_horizon: Some(shape.horizon),
                 prefetch_lead: shape.prefetch,
                 hooks: Some(&mut hooks),
-                workflow_edition: Some("2026.10".into()),
                 ..Default::default()
             },
         )
@@ -305,7 +304,6 @@ async fn drive_managed(
             ResolveOptions {
                 execution_horizon: 1,
                 delivers_history: true,
-                workflow_edition: None,
             },
         )
         .await
@@ -315,7 +313,7 @@ async fn drive_managed(
         env_id: "catalog".into(),
         env_component_id: "catalog-env".into(),
         model_component_id: "served-model".into(),
-        workflow_edition: rlmesh_proto::parse_retained_edition("2026.10").unwrap(),
+        workflow_edition: rlmesh_proto::Edition::E2026_10,
         env_contract: rlmesh::binding::data::env_contract_to_proto(&contract),
         num_envs: contract.num_envs as usize,
         base_seed: Some(5),

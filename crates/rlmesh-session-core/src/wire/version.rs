@@ -25,9 +25,13 @@ pub const SPEC_VERSION: u32 = 1;
 /// pre-release speaks, so two builds of one version that cannot talk say so
 /// instead of timing out. Bumped on any wire-breaking change before 0.2.0
 /// freezes the protocol, frozen from then on. 0 on the wire means absent.
-pub const WIRE_REVISION: u32 = 1;
+pub const WIRE_REVISION: u32 = 2;
 
-const REVISIONS: &[&str] = &["four ports: an earlier 0.2 pre-release", "one port"];
+const REVISIONS: &[&str] = &[
+    "four ports: an earlier 0.2 pre-release",
+    "negotiated editions: 0.2.0-alpha.1",
+    "declared editions",
+];
 
 /// What wire revision `revision` is (`"one port"`).
 pub fn wire_revision_name(revision: u32) -> &'static str {
@@ -141,17 +145,17 @@ mod tests {
             host_revision_mismatch("the host at 10.0.0.2:7500", 0).as_deref(),
             Some(
                 "the host at 10.0.0.2:7500 speaks session wire revision 0 (four ports: an earlier \
-                 0.2 pre-release); this build speaks revision 1 (one port); rebuild both from the \
-                 same release"
+                 0.2 pre-release); this build speaks revision 2 (declared editions); rebuild both \
+                 from the same release"
             )
         );
         assert_eq!(participant_revision_mismatch("eye-3", 0), None);
         assert_eq!(participant_revision_mismatch("eye-3", WIRE_REVISION), None);
         assert_eq!(
-            participant_revision_mismatch("eye-3", 2).as_deref(),
+            participant_revision_mismatch("eye-3", 3).as_deref(),
             Some(
-                "participant eye-3 speaks session wire revision 2 (a later pre-release); this \
-                 host speaks revision 1 (one port); rebuild both from the same release"
+                "participant eye-3 speaks session wire revision 3 (a later pre-release); this \
+                 host speaks revision 2 (declared editions); rebuild both from the same release"
             )
         );
     }

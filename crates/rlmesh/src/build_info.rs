@@ -5,7 +5,7 @@ use std::fmt;
 /// This crate's version, in SemVer (`0.1.0-rc.12`).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Where a build's cohort came from.
+/// How a build was made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BuildSource {
@@ -54,24 +54,13 @@ pub struct BuildInfo {
     /// may break before 0.2.0 freezes it, and two builds on different
     /// revisions cannot talk.
     pub session_wire_revision: u32,
-    /// The exact workflow edition spelling this build advertises: the sealed
-    /// `YYYY.MM` base on a release, `YYYY.MM-<cohort>` on a prerelease or
-    /// source build.
+    /// The bare `YYYY.MM` workflow edition this build runs at when nothing
+    /// declares one ([`current_workflow_edition`](crate::current_workflow_edition)),
+    /// the same on every build of a release line.
     pub workflow_edition: &'static str,
-    /// The sealed `YYYY.MM` base of `workflow_edition`
-    /// ([`current_workflow_edition`](crate::current_workflow_edition)).
-    pub workflow_edition_base: &'static str,
-    /// Every workflow edition this build can drive a session at, newest
-    /// first.
-    pub supported_workflow_editions: &'static [&'static str],
-    /// The cohort that spells `workflow_edition`: `stable` on a sealed
-    /// release, the prerelease version on a prerelease, `dev.<git>` on a
-    /// source build.
-    pub build_cohort: &'static str,
-    /// Where the cohort came from.
+    /// How the build was made.
     pub build_source: BuildSource,
-    /// The git state a source build was stamped from (the short sha,
-    /// suffixed `.dirty.<fingerprint>` for uncommitted changes), or `None`.
+    /// The short git commit a source build was stamped from, or `None`.
     pub git: Option<&'static str>,
 }
 
@@ -82,11 +71,8 @@ pub fn build_info() -> BuildInfo {
         protocol_generation: rlmesh_proto::PROTOCOL_GENERATION,
         session_wire_revision: rlmesh_session::wire::version::WIRE_REVISION,
         workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION,
-        workflow_edition_base: rlmesh_proto::WORKFLOW_EDITION_BASE,
-        supported_workflow_editions: rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS,
-        build_cohort: rlmesh_proto::BUILD_COHORT,
         build_source: BuildSource::of(rlmesh_proto::BUILD_SOURCE),
-        git: rlmesh_proto::BUILD_COHORT.strip_prefix("dev."),
+        git: Some(rlmesh_proto::BUILD_GIT).filter(|git| !git.is_empty()),
     }
 }
 
@@ -95,14 +81,11 @@ impl fmt::Display for BuildInfo {
         write!(
             f,
             "BuildInfo(version={:?}, protocol_generation={:?}, session_wire_revision={}, \
-             workflow_edition={:?}, workflow_edition_base={:?}, build_cohort={:?}, \
-             build_source={:?}, git=",
+             workflow_edition={:?}, build_source={:?}, git=",
             self.version,
             self.protocol_generation,
             self.session_wire_revision,
             self.workflow_edition,
-            self.workflow_edition_base,
-            self.build_cohort,
             self.build_source.as_str(),
         )?;
         match self.git {
@@ -125,16 +108,13 @@ mod tests {
             info.session_wire_revision,
             rlmesh_session::wire::version::WIRE_REVISION
         );
+        assert_eq!(info.workflow_edition, crate::current_workflow_edition());
         assert_eq!(
-            info.workflow_edition_base,
-            crate::current_workflow_edition()
+            rlmesh_proto::Edition::parse(info.workflow_edition),
+            Ok(rlmesh_proto::Edition::current()),
+            "every build, release or not, reports the bare edition"
         );
-        assert_eq!(info.supported_workflow_editions[0], info.workflow_edition);
-        assert!(
-            info.workflow_edition
-                .starts_with(info.workflow_edition_base)
-        );
-        assert_eq!(info.git.is_some(), info.build_cohort.starts_with("dev."));
+        assert_eq!(info.git.is_some(), info.build_source == BuildSource::Git);
         assert_eq!(
             info.build_source.as_str(),
             rlmesh_proto::BUILD_SOURCE,

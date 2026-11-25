@@ -171,9 +171,7 @@ def _traces(make_env: Any, address: str, **run: Any) -> tuple[Any, ...]:
     recorder, hooks = Recorder(), Hooks()
     model = rlmesh.numpy.Model(recorder)
     try:
-        result = model.run(
-            server.address, hooks=hooks, workflow_edition="2026.10", **run
-        )
+        result = model.run(server.address, hooks=hooks, **run)
     finally:
         model.close()
         server.shutdown()
@@ -219,7 +217,7 @@ def test_a_served_model_runs_a_lockstep_env_as_v1_ran_a_grpc_one(
         hooks = Hooks()
         try:
             rlmesh.numpy.Model(f"{session}/m").run(
-                server.address, seeds=[5, 6], hooks=hooks, workflow_edition="2026.10"
+                server.address, seeds=[5, 6], hooks=hooks
             )
         finally:
             server.shutdown()

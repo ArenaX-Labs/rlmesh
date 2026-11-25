@@ -35,10 +35,6 @@ int main(void) {
   PTR(build, version);
   PTR(build, protocol_generation);
   PTR(build, workflow_edition);
-  PTR(build, workflow_edition_base);
-  PTR(build, supported_workflow_editions);
-  NUM(build, supported_workflow_editions_len);
-  PTR(build, build_cohort);
   NUM(build, build_source);
   NUM(build, session_wire_revision);
   LASTPTR(build, git);
@@ -73,7 +69,6 @@ int main(void) {
   printf(",\"factory\":{");
   NUM(factory, struct_size);
   NUM(factory, num_envs);
-  PTR(factory, workflow_edition);
   PTR(factory, make_kwargs);
   PTR(factory, cancel);
   NUM(factory, _reserved);

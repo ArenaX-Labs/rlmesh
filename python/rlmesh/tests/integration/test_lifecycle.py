@@ -1242,6 +1242,5 @@ def test_a_closed_client_is_misuse_and_lanes_are_checked_before_any_request() ->
         with pytest.raises(RuntimeError, match=r"^RemoteEnv is closed$"):
             remote.reset()
         assert remote.env_contract is not None
-        assert remote.selected_workflow_edition
     finally:
         server.shutdown()

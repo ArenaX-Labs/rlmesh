@@ -59,7 +59,6 @@ __all__ = [
     "PARTS",
     "PrimitiveValue",
     "PyBinding",
-    "PyEditionCell",
     "PyEnvClient",
     "PyEnvServer",
     "PyEpisodeArtifacts",
@@ -118,7 +117,7 @@ __all__ = [
     "predict_seed",
     "redact_secrets",
     "resolve_execution_horizon",
-    "resolve_workflow_edition_rungs",
+    "resolve_workflow_edition",
     "run_cli",
     "run_session",
     "sandbox_host_identity",
@@ -353,42 +352,22 @@ class BuildInfo:
     @property
     def workflow_edition(self) -> builtins.str:
         r"""
-        The exact workflow edition spelling this build advertises: the sealed
-        `YYYY.MM` base on a release, `YYYY.MM-<cohort>` on a prerelease or
-        source build.
-        """
-    @property
-    def workflow_edition_base(self) -> builtins.str:
-        r"""
-        The sealed `YYYY.MM` base of `workflow_edition`, the same on every build
-        of the edition; what `current_workflow_edition()` returns.
-        """
-    @property
-    def supported_workflow_editions(self) -> builtins.list[builtins.str]:
-        r"""
-        Every workflow edition this build can drive a session at, newest first; the list a served
-        peer offers in its handshake.
-        """
-    @property
-    def build_cohort(self) -> builtins.str:
-        r"""
-        The cohort that spells `workflow_edition`: `stable` on a sealed release,
-        the prerelease version (`0.1.0-rc.12`) on a prerelease, `dev.<git>` on a
-        source build.
+        The bare `YYYY.MM` workflow edition this build runs at when nothing
+        declares one; what `current_workflow_edition()` returns, on a release,
+        prerelease and source build alike.
         """
     @property
     def build_source(self) -> builtins.str:
         r"""
-        Where the cohort came from: `release` (a release build), `package` (a
+        How the build was made: `release` (a release build), `package` (a
         published crate or a checkout without git), or `git` (a source build
         stamped from its commit).
         """
     @property
     def git(self) -> typing.Optional[builtins.str]:
         r"""
-        The git state a source build was stamped from — the short commit sha,
-        suffixed `.dirty.<fingerprint>` when the tree had uncommitted changes —
-        or `None` when the build was not stamped from git.
+        The short commit a source build was stamped from, or `None` when the
+        build was not stamped from git.
         """
     def __repr__(self) -> builtins.str: ...
 
@@ -426,20 +405,10 @@ class PyBinding:
     def close(self) -> None: ...
 
 @typing.final
-class PyEditionCell:
-    r"""
-    A client's selected workflow edition, read without borrowing the client,
-    so it never waits on (or fails against) a call in flight (RMT-P5).
-    """
-    def get(self) -> str: ...
-
-@typing.final
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, runtime_info: bool = True) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
-    def selected_workflow_edition(self) -> str: ...
-    def edition_cell(self) -> PyEditionCell: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -534,22 +503,20 @@ class PyModel:
     def set_inner_models(self, inners: list[tuple[int, PyModel]]) -> None: ...
     @staticmethod
     def random_sample() -> PyModel: ...
-    def bind(self, env_address: str, execution_horizon: int = 1, workflow_edition: str | None = None) -> PyBinding: ...
+    def bind(self, env_address: str, execution_horizon: int = 1) -> PyBinding: ...
     def run_facade(self, target: object, relay: object, options: dict[str, typing.Any]) -> dict[str, typing.Any]: ...
     def run_routes_facade(self, routes: list[tuple[object, dict[str, typing.Any]]]) -> tuple[list[typing.Any], BaseException | None]: ...
-    def bind_facade(self, target: object, execution_horizon: int = 1, workflow_edition: str | None = None, close_env: bool = False) -> PyBinding: ...
+    def bind_facade(self, target: object, execution_horizon: int = 1, close_env: bool = False) -> PyBinding: ...
     def stop_serving(self) -> None: ...
-    def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, invite_at: str | None = None) -> dict[str, typing.Any]: ...
+    def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, hooks: object | None = None, invite_at: str | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, name: str, options: ServeOptions | None = None, envelope: str | None = None, max_batch_size: int | None = None, batch_window_ms: int | None = None, batch_byte_budget: int | None = None, max_in_flight_batches: int | None = None, batch_records: str | os.PathLike[str] | None = None) -> None: ...
 
 @typing.final
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, runtime_info: bool = True) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
-    def selected_workflow_edition(self) -> str: ...
-    def edition_cell(self) -> PyEditionCell: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -1351,19 +1318,15 @@ def box_space_spec(low: int | float, high: int | float, shape: list[int], dtype:
 
 def build_info() -> BuildInfo:
     r"""
-    This build's identity: the package version, the protocol generation, and
-    the workflow edition it advertises with the cohort behind that spelling.
+    This build's identity: the package version, the protocol generation and
+    session wire revision it speaks, and its workflow edition.
     """
 
 def current_workflow_edition() -> builtins.str:
     r"""
-    The bare `YYYY.MM` workflow edition this build runs at — the value to paste
-    into a declaration, on every build.
-    
-    A bare base selects whichever spelling of it both sides offer: the sealed name on a
-    release, this build's cohort (`YYYY.MM-<cohort>`, as `rlmesh.build_info().workflow_edition`
-    reports) on a prerelease or local build. The cohort spelling is also accepted as a
-    declaration, pinning that exact moving build.
+    The bare `YYYY.MM` workflow edition this build runs at when nothing declares
+    one: the value to paste into a declaration, the same on every build of a
+    release line.
     """
 
 def describe_envelope_normalize(kind: str, pieces_json: str, generated_at: str | None = None) -> str: ...
@@ -1417,12 +1380,11 @@ def redact_secrets(text: str) -> str: ...
 
 def resolve_execution_horizon(explicit: typing.Optional[builtins.int] = None, loaded: typing.Optional[builtins.int] = None, timing: typing.Optional[builtins.int] = None, native_chunk: typing.Optional[builtins.int] = None) -> builtins.int: ...
 
-def resolve_workflow_edition_rungs(*, call: typing.Optional[builtins.str] = None, option: typing.Optional[builtins.str] = None, declared: typing.Optional[builtins.str] = None) -> tuple[typing.Optional[builtins.str], builtins.bool]:
+def resolve_workflow_edition(declared: typing.Optional[builtins.str] = None) -> builtins.str:
     r"""
-    Resolve the workflow edition: the call's value, `RLMESH_WORKFLOW_EDITION`, the served peer's
-    option, the class declaration. Returns the winner (validated and trimmed) and whether
-    resolution stopped at a set-but-blank variable; `(None, False)` leaves the
-    `pyproject.toml` rung to the caller.
+    The workflow edition a participant runs at: `RLMESH_WORKFLOW_EDITION`, then
+    its declaration `declared`, then `current_workflow_edition()`; validated and
+    trimmed.
     """
 
 def run_cli(args: list[str]) -> int: ...
@@ -1454,7 +1416,7 @@ def tuple_space_spec(spaces: list[object]) -> SpaceSpec: ...
 
 def validate_workflow_edition(edition: builtins.str) -> builtins.str:
     r"""
-    Refuse a declared workflow edition this build cannot run a session at, naming
-    the value and the editions it offers; return it trimmed otherwise.
+    Refuse a workflow edition this build does not know, naming it, the editions
+    this build knows, and the remedy; return it trimmed otherwise.
     """
 

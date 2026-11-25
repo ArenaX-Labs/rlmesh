@@ -48,7 +48,7 @@ target/chrono-env/chrono_reach_env --address 127.0.0.1:50051     # Ctrl-C stops 
 uv run python examples/chrono/run_model.py 127.0.0.1:50051 --view http:9000
 ```
 
-Build the env and the Python package from the same checkout with `RLMESH_RELEASE_BUILD=1`, as `demo.sh` does. Otherwise each dev build pins its own per-commit workflow edition, and the handshake refuses the other.
+Build the env and the Python package from the same checkout, as `demo.sh` does, so both speak the same session wire revision.
 
 ## Vulkan camera
 

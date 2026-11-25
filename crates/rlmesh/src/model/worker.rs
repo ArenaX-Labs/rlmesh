@@ -67,11 +67,6 @@ pub struct RunLocalOptions {
     /// to `prefetch_lead` steps stale, and one prefetched across an episode boundary is discarded.
     /// 0 is synchronous.
     pub prefetch_lead: u32,
-    /// The workflow edition this run **declares** (its WANT): the runtime tier's explicit
-    /// pin, so the session runs at this edition even when this build and the env could both
-    /// go higher. `None` declares nothing and wants this build's current edition. A pin no peer
-    /// can run is refused before any stream opens, naming every tier's WANT and CAN.
-    pub workflow_edition: Option<String>,
     /// The env's session as a model served elsewhere reaches it, when that differs from the
     /// address this driver dials (a model container joins an env container's session over
     /// their shared network).
@@ -93,7 +88,6 @@ impl RunLocalOptions {
             close_model: false,
             execution_horizon: 1,
             prefetch_lead: 0,
-            workflow_edition: None,
             invite_at: None,
         }
     }
@@ -189,13 +183,6 @@ impl RunLocalOptions {
     /// run borrows the model; see [`close_model`](Self::close_model)).
     pub fn close_model(mut self, close_model: bool) -> Self {
         self.close_model = close_model;
-        self
-    }
-
-    /// Declare the workflow edition this run is authored against (the runtime
-    /// tier's WANT). See [`RunLocalOptions::workflow_edition`].
-    pub fn workflow_edition(mut self, workflow_edition: impl Into<String>) -> Self {
-        self.workflow_edition = Some(workflow_edition.into());
         self
     }
 }

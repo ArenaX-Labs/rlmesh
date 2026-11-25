@@ -174,7 +174,6 @@ fn attach(name: &str, roles: Vec<Role>, priority: PriorityClass) -> Command {
         supports: Vec::new(),
         requires: Vec::new(),
         workflow_edition: String::new(),
-        workflow_editions: Vec::new(),
         estop: None,
     }
 }

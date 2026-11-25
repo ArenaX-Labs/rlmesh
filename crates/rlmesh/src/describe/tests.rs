@@ -61,7 +61,11 @@ fn a_model_type_describes_its_declarations_without_constructing() {
     let runtime = &envelope["runtime"];
     assert_eq!(runtime["component"], "rlmesh-rust");
     assert_eq!(runtime["language"], "rust");
-    assert!(runtime["preferred_workflow_edition"].is_string());
+    assert_eq!(
+        runtime["workflow_edition"],
+        rlmesh_proto::CURRENT_WORKFLOW_EDITION
+    );
+    assert!(runtime.get("supported_workflow_editions").is_none());
     assert_eq!(
         runtime["session_wire_revision"],
         rlmesh_session::wire::version::WIRE_REVISION
@@ -143,20 +147,22 @@ fn describe_refuses_a_contradicting_kind_and_a_bad_timestamp() {
 }
 
 #[test]
-fn a_given_edition_is_used_as_given() {
+fn a_given_edition_is_validated_and_a_blank_one_resolves() {
     let edition = |given: &str| {
-        let text = describe_json(
+        describe_json(
             Describable::model::<Planner>(),
             DescribeJsonOptions {
                 workflow_edition: Some(given.into()),
                 ..Default::default()
             },
         )
-        .unwrap();
-        json(&text)["runtime"]["preferred_workflow_edition"].clone()
+        .map(|text| json(&text)["runtime"]["workflow_edition"].clone())
     };
-    assert_eq!(edition(" 2099.01 "), "2099.01", "never validated");
-    assert_eq!(edition(""), rlmesh_proto::CURRENT_WORKFLOW_EDITION);
+    let current = rlmesh_proto::CURRENT_WORKFLOW_EDITION;
+    assert_eq!(edition(&format!(" {current} ")).unwrap(), current);
+    assert_eq!(edition("").unwrap(), current);
+    let unknown = edition("2099.01").unwrap_err();
+    assert_eq!(unknown.class(), crate::ErrorClass::ValueError, "{unknown}");
 }
 
 struct Sized {

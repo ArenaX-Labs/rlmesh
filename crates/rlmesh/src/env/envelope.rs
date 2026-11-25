@@ -43,10 +43,10 @@ pub(crate) fn env_envelope(
         Some(tags) => value_to_json(tags)?,
         None => Json::Null,
     };
-    let preferred = workflow_edition
-        .map(str::trim)
-        .filter(|edition| !edition.is_empty())
-        .unwrap_or(rlmesh_proto::CURRENT_WORKFLOW_EDITION);
+    let workflow_edition = match workflow_edition.filter(|edition| !edition.trim().is_empty()) {
+        Some(edition) => crate::editions::validate_workflow_edition(edition)?,
+        None => crate::editions::resolve_workflow_edition(None)?,
+    };
     let qualname = qualname.map_or_else(|| format!("native:{}", contract.id()), str::to_string);
     let mut runtime = json!({
         "component": host.component,
@@ -56,8 +56,7 @@ pub(crate) fn env_envelope(
         "arch": std::env::consts::ARCH,
         "protocol_generation": rlmesh_proto::PROTOCOL_GENERATION,
         "session_wire_revision": rlmesh_session::wire::version::WIRE_REVISION,
-        "supported_workflow_editions": rlmesh_proto::supported_workflow_editions(),
-        "preferred_workflow_edition": preferred,
+        "workflow_edition": workflow_edition,
     });
     if let Some(object) = runtime.as_object_mut() {
         for (key, value) in &host.extra {

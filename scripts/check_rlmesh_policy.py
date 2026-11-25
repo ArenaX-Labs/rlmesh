@@ -11,7 +11,6 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from itertools import chain
 from pathlib import Path
 from typing import Any
 
@@ -34,49 +33,9 @@ STR_CONST_RE = re.compile(
 PY_STR_CONST_RE = re.compile(r'(?P<name>[A-Z0-9_]+)\s*=\s*"(?P<value>[^"]+)"')
 INT_CONST_RE = re.compile(r"(?P<name>[A-Z0-9_]+)\s*=\s*(?P<value>\d+)")
 EDITION_BASE_RE = re.compile(r"^[0-9]{4}\.[0-9]{2}$")
-EDITION_PRERELEASE_SUFFIX_RE = re.compile(r"^\d+\.\d+\.\d+-(?:alpha|beta|rc)\.\d+$")
 PRERELEASE_LITERAL_RE = re.compile(
     r"\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+|(?:a|b|rc)\d+)"
 )
-
-
-def _split_edition_name(name: str) -> tuple[str, str | None]:
-    """Split a workflow edition name into ``(base, suffix)`` at its first ``-``.
-
-    A bare ``YYYY.MM`` yields ``(name, None)``; ``YYYY.MM-<cohort>`` yields
-    ``(base, suffix)``. Mirrors ``edition_sort_key`` in ``rlmesh-proto/src/lib.rs``.
-    """
-    base, sep, suffix = name.partition("-")
-    return (base, suffix if sep else None)
-
-
-def _edition_sort_key(name: str) -> tuple[str, bool, str]:
-    """Ordering key for a workflow edition name, mirroring ``edition_sort_key``.
-
-    Base date first (zero-padded ``YYYY.MM``, so lexicographic is chronological),
-    then a suffixed cohort above its bare base, then the suffix itself as a
-    deterministic tiebreak.
-    """
-    base, suffix = _split_edition_name(name)
-    return (base, suffix is not None, suffix or "")
-
-
-def _current_edition_not_highest(
-    current_edition: str, supported: list[str]
-) -> str | None:
-    """The error when ``current_edition`` does not sort highest among ``supported``.
-
-    A build declares ``current_edition`` as its WANT and offers ``supported`` as
-    its CAN set, so a retained edition sorting above the current one could never
-    be selected and would make this build's own offer cap its peers.
-    """
-    highest = max(supported, key=_edition_sort_key, default=current_edition)
-    if _edition_sort_key(highest) > _edition_sort_key(current_edition):
-        return (
-            f"[workflow].current_edition is {current_edition!r}, but retained edition "
-            f"{highest!r} sorts above it; current_edition must be the highest supported"
-        )
-    return None
 
 
 def _canonical_spec_sha256(spec_path: Path) -> str:
@@ -150,54 +109,34 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def selfcheck() -> None:
-    """Unit tests for the manifest-vs-generated-list rules (mirrors bump_version.py)."""
-    lib = 'const L: &str = env!("RLMESH_SUPPORTED_WORKFLOW_EDITIONS");'
-    build = "supported_editions -> cargo:rustc-env=RLMESH_SUPPORTED_WORKFLOW_EDITIONS"
-    rc1 = "2026.09-0.2.0-rc.1"
-
-    assert _generated_supported_editions(rc1, [rc1, "2026.06"]) == [rc1, "2026.06"]
-    assert _generated_supported_editions("2026.06", ["2026.06"]) == ["2026.06"]
-    assert not _check_generated_supported_editions(rc1, [rc1, "2026.06"], lib, build)
-    assert _check_generated_supported_editions(rc1, [rc1], "&[CURRENT]", build)
-    assert _check_generated_supported_editions(rc1, [rc1], lib, "fn main() {}")
-    assert _check_generated_supported_editions(rc1, ["2026.06"], lib, build)
-    assert _check_generated_supported_editions(
-        rc1, [rc1, "2026.06", "2026.06"], lib, build
+    """Unit tests for the edition rules."""
+    lib = 'pub const CURRENT_WORKFLOW_EDITION: &str = "2026.10";\n' + (
+        'Edition::E2026_06 => "2026.06",\nEdition::E2026_10 => "2026.10",\n'
     )
-
-    retained = [rc1, "2026.06"]
-    assert not _check_packaged_supported_editions(f"{rc1}\n2026.06\n", rc1, retained)
-    assert not _check_packaged_supported_editions(
-        f"{rc1}\n2026.06\n", rc1, ["2026.06", rc1]
-    )
-    assert _check_packaged_supported_editions(f"{rc1}\n", rc1, retained)
-    assert (
-        "must start with"
-        in _check_packaged_supported_editions(f"2026.06\n{rc1}\n", rc1, retained)[0]
-    )
-    assert "must start with" in _check_packaged_supported_editions("", rc1, retained)[0]
+    assert _edition_arms(lib) == ["2026.06", "2026.10"]
+    assert not _check_edition_source(lib, "2026.10", ["2026.06", "2026.10"])
+    assert _check_edition_source(lib, "2026.06", ["2026.06", "2026.10"])
+    assert _check_edition_source(lib, "2026.10", ["2026.10"])
+    assert _check_edition_source(lib, "2026.10", ["2026.06", "2026.10", "2027.04"])
 
     previous = """[workflow]
-supported_editions = ["2026.09-0.2.0-rc.1", "2026.06"]
+current_edition = "2026.10"
 
 [workflow.editions."2026.06"]
 status = "sealed"
 sealed_in = "0.1.0"
 
-[workflow.editions."2026.09-0.2.0-rc.1"]
+[workflow.editions."2026.10"]
 status = "provisional"
 """
     assert _sealed_editions(previous) == {"2026.06"}
-    assert not _dropped_sealed_editions(previous, ["2026.09", "2026.06"])
-    assert _dropped_sealed_editions(previous, ["2026.09"]) == ["2026.06"]
-    assert not _dropped_sealed_editions(previous, ["2026.06"])
-    assert not _dropped_sealed_editions(previous, ["2026.09"], {"2026.06"})
     sealed = tomllib.loads(previous)["workflow"]["editions"]
     reason = {"2026.06": "0.2 is a major break"}
-    assert not _check_dropped_editions(reason, sealed, ["2026.09"])
-    assert _check_dropped_editions({"2026.06": " "}, sealed, ["2026.09"])
-    assert _check_dropped_editions({"2026.07": "typo"}, sealed, ["2026.09"])
-    assert _check_dropped_editions(reason, sealed, ["2026.09", "2026.06"])
+    assert not _check_dropped_editions(reason, sealed)
+    assert _check_dropped_editions({"2026.06": " "}, sealed)
+    assert _check_dropped_editions({"2026.07": "typo"}, sealed)
+    assert _known_editions(sealed, reason) == ["2026.10"]
+    assert _known_editions(sealed, {}) == ["2026.06", "2026.10"]
 
     assert not _changed_sealed_records(previous, sealed)
     for field, value in {
@@ -211,26 +150,6 @@ status = "provisional"
         assert _changed_sealed_records(previous, changed) == ["2026.06"]
     assert _changed_sealed_records(previous, {}) == ["2026.06"]
     assert not _changed_sealed_records("", {})
-
-    single = 'supported_editions = ["2026.09-0.2.0-rc.1", "2026.06"]\n'
-    multi = (
-        "supported_editions = [\n"
-        '  "2026.09-0.2.0-rc.1", # the moving cohort\n'
-        '  "2026.06",\n'
-        "]\n"
-    )
-    for spelling in (single, multi):
-        text = "[workflow]\n" + spelling
-        parsed = tomllib.loads(text)["workflow"]["supported_editions"]
-        assert _scan_manifest_string_list(text, "supported_editions") == parsed
-    assert _scan_manifest_string_list("[workflow]\n" + single, "current_edition") == []
-
-    assert _current_edition_not_highest(rc1, [rc1, "2026.06"]) is None
-    assert _current_edition_not_highest("2026.06", ["2026.06"]) is None
-    assert _current_edition_not_highest("2026.06", [rc1, "2026.06"]) is not None
-    cohort = "2026.06-0.2.0-rc.1"
-    assert _current_edition_not_highest("2026.06", ["2026.06", cohort]) is not None
-    assert _current_edition_not_highest(cohort, [cohort, "2026.06"]) is None
 
     assert not _check_rust_version("1.99", "1.99")
     assert not _check_rust_version({"version": "1.99.0"}, "1.99")
@@ -289,14 +208,10 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
                 )
 
     errors.extend(_validate_release_crate_order(repo_root, artifacts))
-    errors.extend(_validate_edition_source(repo_root))
+    errors.extend(_validate_buf_policy(repo_root))
     errors.extend(
         _validate_workflow_editions(repo_root, workflow, release, workspace_version)
     )
-    errors.extend(
-        _validate_generated_supported_editions(repo_root, manifest_path, workflow)
-    )
-    errors.extend(_validate_packaged_supported_editions(repo_root, workflow))
     errors.extend(
         _validate_sealed_edition_retention(repo_root, manifest_path, workflow)
     )
@@ -519,20 +434,37 @@ def _defines_dunder_all(path: Path) -> bool:
     return False
 
 
-def _validate_edition_source(repo_root: Path) -> list[str]:
-    errors: list[str] = []
-    source = repo_root / "crates/rlmesh-proto/src/lib.rs"
-    source_text = source.read_text(encoding="utf-8")
-    if "CURRENT_WORKFLOW_EDITION_SPEC_SHA256" in source_text:
-        errors.append(
-            f"{source}: remove CURRENT_WORKFLOW_EDITION_SPEC_SHA256; provisional "
-            "editions are release/dev cohorts, not docs hashes"
-        )
-    if 'env!("RLMESH_CURRENT_WORKFLOW_EDITION")' not in source_text:
-        errors.append(
-            f"{source}: CURRENT_WORKFLOW_EDITION must come from build-time cohort env"
-        )
+EDITION_ARM_RE = re.compile(r'Edition::E\d{4}_\d{2} => "(?P<name>[0-9]{4}\.[0-9]{2})"')
 
+
+def _edition_arms(lib_text: str) -> list[str]:
+    """The editions ``rlmesh-proto`` names arms for, in source order."""
+    return sorted(set(EDITION_ARM_RE.findall(lib_text)))
+
+
+def _check_edition_source(lib_text: str, current: str, known: list[str]) -> list[str]:
+    """The build knows exactly the manifest's editions and runs at its current one."""
+    errors: list[str] = []
+    constants = {
+        match.group("name"): match.group("value")
+        for match in STR_CONST_RE.finditer(lib_text)
+    }
+    if constants.get("CURRENT_WORKFLOW_EDITION") != current:
+        errors.append(
+            f"CURRENT_WORKFLOW_EDITION is {constants.get('CURRENT_WORKFLOW_EDITION')!r}, "
+            f"[workflow].current_edition is {current!r}"
+        )
+    arms = _edition_arms(lib_text)
+    if arms != sorted(known):
+        errors.append(
+            f"the Edition enum knows {arms}, but [workflow.editions] minus "
+            f"[workflow.dropped_editions] is {sorted(known)}"
+        )
+    return errors
+
+
+def _validate_buf_policy(repo_root: Path) -> list[str]:
+    errors: list[str] = []
     buf_config = repo_root / "buf.yaml"
     if not buf_config.exists():
         errors.append("buf.yaml is required for proto lint and breaking-change policy")
@@ -546,6 +478,12 @@ def _validate_edition_source(repo_root: Path) -> list[str]:
     return errors
 
 
+def _known_editions(editions: dict[str, Any], dropped: Any) -> list[str]:
+    """The editions a build knows: every recorded edition not dropped."""
+    gone = set(dropped) if isinstance(dropped, dict) else set()
+    return sorted(edition for edition in editions if edition not in gone)
+
+
 def _validate_workflow_editions(
     repo_root: Path,
     workflow: dict[str, Any],
@@ -556,52 +494,32 @@ def _validate_workflow_editions(
     editions = workflow.get("editions")
     if not isinstance(editions, dict):
         return ["missing [workflow.editions] table"]
-
-    base_edition = workflow.get("base_edition")
-    if not isinstance(base_edition, str):
-        errors.append("[workflow].base_edition must be a string")
-        base_edition = ""
-    elif not EDITION_BASE_RE.match(base_edition):
-        errors.append("[workflow].base_edition must be `YYYY.MM` (zero-padded)")
+    known = _known_editions(editions, workflow.get("dropped_editions"))
 
     current_edition = workflow.get("current_edition")
-    if not isinstance(current_edition, str):
-        errors.append("[workflow].current_edition must be a string")
-        current_edition = ""
-
-    if workspace_version is not None and base_edition:
-        expected_current = _official_current_edition(base_edition, workspace_version)
-        if expected_current is None:
-            errors.append(
-                f"workspace version {workspace_version!r} is not valid Rust SemVer"
-            )
-        elif current_edition and current_edition != expected_current:
-            errors.append(
-                f"[workflow].current_edition is {current_edition!r}, expected "
-                f"{expected_current!r} for workspace version {workspace_version!r}"
-            )
-
-    supported = workflow.get("supported_editions")
-    if not isinstance(supported, list) or not all(
-        isinstance(item, str) for item in supported
+    if not isinstance(current_edition, str) or not EDITION_BASE_RE.match(
+        current_edition
     ):
-        errors.append("[workflow].supported_editions must be a list of strings")
-        supported = []
-    elif current_edition and current_edition not in supported:
+        errors.append("[workflow].current_edition must be `YYYY.MM` (zero-padded)")
+        current_edition = ""
+    elif current_edition not in known:
         errors.append(
-            "[workflow].supported_editions must include [workflow].current_edition"
+            f"[workflow].current_edition {current_edition!r} must be a recorded, "
+            "undropped [workflow.editions] entry"
+        )
+    elif known and max(known) != current_edition:
+        errors.append(
+            f"[workflow].current_edition is {current_edition!r}, but {max(known)!r} is "
+            "newer; the current edition is the newest one a build knows"
         )
 
-    if current_edition and supported:
-        not_highest = _current_edition_not_highest(current_edition, supported)
-        if not_highest is not None:
-            errors.append(not_highest)
-
-    for edition in supported if isinstance(supported, list) else []:
-        if edition not in editions:
-            errors.append(
-                f'supported edition {edition!r} has no [workflow.editions."{edition}"] entry'
-            )
+    lib = repo_root / "crates/rlmesh-proto/src/lib.rs"
+    errors.extend(
+        f"{lib.relative_to(repo_root)}: {error}"
+        for error in _check_edition_source(
+            lib.read_text(encoding="utf-8"), current_edition, known
+        )
+    )
 
     release_status = release.get("status")
     if workspace_version is not None:
@@ -621,6 +539,8 @@ def _validate_workflow_editions(
         if not isinstance(entry, dict):
             errors.append(f"{prefix} must be a table")
             continue
+        if not EDITION_BASE_RE.match(edition):
+            errors.append(f"{prefix}: an edition is named `YYYY.MM` (zero-padded)")
 
         status = entry.get("status")
         if status not in {"provisional", "sealed"}:
@@ -631,42 +551,12 @@ def _validate_workflow_editions(
                 "seal the edition first"
             )
 
-        base, suffix = _split_edition_name(edition)
-        if not EDITION_BASE_RE.match(base):
-            errors.append(
-                f"{prefix}: edition name base {base!r} must be `YYYY.MM` (zero-padded)"
-            )
-        if suffix is None:
-            if status != "sealed":
-                errors.append(
-                    f"{prefix}: a bare `YYYY.MM` name is sealed, but status is {status!r}; "
-                    "a provisional edition's name must carry a SemVer prerelease suffix"
-                )
-        else:
-            if not EDITION_PRERELEASE_SUFFIX_RE.match(suffix):
-                errors.append(
-                    f"{prefix}: provisional suffix {suffix!r} must be full Rust SemVer "
-                    "prerelease (`X.Y.Z-{alpha,beta,rc}.N`)"
-                )
-            if status != "provisional":
-                errors.append(
-                    f"{prefix}: a suffixed edition is provisional, but status is {status!r}; "
-                    "a sealed edition is named by its bare `YYYY.MM` base alone"
-                )
-
         sealed_in = entry.get("sealed_in")
         if status == "sealed":
             if not isinstance(sealed_in, str) or not STABLE_VERSION_RE.match(sealed_in):
                 errors.append(
                     f"{prefix}.sealed_in must be the stable (non-prerelease) version "
                     "that sealed the edition"
-                )
-            if edition not in (
-                supported if isinstance(supported, list) else []
-            ) and edition not in _dropped_editions(workflow):
-                errors.append(
-                    f"{prefix}: a sealed edition must stay in [workflow].supported_editions "
-                    "(retained within a major line; a major break names it in [workflow.dropped_editions])"
                 )
         elif sealed_in is not None:
             errors.append(
@@ -701,190 +591,8 @@ def _validate_workflow_editions(
                 f"{prefix}.spec_sha256 is only recorded once the edition is sealed"
             )
 
-    errors.extend(
-        _check_dropped_editions(workflow.get("dropped_editions"), editions, supported)
-    )
-
-    seen_provisional_by_base: dict[str, str] = {}
-    for edition in supported:
-        base, suffix = _split_edition_name(edition)
-        if suffix is None:
-            continue
-        prior = seen_provisional_by_base.get(base)
-        if prior is not None:
-            errors.append(
-                f"[workflow].supported_editions has two provisional editions for "
-                f"date {base!r} ({prior!r} and {edition!r}); keep at most one "
-                "moving cohort per base, plus an optional sealed fallback"
-            )
-        else:
-            seen_provisional_by_base[base] = edition
-
+    errors.extend(_check_dropped_editions(workflow.get("dropped_editions"), editions))
     return errors
-
-
-def _scan_manifest_string_list(text: str, key: str) -> list[str]:
-    """Mirror of ``manifest_string_list`` in ``crates/rlmesh-proto/build_manifest.rs``.
-
-    The build script reads ``rlmesh.toml`` with a line scan rather than a TOML
-    parser, so its reading of an array must agree with ``tomllib`` on every
-    spelling the manifest may carry — single-line or spread over lines, with
-    comments and trailing commas. ``selfcheck`` asserts that agreement; keep the
-    two implementations in step.
-    """
-    prefix = f"{key} = ["
-    lines = iter(line.strip() for line in text.splitlines())
-    for line in lines:
-        if line.startswith(prefix):
-            first = line[len(prefix) :]
-            break
-    else:
-        return []
-
-    items = ""
-    for line in chain([first], lines):
-        line = line.split("#", 1)[0]
-        head, closer, _ = line.partition("]")
-        items += head
-        if closer:
-            break
-        items += ","
-
-    values: list[str] = []
-    for item in items.split(","):
-        item = item.strip()
-        if not item.startswith('"'):
-            continue
-        value, quote, _ = item[1:].partition('"')
-        if quote:
-            values.append(value)
-    return values
-
-
-def _generated_supported_editions(
-    current_edition: str, supported: list[str]
-) -> list[str]:
-    """The list ``build.rs`` generates: this build's cohort first, then the rest.
-
-    Mirrors ``supported_workflow_editions`` in ``crates/rlmesh-proto/build.rs``. A
-    source build spells its own cohort into the first slot and drops the manifest's
-    ``current_edition`` from the tail; the release spelling used here is the list a
-    published build offers.
-    """
-    return [current_edition] + [e for e in supported if e != current_edition]
-
-
-def _check_generated_supported_editions(
-    current_edition: str, supported: list[str], lib_text: str, build_text: str
-) -> list[str]:
-    errors: list[str] = []
-    if 'env!("RLMESH_SUPPORTED_WORKFLOW_EDITIONS")' not in lib_text:
-        errors.append(
-            "SUPPORTED_WORKFLOW_EDITIONS must be generated from the build-time "
-            "RLMESH_SUPPORTED_WORKFLOW_EDITIONS env, not written as a literal"
-        )
-    if not (
-        "RLMESH_SUPPORTED_WORKFLOW_EDITIONS" in build_text
-        and "supported_editions" in build_text
-    ):
-        errors.append(
-            "build.rs must emit RLMESH_SUPPORTED_WORKFLOW_EDITIONS from "
-            "rlmesh.toml's [workflow].supported_editions"
-        )
-
-    generated = _generated_supported_editions(current_edition, supported)
-    if len(set(generated)) != len(generated):
-        errors.append(
-            f"generated SUPPORTED_WORKFLOW_EDITIONS {generated} repeats an edition"
-        )
-    if set(generated) != set(supported):
-        errors.append(
-            f"generated SUPPORTED_WORKFLOW_EDITIONS {generated} does not match "
-            f"[workflow].supported_editions {supported}"
-        )
-    return errors
-
-
-def _validate_generated_supported_editions(
-    repo_root: Path, manifest_path: Path, workflow: dict[str, Any]
-) -> list[str]:
-    """``SUPPORTED_WORKFLOW_EDITIONS`` is generated, and generated losslessly.
-
-    Both the offer and the accept read that one list, so it must be the manifest's
-    retained set — generated by ``build.rs`` — rather than a hand-maintained Rust
-    literal free to drift from it. ``build.rs`` has no TOML parser, so this also
-    checks that its scan of THIS manifest sees the same array tomllib does: a
-    spelling it cannot read would silently shrink the offer while every rule
-    below (all reading tomllib) stayed green.
-    """
-    current_edition = workflow.get("current_edition")
-    supported = workflow.get("supported_editions")
-    if not isinstance(current_edition, str) or not isinstance(supported, list):
-        return []
-    if not all(isinstance(edition, str) for edition in supported):
-        return []
-    scanned = _scan_manifest_string_list(
-        manifest_path.read_text(encoding="utf-8"), "supported_editions"
-    )
-    if scanned != supported:
-        return [
-            f"{manifest_path.name}: build.rs reads [workflow].supported_editions as "
-            f"{scanned}, the manifest declares {supported}; write the array so the "
-            "build script's scan reads it (see crates/rlmesh-proto/build_manifest.rs)"
-        ]
-    lib = repo_root / "crates/rlmesh-proto/src/lib.rs"
-    build = repo_root / "crates/rlmesh-proto/build.rs"
-    return [
-        f"{lib.relative_to(repo_root)}: {error}"
-        for error in _check_generated_supported_editions(
-            current_edition,
-            supported,
-            lib.read_text(encoding="utf-8"),
-            build.read_text(encoding="utf-8"),
-        )
-    ]
-
-
-PACKAGED_SUPPORTED_EDITIONS = "crates/rlmesh-proto/supported_editions.txt"
-
-
-def _check_packaged_supported_editions(
-    text: str, current_edition: str, supported: list[str]
-) -> list[str]:
-    packaged = [line.strip() for line in text.splitlines() if line.strip()]
-    fix = "run `python scripts/bump_version.py --sync-editions`"
-    if packaged[:1] != [current_edition]:
-        return [
-            f"{PACKAGED_SUPPORTED_EDITIONS} must start with [workflow].current_edition "
-            f"{current_edition!r}, its first line is {packaged[:1]}; {fix}"
-        ]
-    expected = _generated_supported_editions(current_edition, supported)
-    if packaged == expected:
-        return []
-    return [
-        f"{PACKAGED_SUPPORTED_EDITIONS} lists {packaged}, expected {expected}; {fix}"
-    ]
-
-
-def _validate_packaged_supported_editions(
-    repo_root: Path, workflow: dict[str, Any]
-) -> list[str]:
-    """The crate's edition file is ``current_edition`` then the other retained editions.
-
-    Every build reads it, and a published crate (no ``rlmesh.toml``) also takes
-    its base edition from the first line; ``build.rs`` refuses a source build
-    whose file disagrees with the manifest.
-    """
-    current_edition = workflow.get("current_edition")
-    supported = workflow.get("supported_editions")
-    if not isinstance(current_edition, str) or not isinstance(supported, list):
-        return []
-    path = repo_root / PACKAGED_SUPPORTED_EDITIONS
-    if not path.is_file():
-        return [f"{PACKAGED_SUPPORTED_EDITIONS} is missing"]
-    return _check_packaged_supported_editions(
-        path.read_text(encoding="utf-8"), current_edition, supported
-    )
 
 
 def _sealed_editions(manifest_text: str) -> set[str]:
@@ -899,14 +607,6 @@ def _sealed_editions(manifest_text: str) -> set[str]:
         for name, entry in editions.items()
         if isinstance(entry, dict) and entry.get("status") == "sealed"
     }
-
-
-def _dropped_sealed_editions(
-    previous_manifest_text: str,
-    supported: list[str],
-    dropped: set[str] | frozenset[str] = frozenset(),
-) -> list[str]:
-    return sorted(_sealed_editions(previous_manifest_text) - set(supported) - dropped)
 
 
 def _changed_sealed_records(
@@ -928,20 +628,11 @@ def _changed_sealed_records(
     )
 
 
-def _dropped_editions(workflow: dict[str, Any]) -> set[str]:
-    """Sealed editions ``[workflow.dropped_editions]`` deliberately stops offering."""
-    dropped = workflow.get("dropped_editions")
-    return set(dropped) if isinstance(dropped, dict) else set()
+def _check_dropped_editions(dropped: Any, editions: dict[str, Any]) -> list[str]:
+    """``[workflow.dropped_editions]`` is the one way a build stops knowing a sealed edition.
 
-
-def _check_dropped_editions(
-    dropped: Any, editions: dict[str, Any], supported: list[str]
-) -> list[str]:
-    """``[workflow.dropped_editions]`` is the one exception to sealed retention.
-
-    A deliberate major break may stop offering a sealed edition, but only by
-    naming it with its reason; the edition keeps its sealed record (and checked
-    spec hash), and it is not also offered.
+    A deliberate major break may drop a sealed edition, but only by naming it
+    with its reason; the edition keeps its sealed record (and checked spec hash).
     """
     if dropped is None:
         return []
@@ -958,29 +649,19 @@ def _check_dropped_editions(
                 f"{prefix} names no sealed edition; keep the dropped edition's "
                 "sealed [workflow.editions] record"
             )
-        if edition in supported:
-            errors.append(f"{prefix} is still in [workflow].supported_editions")
     return errors
 
 
 def _validate_sealed_edition_retention(
     repo_root: Path, manifest_path: Path, workflow: dict[str, Any]
 ) -> list[str]:
-    """Retain released seal records and their offers unless explicitly dropped.
+    """Keep every sealed record the last release tag had, unchanged.
 
-    A sealed edition is retained within a major line: a peer pinned to it must keep
-    finding it in every later build's offer until a major break drops it by name. The intra-manifest rule in ``_validate_workflow_editions``
-    only sees editions this manifest still declares, so deleting a whole
-    ``[workflow.editions."…"]`` table slips past it — this compares against the previous
-    release tag instead. The same tag anchors the sealed spec metadata so a
-    spec and its checksum cannot both be rewritten. Skipped when there is no
-    tag yet (or no git).
+    A build knows every recorded edition that is not dropped, so a sealed edition
+    stays known as long as its record does. Comparing against the tag catches a
+    deleted ``[workflow.editions."…"]`` table and a spec rewritten together with
+    its checksum. Skipped when there is no tag yet (or no git).
     """
-    supported = workflow.get("supported_editions")
-    if not isinstance(supported, list) or not all(
-        isinstance(edition, str) for edition in supported
-    ):
-        return []
     tag = _last_release_tag(repo_root)
     if tag is None:
         return []
@@ -991,21 +672,14 @@ def _validate_sealed_edition_retention(
     previous = _git_output(repo_root, ["show", f"{tag}:{tracked}"])
     if previous is None:
         return []
-    errors = [
-        f"[workflow].supported_editions dropped sealed edition {edition!r}, retained in "
-        f"{tag}; a sealed edition stays within a major line unless [workflow.dropped_editions] names it"
-        for edition in _dropped_sealed_editions(
-            previous, supported, _dropped_editions(workflow)
-        )
-    ]
     editions = workflow.get("editions")
-    if isinstance(editions, dict):
-        errors.extend(
-            f"sealed edition {edition!r} record differs from {tag}; "
-            "status, spec, sealed_in and spec_sha256 must remain unchanged, even when dropped"
-            for edition in _changed_sealed_records(previous, editions)
-        )
-    return errors
+    if not isinstance(editions, dict):
+        return []
+    return [
+        f"sealed edition {edition!r} record differs from {tag}; "
+        "status, spec, sealed_in and spec_sha256 must remain unchanged, even when dropped"
+        for edition in _changed_sealed_records(previous, editions)
+    ]
 
 
 def _int_expr(expr: str) -> int | None:
@@ -1229,15 +903,6 @@ def _release_status_for_version(version: str) -> str | None:
     if match is None:
         return None
     return match.group("channel") or "stable"
-
-
-def _official_current_edition(base_edition: str, workspace_version: str) -> str | None:
-    status = _release_status_for_version(workspace_version)
-    if status is None:
-        return None
-    if status == "stable":
-        return base_edition
-    return f"{base_edition}-{workspace_version}"
 
 
 def _pep440(version: str) -> str:

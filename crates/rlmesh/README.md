@@ -326,7 +326,7 @@ Inside an env, return `Error::environment_recoverable("...")` to fail one reques
 
 ## Workflow editions
 
-Every served env and model runs at a workflow edition, which pins what a session means across upgrades. Declare one (`Policy::workflow_edition`, `ServeOptions::workflow_edition`, the `workflow_edition` field of the run and binding options, or the `RLMESH_WORKFLOW_EDITION` environment variable); a participant that declares none floats to the newest edition, so pin one before you upgrade. See [workflow editions](https://rlmesh.dev/docs/).
+Every served env and model runs at a workflow edition, a row of behavioural defaults it keeps across upgrades: the `RLMESH_WORKFLOW_EDITION` environment variable, else its declaration (`Policy::workflow_edition`, `EnvFactory::workflow_edition`, or `ServeOptions::workflow_edition` for a served env or model with no type to declare on), else the build's current edition. See [workflow editions](https://rlmesh.dev/docs/).
 
 ## Stability
 

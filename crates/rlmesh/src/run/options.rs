@@ -38,9 +38,6 @@ pub struct RunOptions<'h> {
     /// Native-loop async inference: predict the next chunk while this many
     /// replay frames remain (0 = off; at most `u32::MAX`).
     pub prefetch_lead: u64,
-    /// The workflow edition this run declares, above
-    /// `RLMESH_WORKFLOW_EDITION` and the model's own.
-    pub workflow_edition: Option<String>,
     /// The first trial ordinal; episode `i` walks `trial_index_base + i`.
     pub trial_index_base: u64,
     /// Cancels the run.
@@ -60,7 +57,6 @@ impl fmt::Debug for RunOptions<'_> {
             .field("trust_entrypoints", &self.trust_entrypoints)
             .field("execution_horizon", &self.execution_horizon)
             .field("prefetch_lead", &self.prefetch_lead)
-            .field("workflow_edition", &self.workflow_edition)
             .field("trial_index_base", &self.trial_index_base)
             .field("cancel", &self.cancel)
             .finish()
@@ -76,8 +72,6 @@ pub struct BindOptions<'h> {
     /// (1..=1024). `None`: the model's own, as for
     /// [`RunOptions::execution_horizon`].
     pub execution_horizon: Option<u32>,
-    /// The workflow edition this binding declares.
-    pub workflow_edition: Option<String>,
     /// Observer callbacks, borrowed for the binding's life: the binding is
     /// their [`RunContext`](super::RunContext), an episode reset over
     /// before it ended counts as truncated, and `on_run_end` fires at close.
@@ -91,7 +85,6 @@ impl fmt::Debug for BindOptions<'_> {
         f.debug_struct("BindOptions")
             .field("close_env", &self.close_env)
             .field("execution_horizon", &self.execution_horizon)
-            .field("workflow_edition", &self.workflow_edition)
             .field("hooks", &self.hooks.as_ref().map(|_| "<hooks>"))
             .finish()
     }

@@ -294,17 +294,14 @@ async fn a_runner_drives_a_served_env_with_a_served_model() {
     let served_model =
         tokio::spawn(binding.serve(service, Duration::from_secs(10), cancel.clone()));
 
-    let connected = LockstepEnv::connect(&env_address, ConnectOptions::default(), Some("2026.10"))
+    let connected = LockstepEnv::connect(&env_address, ConnectOptions::default())
         .await
         .unwrap();
     let mut handler = ServedModel::new(model_address, Duration::from_secs(10));
     if let Some(session) = connected.session.as_deref() {
         handler.join(session).await.unwrap();
     }
-    let edition = connected
-        .workflow_edition(&mut handler, Some("2026.10"))
-        .await
-        .unwrap();
+    let edition = connected.workflow_edition(&mut handler).await.unwrap();
     let spec = session(
         &connected.contract,
         connected.num_envs,
@@ -320,7 +317,6 @@ async fn a_runner_drives_a_served_env_with_a_served_model() {
             ResolveOptions {
                 execution_horizon: 1,
                 delivers_history: true,
-                workflow_edition: Some(edition),
             },
         )
         .await

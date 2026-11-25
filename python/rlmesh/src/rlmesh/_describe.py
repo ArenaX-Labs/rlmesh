@@ -67,12 +67,11 @@ def describe_json(
     ``json.loads`` round-trip) when baking into OCI metadata. ``served_env`` is
     an env already built from ``obj`` (the one a server hosts): its spaces are
     read directly instead of constructing a second representative env.
-    ``workflow_edition`` is the declaration a server already resolved for the
-    peer it hosts (``--workflow-edition`` and the surfaces around it), which
-    the envelope's ``runtime.preferred_workflow_edition`` must match: pass the
-    resolved value, or ``""`` when the server resolved none, so the envelope
-    reports exactly what the handshake sends. ``None`` (the default, for a
-    class described on its own) resolves the class's declaration here.
+    ``workflow_edition`` is the edition a server already resolved for the peer
+    it hosts, which the envelope's ``runtime.workflow_edition`` must match.
+    ``None`` or ``""`` (the default, for a class described on its own) resolves
+    ``RLMESH_WORKFLOW_EDITION``, then the class's declaration, then the current
+    edition; an edition this build does not know raises :class:`ValueError`.
     """
     entrypoint: str | None = None
     if isinstance(obj, str):
@@ -119,7 +118,7 @@ def _gather(
     pieces: dict[str, Any] = {
         "target": _target(obj, entrypoint),
         "params": _describe_params(spec, target),
-        "runtime": {**_collect_peer_info(), **_workflow_offer(obj, workflow_edition)},
+        "runtime": {**_collect_peer_info(), **_wire_identity(obj, workflow_edition)},
     }
     variants = _variants(enumerate_fn, catalog_fn, spec, target)
     if variants:
@@ -450,37 +449,25 @@ def _collect_peer_info() -> Mapping[str, Any]:
     return collect_peer_info()
 
 
-def _workflow_offer(obj: object, resolved: str | None = None) -> dict[str, Any]:
-    """The edition handshake a peer serving ``obj`` will send, by its wire names."""
-    from ._editions import WORKFLOW_EDITION_ENV_VAR, resolve_declaration
+def _wire_identity(obj: object, resolved: str | None = None) -> dict[str, Any]:
+    """The wire generation, wire revision and workflow edition a peer serving ``obj`` runs at."""
+    from ._editions import resolve_workflow_edition, validate_workflow_edition
     from ._load_native import load_native
 
     info = load_native("build_info")()
-    cls = obj if isinstance(obj, type) else type(obj)
-    declared = getattr(cls, "workflow_edition", None)
-    offer: dict[str, Any] = {
+    if resolved is not None and resolved.strip():
+        edition = validate_workflow_edition(resolved)
+    else:
+        cls = obj if isinstance(obj, type) else type(obj)
+        declared = getattr(cls, "workflow_edition", None)
+        edition = resolve_workflow_edition(
+            declared if isinstance(declared, str) else None
+        )
+    return {
         "protocol_generation": str(info.protocol_generation),
         "session_wire_revision": int(load_native("SESSION_WIRE_REVISION")),
-        "supported_workflow_editions": [
-            str(edition) for edition in info.supported_workflow_editions
-        ],
+        "workflow_edition": edition,
     }
-    preferred: str | None = None
-    floats = False
-    if resolved is not None:
-        preferred = resolved.strip() or None
-        floats = preferred is None and os.environ.get(WORKFLOW_EDITION_ENV_VAR) is None
-    else:
-        try:
-            preferred, floats = resolve_declaration(
-                declared=declared if isinstance(declared, str) else None, origin=cls
-            )
-        except ValueError as exc:
-            offer["workflow_edition_error"] = str(exc)
-    offer["preferred_workflow_edition"] = preferred or str(info.workflow_edition)
-    if floats:
-        offer["workflow_edition_floats"] = True
-    return offer
 
 
 def _resolve_target(
@@ -919,26 +906,23 @@ def _check_runtime(
     runtime: Mapping[str, object] = (
         cast("Mapping[str, object]", raw) if isinstance(raw, Mapping) else {}
     )
-    if not runtime.get("supported_workflow_editions"):
+    edition = runtime.get("workflow_edition")
+    if not edition:
         report.not_checked.append(
-            f"{where}runtime: describe carries no workflow editions (built with an "
-            "older rlmesh); the session handshake checks them when the image "
-            "runs"
+            f"{where}runtime: describe carries no workflow_edition (built with an "
+            "older rlmesh); the session checks it when the image runs"
         )
         return
-    error = runtime.get("workflow_edition_error")
-    if error:
-        report.failed.append(f"{where}runtime: workflow edition: {error}")
-        return
-    if runtime.get("workflow_edition_floats") is True:
-        from ._editions import float_nudge
+    try:
+        from ._editions import validate_workflow_edition
 
-        report.warnings.append(f"{where}runtime: {float_nudge()}")
+        validate_workflow_edition(str(edition))
+    except ValueError as exc:
+        report.failed.append(f"{where}runtime: {exc}")
         return
     report.passed.append(
-        f"{where}runtime: {runtime.get('protocol_generation')}, declares "
-        f"{runtime.get('preferred_workflow_edition')} of "
-        f"{runtime.get('supported_workflow_editions')}"
+        f"{where}runtime: {runtime.get('protocol_generation')}, workflow edition "
+        f"{edition}"
     )
 
 

@@ -101,14 +101,10 @@ int main(void) {
   CHECK(rlmesh_build_info(&bi) == RLMESH_OK);
   CHECK(strcmp(bi.version, RLMESH_VERSION) == 0);
   CHECK(strcmp(bi.protocol_generation, "rlmesh-realtime-v1") == 0);
-  CHECK(strcmp(bi.workflow_edition_base, rlmesh_current_workflow_edition()) == 0);
-  CHECK(strncmp(bi.workflow_edition, bi.workflow_edition_base, strlen(bi.workflow_edition_base)) ==
-        0);
-  CHECK(bi.supported_workflow_editions_len >= 1);
-  CHECK(strcmp(bi.supported_workflow_editions[0], bi.workflow_edition) == 0);
+  CHECK(strcmp(bi.workflow_edition, rlmesh_current_workflow_edition()) == 0);
   CHECK(rlmesh_build_source_str(bi.build_source) != NULL);
   CHECK(rlmesh_build_source_str(RLMESH_BUILD_SOURCE_INVALID) == NULL);
-  CHECK((bi.git != NULL) == (strncmp(bi.build_cohort, "dev.", 4) == 0));
+  CHECK((bi.git != NULL) == (bi.build_source == RLMESH_BUILD_SOURCE_GIT));
   CHECK(bi.session_wire_revision >= 1);
   printf("%s %s\n", bi.version, rlmesh_current_workflow_edition());
 

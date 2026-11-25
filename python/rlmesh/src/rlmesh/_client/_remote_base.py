@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, ClassVar, Generic, Literal, TypeVar, cast
 
-from .._editions import resolve_workflow_edition
 from .._upgrade import refuse_v1_address
 from .._value_conversion import ValueBridge
 from ..spaces import Space, space_from_spec
@@ -41,13 +40,11 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         *,
         connect_timeout_seconds: float | None = None,
         request_timeout_seconds: float | None = None,
-        workflow_edition: str | None = None,
     ) -> None:
         self._initialize(
             address,
             connect_timeout_seconds=connect_timeout_seconds,
             request_timeout_seconds=request_timeout_seconds,
-            workflow_edition=workflow_edition,
         )
 
     def _initialize(
@@ -56,10 +53,8 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         *,
         connect_timeout_seconds: float | None,
         request_timeout_seconds: float | None = None,
-        workflow_edition: str | None = None,
     ) -> None:
         self._bridge.ensure_available()
-        workflow_edition = resolve_workflow_edition(call=workflow_edition)
         normalized_address = normalize_connect_address(
             address,
         )
@@ -68,20 +63,17 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
             normalized_address,
             connect_timeout_seconds,
             request_timeout_seconds,
-            workflow_edition,
         )
         self._address = self._client.address()
         self._env_contract: EnvContract = self._client.handshake()
         self._env_id: str = self._client.env_id()
         self._drives_view: bool = self._client.drives_view()
-        self._edition_cell = self._client.edition_cell()
 
     def _make_client(
         self,
         address: str,
         connect_timeout_seconds: float | None,
         request_timeout_seconds: float | None,
-        workflow_edition: str | None,
     ) -> Any:
         raise NotImplementedError
 
@@ -107,18 +99,6 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         (`env_contract.id`).
         """
         return self._env_id
-
-    @property
-    def selected_workflow_edition(self) -> str:
-        """The workflow edition this connection negotiated with the env.
-
-        The highest edition both sides can drive, at or below whatever either
-        declared, in the exact spelling they agreed on -- so a prerelease build
-        reports its cohort, not the bare sealed base. Named apart from the
-        ``workflow_edition`` *declaration* surfaces on purpose: this is what was
-        agreed, not what this side asked for.
-        """
-        return cast("str", self._edition_cell.get())
 
     @property
     def env_contract(self) -> EnvContract:

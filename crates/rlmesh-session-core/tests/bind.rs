@@ -1589,7 +1589,6 @@ fn member(id: &str, present: bool) -> ParticipantInfo {
         supports: Vec::new(),
         requires: Vec::new(),
         workflow_edition: String::new(),
-        workflow_editions: Vec::new(),
         present,
         left: None,
         device: "local".into(),

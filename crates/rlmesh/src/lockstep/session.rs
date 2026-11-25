@@ -295,7 +295,8 @@ pub(crate) async fn lockstep_transport(
 /// Env-side options.
 #[derive(Clone, Debug, Default)]
 pub struct ServeOptions {
-    /// The workflow edition the env declares (`None`: this build's current).
+    /// The workflow edition the env declares, already resolved (`None`: this
+    /// build's current).
     pub workflow_edition: Option<String>,
     /// Record the session to this MCAP file (the lockstep tee).
     pub record: Option<PathBuf>,
@@ -309,18 +310,19 @@ pub fn check(contract: rlmesh_spaces::EnvContract) -> Result<(), GymError> {
     let info = GymEnvInfo {
         contract,
         workflow_edition: String::new(),
-        supported_workflow_editions: Vec::new(),
         capabilities: Vec::new(),
     };
     GymMap::new(info, GYM_HZ).map(|_| ())
 }
 
 fn env_info(env: &dyn Served, declared: Option<&str>) -> GymEnvInfo {
-    let (workflow_edition, supported_workflow_editions) = crate::editions::offer(declared);
     GymEnvInfo {
         contract: env.contract(),
-        workflow_edition,
-        supported_workflow_editions,
+        workflow_edition: declared
+            .map(str::trim)
+            .filter(|edition| !edition.is_empty())
+            .unwrap_or(rlmesh_proto::CURRENT_WORKFLOW_EDITION)
+            .to_string(),
         capabilities: if env.subset_step() {
             vec![map::SUBSET_STEP.to_string()]
         } else {
@@ -1003,7 +1005,7 @@ pub async fn connect_policy_view(
 }
 
 fn trial_option(info: &GymEnvInfo) -> Option<String> {
-    let key = rlmesh_proto::parse_retained_edition(&info.workflow_edition)
+    let key = rlmesh_proto::Edition::parse(&info.workflow_edition)
         .map_or(crate::run::runtime::TRIAL_INDEX_OPTION, |edition| {
             rlmesh_proto::defaults(edition).trial_index_option_key
         });

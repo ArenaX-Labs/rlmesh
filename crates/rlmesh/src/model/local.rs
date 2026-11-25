@@ -25,7 +25,6 @@ pub(crate) struct LocalRun {
     pub(crate) close_env: bool,
     pub(crate) execution_horizon: u32,
     pub(crate) prefetch_lead: u32,
-    pub(crate) workflow_edition: Option<String>,
     pub(crate) invite_at: Option<String>,
 }
 
@@ -55,7 +54,6 @@ where
         close_env: options.close_env,
         execution_horizon: options.execution_horizon,
         prefetch_lead: options.prefetch_lead,
-        workflow_edition: options.workflow_edition,
         invite_at: options.invite_at,
     };
     drive_local(handler, run, cancellation, hooks, &|_| {}).await
@@ -110,9 +108,7 @@ where
     if let Some(session) = options.invite_at.as_ref().or(session.as_ref()) {
         handler.join(session).await?;
     }
-    let workflow_edition = edition
-        .with_model(handler, options.workflow_edition.as_deref())
-        .await?;
+    let workflow_edition = checked_edition(edition, handler).await?;
 
     let mut wants_history = false;
     let mut advisories = Vec::new();
@@ -124,7 +120,6 @@ where
                 crate::model::ResolveOptions {
                     execution_horizon: options.execution_horizon,
                     delivers_history: true,
-                    workflow_edition: Some(workflow_edition),
                 },
             )
             .await?;
@@ -183,25 +178,35 @@ pub struct ConnectedEnv {
     /// The session the env is in, with its key (a credential): where a
     /// model served elsewhere is invited ([`ModelHandler::join`]).
     pub session: Option<String>,
-    edition: RunEdition,
+    edition: rlmesh_proto::Edition,
 }
 
 impl ConnectedEnv {
     /// The edition a run with `handler` executes at, for
-    /// [`RuntimeSessionSpec::workflow_edition`]: the one negotiated with the
-    /// env, or with a model served elsewhere that declared its editions
-    /// (after [`ModelHandler::join`]), the floor across the env, the model
-    /// and `declared`, as `Model.run` settles it.
+    /// [`RuntimeSessionSpec::workflow_edition`]: the env's declared edition,
+    /// once a model served elsewhere (after [`ModelHandler::join`]) is known
+    /// to declare one this build knows.
     ///
     /// # Errors
-    /// The model and the env share no edition.
+    /// The model declares an edition this build does not know.
     pub async fn workflow_edition<H: ModelHandler + ?Sized>(
         &self,
         handler: &mut H,
-        declared: Option<&str>,
     ) -> Result<rlmesh_proto::Edition> {
-        self.edition.with_model(handler, declared).await
+        checked_edition(self.edition, handler).await
     }
+}
+
+async fn checked_edition<H: ModelHandler + ?Sized>(
+    env: rlmesh_proto::Edition,
+    handler: &mut H,
+) -> Result<rlmesh_proto::Edition> {
+    if let Some(model) = handler.workflow_edition().await? {
+        rlmesh_proto::Edition::parse(&model)
+            .map_err(|unknown| Error::invalid_argument(format!("the model's {unknown}")))?;
+    }
+    // TODO: once two editions' rows differ, apply each default from the row of the participant it concerns.
+    Ok(env)
 }
 
 async fn connect_env(options: &LocalRun) -> Result<ConnectedEnv> {
@@ -226,34 +231,7 @@ async fn connect_env(options: &LocalRun) -> Result<ConnectedEnv> {
                  to its serving process; an owner shutdown is server.shutdown() there",
             ));
         }
-        LockstepEnv::connect(
-            &options.address,
-            crate::lockstep::ConnectOptions::default(),
-            options.workflow_edition.as_deref(),
-        )
-        .await
-    }
-}
-
-pub(crate) struct RunEdition {
-    selected: String,
-    env: Option<rlmesh_proto::SessionOffer>,
-}
-
-impl RunEdition {
-    pub(crate) async fn with_model<H: ModelHandler + ?Sized>(
-        &self,
-        handler: &mut H,
-        declared: Option<&str>,
-    ) -> Result<rlmesh_proto::Edition> {
-        let selected = match (&self.env, handler.workflow_editions().await?) {
-            // TODO: pin the env to the floor on reset once an edition changes what an env does.
-            (Some(env), Some(model)) => {
-                crate::floor::env_floor(env, &model, declared)?.selected_workflow_edition
-            }
-            _ => self.selected.clone(),
-        };
-        rlmesh_proto::parse_retained_edition(&selected).map_err(Error::Protocol)
+        LockstepEnv::connect(&options.address, crate::lockstep::ConnectOptions::default()).await
     }
 }
 
@@ -308,20 +286,17 @@ impl LockstepEnv {
 
     /// Connects to the lockstep env at the participant address `address` for the runtime
     /// driver, checking what `Model.run` checks before it drives one: an autoreset mode and
-    /// spaces the driver represents, and a workflow edition the env and this build share,
-    /// negotiated against `declared` (the runner's own declaration; `None`: this build's
-    /// current).
+    /// spaces the driver represents, and a declared workflow edition this build knows.
     ///
     /// # Errors
     /// [`ErrorExt::is_transient`](crate::ext::ErrorExt::is_transient) says
     /// whether retrying can succeed: a host not
     /// listening yet or an env not joined yet is transient; a key the host
-    /// refuses, an edition the env does not run, or a contract the driver
+    /// refuses, an edition this build does not know, or a contract the driver
     /// cannot represent is final.
     pub async fn connect(
         address: &str,
         options: crate::lockstep::ConnectOptions,
-        declared: Option<&str>,
     ) -> Result<ConnectedEnv> {
         let client = crate::lockstep::connect(address, options)
             .await
@@ -335,16 +310,13 @@ impl LockstepEnv {
         }
         crate::data::validate_driver_contract(&info.contract)
             .map_err(|err| Error::invalid_argument(err.to_string()))?;
-        let (env, selected, _) =
-            crate::editions::negotiate_env(info, declared).map_err(Error::Protocol)?;
+        let edition = rlmesh_proto::Edition::parse(&info.workflow_edition)
+            .map_err(|unknown| Error::invalid_argument(format!("the env's {unknown}")))?;
         Ok(ConnectedEnv {
             contract: info.contract.clone(),
             num_envs: (info.contract.num_envs as usize).max(1),
             subset_step: info.subset_step(),
-            edition: RunEdition {
-                selected,
-                env: Some(env),
-            },
+            edition,
             session: client.session().map(str::to_string),
             env: Self::new(client),
         })

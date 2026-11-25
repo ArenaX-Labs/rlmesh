@@ -8,7 +8,7 @@ use rlmesh_spaces::{MetaMap, MetaValue};
 use tokio_util::sync::CancellationToken;
 
 use super::episodes::Episodes;
-use super::link::{Edition, EditionCell, Link, lockstep_error, spaces_of, wire_lane};
+use super::link::{Link, lockstep_error, spaces_of, wire_lane};
 use super::{
     CLOSE_GRACE, RUNTIME_INFO_KEYS, RemoteEnvOptions, bounded, normalize_connect_address,
     normalize_timeout,
@@ -26,9 +26,7 @@ use crate::{ConnectAddress, EnvironmentError, Error, InfoDict, Result, Value, bi
 
 /// How [`EnvClientCore::connect_with`] dials.
 #[derive(Clone, Debug, Default)]
-pub struct CoreConnect<'a> {
-    /// The workflow edition this side declares (already resolved).
-    pub declared: Option<&'a str>,
+pub struct CoreConnect {
     /// Bound on the dial and handshake.
     pub connect_timeout: Option<Duration>,
     /// Default bound on each request; also `close`'s bound.
@@ -47,10 +45,9 @@ pub struct EnvClientCore {
     observation_space: Arc<spaces::SpaceSpec>,
     action_space: Arc<spaces::SpaceSpec>,
     num_envs: usize,
-    session_offer: rlmesh_proto::SessionOffer,
     env_id: String,
     episode_ids: Vec<String>,
-    selected_workflow_edition: String,
+    workflow_edition: String,
     request_timeout: Option<Duration>,
     closed: bool,
     warned_shadowed_info_key: bool,
@@ -76,12 +73,12 @@ impl EnvClientCore {
 
     /// Dial `address` and handshake. A dial failure is the ConnectionError
     /// class (a join that ran out of time too, saying why, as with no
-    pub async fn connect_with(address: &str, options: CoreConnect<'_>) -> Result<Self> {
+    pub async fn connect_with(address: &str, options: CoreConnect) -> Result<Self> {
         let parsed = ConnectAddress::env(address)?;
         let address = parsed.as_str();
         let address = address.as_str();
         let connect_timeout = normalize_timeout(options.connect_timeout);
-        let dial = Self::dial(parsed, options.declared, connect_timeout.map(join_bound));
+        let dial = Self::dial(parsed, connect_timeout.map(join_bound));
         let mut core = match connect_timeout {
             Some(timeout) => tokio::time::timeout(timeout, dial)
                 .await
@@ -95,12 +92,8 @@ impl EnvClientCore {
         Ok(core)
     }
 
-    async fn dial(
-        address: ConnectAddress,
-        declared: Option<&str>,
-        join_within: Option<Duration>,
-    ) -> Result<Self> {
-        let (inner, env_contract, spaces, num_envs, session_offer, selected) = match address {
+    async fn dial(address: ConnectAddress, join_within: Option<Duration>) -> Result<Self> {
+        let (inner, env_contract, spaces, num_envs, workflow_edition) = match address {
             ConnectAddress::Lockstep(address) => {
                 let mut options = crate::lockstep::ConnectOptions::default();
                 if let Some(within) = join_within {
@@ -112,22 +105,27 @@ impl EnvClientCore {
                 {
                     crate::lockstep::Driven::Gym(client) => client,
                     crate::lockstep::Driven::View(view) => {
-                        return Ok(Self::of_view(view, address, declared));
+                        return Ok(Self::of_view(view, address));
                     }
                 };
                 let info = client.info();
-                let (offer, selected, _) = crate::editions::negotiate_env(info, declared)
-                    .map_err(|why| lockstep_error(crate::lockstep::GymError::Config(why)))?;
+                let workflow_edition = rlmesh_proto::Edition::parse(&info.workflow_edition)
+                    .map_err(|unknown| {
+                        lockstep_error(crate::lockstep::GymError::Config(format!(
+                            "the env's {unknown}"
+                        )))
+                    })?
+                    .name()
+                    .to_string();
                 let env_contract = info.contract.clone();
                 let spaces = spaces_of(&env_contract)?;
                 let num_envs = (env_contract.num_envs as usize).max(1);
                 let link = Link::Lockstep {
                     client,
                     address,
-                    edition: Arc::new(std::sync::Mutex::new(selected.clone())),
                     episodes: Episodes::new(num_envs),
                 };
-                (link, env_contract, spaces, num_envs, offer, selected)
+                (link, env_contract, spaces, num_envs, workflow_edition)
             }
         };
         Ok(Self {
@@ -136,10 +134,9 @@ impl EnvClientCore {
             observation_space: spaces.0,
             action_space: spaces.1,
             num_envs,
-            session_offer,
             env_id: crate::mint_id(),
             episode_ids: vec![String::new(); num_envs],
-            selected_workflow_edition: selected,
+            workflow_edition,
             request_timeout: None,
             closed: false,
             warned_shadowed_info_key: false,
@@ -148,16 +145,13 @@ impl EnvClientCore {
         })
     }
 
-    fn of_view(view: crate::lockstep::GymView, address: String, declared: Option<&str>) -> Self {
+    fn of_view(view: crate::lockstep::GymView, address: String) -> Self {
         let (observation_space, action_space) = view.spaces();
-        let session_offer = rlmesh_proto::SessionOffer::this_build(declared);
-        let selected = session_offer.preferred.clone().unwrap_or_default();
         let robot = address.rsplit('/').next().unwrap_or_default().to_string();
         Self {
             inner: Link::View {
                 view: Arc::new(std::sync::Mutex::new(Some(Arc::new(view)))),
                 address,
-                edition: Arc::new(std::sync::Mutex::new(selected.clone())),
             },
             env_contract: spaces::EnvContract {
                 id: robot,
@@ -169,10 +163,9 @@ impl EnvClientCore {
             observation_space: Arc::new(observation_space),
             action_space: Arc::new(action_space),
             num_envs: 1,
-            session_offer,
             env_id: crate::mint_id(),
             episode_ids: vec![String::new()],
-            selected_workflow_edition: selected,
+            workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
             request_timeout: None,
             closed: false,
             warned_shadowed_info_key: false,
@@ -265,37 +258,10 @@ impl EnvClientCore {
         self.closed
     }
 
-    /// The edition the handshake selected, or the last pin.
-    pub fn selected_workflow_edition(&self) -> &str {
-        &self.selected_workflow_edition
-    }
-
-    /// Pin the env to the session edition a model leg settled on (the
-    /// three-way floor), replacing the handshake selection as the first Join
-    pub fn pin_workflow_edition(&mut self, edition: &str) {
-        self.selected_workflow_edition = edition.trim().to_string();
-        match &mut self.inner {
-            Link::Lockstep { edition, .. } | Link::View { edition, .. } => {
-                *edition
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    self.selected_workflow_edition.clone();
-            }
-        }
-    }
-
-    /// The env's negotiation offer captured at handshake.
-    pub fn session_offer(&self) -> &rlmesh_proto::SessionOffer {
-        &self.session_offer
-    }
-
-    /// A shared handle on the selected edition, reading every pin.
-    pub fn edition_cell(&self) -> EditionCell {
-        EditionCell(match &self.inner {
-            Link::Lockstep { edition, .. } | Link::View { edition, .. } => {
-                Edition::Local(Arc::clone(edition))
-            }
-        })
+    /// The workflow edition the env declares (a robot view declares none:
+    /// this build's current edition).
+    pub fn workflow_edition(&self) -> &str {
+        &self.workflow_edition
     }
 
     /// Leave `info` exactly as the env produced it, without the
@@ -599,15 +565,9 @@ pub(crate) fn decode_render_png(png: &[u8]) -> Result<Value> {
 
 pub(super) async fn connect_core(options: RemoteEnvOptions) -> Result<EnvClientCore> {
     let address = normalize_connect_address(options.address.as_deref())?;
-    let declared = crate::editions::resolve_native(crate::editions::EditionSources {
-        call: options.workflow_edition.as_deref(),
-        option: None,
-        declared: None,
-    })?;
     EnvClientCore::connect_with(
         &address,
         CoreConnect {
-            declared: declared.as_deref(),
             connect_timeout: options.connect_timeout,
             request_timeout: options.request_timeout,
         },

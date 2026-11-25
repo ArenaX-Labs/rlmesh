@@ -38,7 +38,6 @@ class _OkClient:
         *,
         connect_timeout_seconds: float | None = None,
         request_timeout_seconds: float | None = None,
-        workflow_edition: str | None = None,
     ) -> None:
         self._address = address
 
@@ -53,9 +52,6 @@ class _OkClient:
 
     def env_id(self) -> str:
         return "env-id"
-
-    def edition_cell(self) -> Any:
-        return SimpleNamespace(get=lambda: "2026.06")
 
     def close(self) -> None:
         pass
@@ -90,7 +86,6 @@ def test_sandbox_cleanup_runs_on_keyboard_interrupt(
             *,
             connect_timeout_seconds: float,
             request_timeout_seconds: float | None = None,
-            workflow_edition: str | None = None,
         ) -> None:
             captured["address"] = address
             captured["connect_timeout_seconds"] = connect_timeout_seconds
@@ -124,7 +119,6 @@ def test_sandbox_cleanup_runs_on_remote_attach_exception(
             *,
             connect_timeout_seconds: float,
             request_timeout_seconds: float | None = None,
-            workflow_edition: str | None = None,
         ) -> None:
             _ = address, connect_timeout_seconds, request_timeout_seconds
             raise RuntimeError("attach failed")
@@ -488,7 +482,6 @@ def test_attach_retries_in_short_attempts(
             *,
             connect_timeout_seconds: float | None = None,
             request_timeout_seconds: float | None = None,
-            workflow_edition: str | None = None,
         ) -> None:
             assert connect_timeout_seconds is not None
             timeouts.append(connect_timeout_seconds)
@@ -508,9 +501,6 @@ def test_attach_retries_in_short_attempts(
 
         def env_id(self) -> str:
             return "env-id"
-
-        def edition_cell(self) -> Any:
-            return SimpleNamespace(get=lambda: "2026.06")
 
         def close(self) -> None:
             pass
@@ -571,7 +561,6 @@ def test_sandbox_vector_env_default_mode_is_auto(
             *,
             connect_timeout_seconds: float | None = None,
             request_timeout_seconds: float | None = None,
-            workflow_edition: str | None = None,
         ) -> None:
             self._address = address
 
@@ -586,9 +575,6 @@ def test_sandbox_vector_env_default_mode_is_auto(
 
         def env_id(self) -> str:
             return "env-id"
-
-        def edition_cell(self) -> Any:
-            return SimpleNamespace(get=lambda: "2026.06")
 
         def num_envs(self) -> int:
             return 2

@@ -68,8 +68,8 @@ RLMESH_ENV_ADDRESS='127.0.0.1:7447#<key>/libero' uv run python -m vla_adapters.e
 
 Use the participant address announced by the server, including its session key
 (the `#<key>` above is a placeholder). 0.2 no longer accepts a bare `host:port`
-as a remote env address. Both peers must use compatible 0.2 builds; prerelease
-cohorts must match. `RemoteEnv`, `Model.run` and adapter resolution remain
+as a remote env address. Both peers must use 0.2 builds on the same session
+wire revision. `RemoteEnv`, `Model.run` and adapter resolution remain
 available in 0.2. The harness closes the inspection client before calling
 `model.run(address)`, since an open `RemoteEnv` holds the env lease; this example does not use the removed `Session` API or gRPC.
 

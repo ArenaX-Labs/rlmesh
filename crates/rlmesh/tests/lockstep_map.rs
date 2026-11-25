@@ -147,8 +147,7 @@ fn catalog_contract(num_envs: u32) -> EnvContract {
 fn info(contract: EnvContract) -> GymEnvInfo {
     GymEnvInfo {
         contract,
-        workflow_edition: "2026.06".into(),
-        supported_workflow_editions: vec!["2026.06".into()],
+        workflow_edition: "2026.10".into(),
         capabilities: Vec::new(),
     }
 }

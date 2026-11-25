@@ -258,7 +258,6 @@ int main(void) {
   CHECK(strcmp(rlmesh_last_error_message(), "hook abort") == 0 && s.ends == 2);
   s.abort_step = false;
   RLMeshBindOptions bo = RLMESH_BIND_OPTIONS_INIT;
-  bo.workflow_edition = rlmesh_current_workflow_edition();
   bo.hooks = s.hooks;
   int starts = s.starts, ends = s.ends, episode_ends = s.episode_ends, hook_steps = s.hook_steps;
   RLMeshBinding* binding = NULL;

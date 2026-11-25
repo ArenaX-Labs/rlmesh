@@ -28,10 +28,8 @@ pub struct GymEnvInfo {
     /// The v1 env contract (spaces, metadata and tags, `num_envs`,
     /// autoreset).
     pub contract: EnvContract,
-    /// The workflow edition the env runs.
+    /// The workflow edition the env declares.
     pub workflow_edition: String,
-    /// Every edition it implements.
-    pub supported_workflow_editions: Vec<String>,
     /// Its handshake capabilities (`subset_step`).
     pub capabilities: Vec<String>,
 }
@@ -50,7 +48,6 @@ impl GymEnvInfo {
         json!({
             "contract": contract_to_json(&self.contract),
             "workflow_edition": self.workflow_edition,
-            "supported_workflow_editions": self.supported_workflow_editions,
             "capabilities": self.capabilities,
         })
     }
@@ -76,7 +73,6 @@ impl GymEnvInfo {
         Ok(Self {
             contract: contract_from_json(&field(&value, "contract")?)?,
             workflow_edition: text(&value, "workflow_edition")?,
-            supported_workflow_editions: strings(field(&value, "supported_workflow_editions")?)?,
             capabilities: strings(field(&value, "capabilities")?)?,
         })
     }

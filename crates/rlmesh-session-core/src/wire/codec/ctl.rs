@@ -331,7 +331,6 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             supports,
             requires,
             workflow_edition,
-            workflow_editions,
             estop,
         } => Verb::Attach(pb::Attach {
             estop: estop.as_ref().map(|reason| pb::LocalEstop {
@@ -345,7 +344,6 @@ fn request_to_pb(r: &Request) -> pb::CtlRequest {
             supports: supports.clone(),
             requires: requires.clone(),
             workflow_edition: workflow_edition.clone(),
-            workflow_editions: workflow_editions.clone(),
         }),
         Command::Detach => Verb::Detach(pb::Detach {}),
         Command::Arm => Verb::Arm(pb::Arm {
@@ -482,7 +480,6 @@ fn request_from_pb(r: pb::CtlRequest) -> Result<Request, WireError> {
             supports: a.supports,
             requires: a.requires,
             workflow_edition: a.workflow_edition,
-            workflow_editions: a.workflow_editions,
             estop: a
                 .estop
                 .filter(|e| e.latched)
