@@ -610,9 +610,8 @@ def serve_env(
     (``rlmesh.torch.EnvFactory`` etc.), so a classless make-callable / gym-id /
     hf source is the only case that needs it passed explicitly. ``device`` places
     the incoming action (torch/jax only). The endpoint runs at
-    ``RLMESH_WORKFLOW_EDITION``, else the source's
-    :attr:`EnvFactory.workflow_edition <rlmesh.EnvFactory.workflow_edition>`,
-    else the current edition. Heavy imports stay inside this call so
+    the source's :attr:`EnvFactory.workflow_edition
+    <rlmesh.EnvFactory.workflow_edition>`, else the current edition. Heavy imports stay inside this call so
     importing the authoring base stays cheap. A one-line serving status is
     printed once the env answers, with the address a peer dials.
     """

@@ -393,19 +393,14 @@ pub struct CheckImageArgs {
     /// A local image reference (`name:tag` or id) that `docker image inspect` resolves.
     pub image: String,
     /// The workflow editions the target platform knows, comma-separated; the
-    /// image's declared edition must be one. Defaults to this CLI's own rlmesh.
-    #[arg(
-        long,
-        value_name = "LIST",
-        value_delimiter = ',',
-        conflicts_with = "platform_version"
-    )]
+    /// image's declared edition must be one. Without this and
+    /// --platform-wire-revision, the target is this CLI's own rlmesh.
+    #[arg(long, value_name = "LIST", value_delimiter = ',')]
     pub platform_editions: Vec<String>,
-    /// The rlmesh version the target platform runs. Only this CLI's own version
-    /// is known; any other version reports the edition check as not checked, so
-    /// pass --platform-editions instead. `0.1.0rc13` and `0.1.0-rc.13` name the same build.
-    #[arg(long, value_name = "VERSION")]
-    pub platform_version: Option<String>,
+    /// The session wire revision the target platform's runtime speaks
+    /// (`rlmesh.build_info().session_wire_revision` there); the image's must equal it.
+    #[arg(long, value_name = "N")]
+    pub platform_wire_revision: Option<u32>,
     /// Print the report as JSON: `{"failed","warnings","not_checked","passed"}`.
     #[arg(long)]
     pub json: bool,

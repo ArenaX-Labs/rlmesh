@@ -60,8 +60,8 @@ def _stale_message(native: Any) -> str | None:
         return None
     return (
         f"the rlmesh native extension is stale: it was built from {built_head} but the "
-        f"checkout at {checkout} is at {head}, so its dev workflow edition matches no peer "
-        f"built from the current tree. Run `mise run build:python:develop` to rebuild it "
+        f"checkout at {checkout} is at {head}, so it may not run what the tree now "
+        f"says. Run `mise run build:python:develop` to rebuild it "
         f"(set {STALE_CHECK_ENV_VAR}=0 to silence this check)."
     )
 

@@ -1,17 +1,13 @@
 //! Workflow editions: the row of behavioural defaults a participant runs under.
 //!
-//! An edition is declared locally and never negotiated. A participant's edition is, highest first:
-//!
-//! 1. the `RLMESH_WORKFLOW_EDITION` environment variable;
-//! 2. its in-source declaration ([`Policy::workflow_edition`](crate::Policy::workflow_edition),
-//!    [`EnvFactory::workflow_edition`](crate::EnvFactory::workflow_edition));
-//! 3. this build's [`current_workflow_edition`].
+//! An edition is declared in source and never negotiated or overridden at deploy time. A
+//! participant runs at its declaration ([`Policy::workflow_edition`](crate::Policy::workflow_edition),
+//! [`EnvFactory::workflow_edition`](crate::EnvFactory::workflow_edition), or a served env's or
+//! model's `ServeOptions::workflow_edition`), else this build's [`current_workflow_edition`].
 //!
 //! A blank value declares nothing. An edition this build does not know is the ValueError class.
 
 use crate::{Error, Result};
-
-pub(crate) const WORKFLOW_EDITION_ENV_VAR: &str = "RLMESH_WORKFLOW_EDITION";
 
 /// The bare `YYYY.MM` workflow edition this build runs at when nothing declares
 /// one: the value to paste into a declaration.
@@ -30,12 +26,8 @@ pub fn validate_workflow_edition(edition: &str) -> Result<String> {
         .map_err(|unknown| Error::invalid_argument(unknown.to_string()))
 }
 
-fn nonblank(value: Option<&str>) -> Option<&str> {
-    value.filter(|value| !value.trim().is_empty())
-}
-
-/// The edition a participant runs at: the environment variable, then its
-/// in-source declaration `declared`, then [`current_workflow_edition`].
+/// The edition a participant runs at: its in-source declaration `declared`,
+/// else [`current_workflow_edition`].
 ///
 /// # Errors
 /// [`Error::InvalidArgument`] for an edition this build does not know.
@@ -46,14 +38,10 @@ pub fn resolve_workflow_edition(declared: Option<&str>) -> Result<String> {
 /// [`resolve_workflow_edition`] for a served env or model: a non-blank
 /// `ServeOptions.workflow_edition` `option` stands above the type's `declared`.
 pub(crate) fn resolve_served(option: Option<&str>, declared: Option<&str>) -> Result<String> {
-    let environment = std::env::var(WORKFLOW_EDITION_ENV_VAR).ok();
-    resolve_in(environment.as_deref(), &[option, declared])
-}
-
-fn resolve_in(environment: Option<&str>, declarations: &[Option<&str>]) -> Result<String> {
-    let edition = std::iter::once(environment)
-        .chain(declarations.iter().copied())
-        .find_map(nonblank)
+    let edition = [option, declared]
+        .into_iter()
+        .flatten()
+        .find(|value| !value.trim().is_empty())
         .unwrap_or(rlmesh_proto::CURRENT_WORKFLOW_EDITION);
     validate_workflow_edition(edition)
 }
@@ -63,33 +51,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_environment_then_the_option_then_the_declaration_then_the_current_edition() {
+    fn the_option_then_the_declaration_then_the_current_edition() {
         let current = current_workflow_edition();
-        let resolve = |environment, option, declared| {
-            resolve_in(environment, &[option, declared]).map_err(|err| err.to_string())
-        };
         let unknown = Some("2099.01");
-        for (environment, option, declared) in [
-            (None, None, None),
-            (None, Some("  "), None),
-            (None, None, Some(" 2026.10 ")),
-            (None, Some(" "), Some("2026.10")),
-            (Some(current), unknown, unknown),
-            (Some(" "), Some(current), unknown),
-            (None, Some(current), unknown),
+        for (option, declared) in [
+            (None, None),
+            (Some("  "), None),
+            (None, Some(" 2026.10 ")),
+            (Some(" "), Some("2026.10")),
+            (Some(current), unknown),
         ] {
             assert_eq!(
-                resolve(environment, option, declared).as_deref(),
-                Ok(current),
-                "{environment:?} {option:?} {declared:?}"
+                resolve_served(option, declared).unwrap(),
+                current,
+                "{option:?} {declared:?}"
             );
         }
-        for (environment, option, declared) in [
-            (unknown, Some(current), Some(current)),
-            (None, unknown, Some(current)),
-            (None, Some(" "), unknown),
-        ] {
-            let err = resolve(environment, option, declared).unwrap_err();
+        for (option, declared) in [(unknown, Some(current)), (Some(" "), unknown)] {
+            let err = resolve_served(option, declared).unwrap_err().to_string();
             assert!(err.contains("\"2099.01\""), "{err}");
         }
     }

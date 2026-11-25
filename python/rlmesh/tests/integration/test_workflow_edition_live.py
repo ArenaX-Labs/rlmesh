@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 import rlmesh
-from rlmesh._editions import WORKFLOW_EDITION_ENV_VAR, current_workflow_edition
+from rlmesh._editions import current_workflow_edition
 
 np = pytest.importorskip("numpy")
 pytest.importorskip("gymnasium")
@@ -34,20 +34,13 @@ class CountEnv:
         return None
 
 
-@pytest.fixture
-def undeclared(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(WORKFLOW_EDITION_ENV_VAR, raising=False)
-
-
 def model() -> Any:
     from rlmesh.numpy import Model
 
     return Model(lambda obs: np.zeros(2, np.float32))
 
 
-def test_a_model_declaring_an_unknown_edition_is_refused_before_it_runs(
-    undeclared: None,
-) -> None:
+def test_a_model_declaring_an_unknown_edition_is_refused_before_it_runs() -> None:
     from rlmesh.numpy import Model
 
     class Future(Model):
@@ -113,9 +106,7 @@ LOCAL_PATHS = ["run", "rlmesh.run", "random", "bind", "run_routes"]
 
 
 @pytest.mark.parametrize("path", LOCAL_PATHS)
-def test_a_local_run_refuses_a_factory_declaring_a_retired_edition(
-    undeclared: None, path: str
-) -> None:
+def test_a_local_run_refuses_a_factory_declaring_a_retired_edition(path: str) -> None:
     factory = RetiredFactory()
     with pytest.raises(ValueError, match=REFUSAL):
         drive(path, factory)
@@ -124,7 +115,7 @@ def test_a_local_run_refuses_a_factory_declaring_a_retired_edition(
 
 @pytest.mark.parametrize("path", LOCAL_PATHS)
 def test_a_local_run_refuses_an_env_class_declaring_a_retired_edition(
-    undeclared: None, path: str
+    path: str,
 ) -> None:
     with pytest.raises(ValueError, match=REFUSAL):
         drive(path, RetiredEnv())
@@ -132,7 +123,7 @@ def test_a_local_run_refuses_an_env_class_declaring_a_retired_edition(
 
 @pytest.mark.parametrize("path", ["run", "random", "run_routes"])
 def test_a_local_run_refuses_a_vector_env_declaring_a_retired_edition(
-    undeclared: None, path: str
+    path: str,
 ) -> None:
     env = retired_vector_env()
     try:
@@ -143,9 +134,7 @@ def test_a_local_run_refuses_a_vector_env_declaring_a_retired_edition(
 
 
 @pytest.mark.parametrize("path", LOCAL_PATHS)
-def test_a_local_run_drives_a_factory_declaring_this_builds_edition(
-    undeclared: None, path: str
-) -> None:
+def test_a_local_run_drives_a_factory_declaring_this_builds_edition(path: str) -> None:
     class CurrentFactory(rlmesh.EnvFactory):
         workflow_edition = current_workflow_edition()
 
@@ -153,12 +142,3 @@ def test_a_local_run_drives_a_factory_declaring_this_builds_edition(
             return CountEnv()
 
     drive(path, CurrentFactory())
-
-
-def test_the_environment_variable_outranks_a_local_factory_declaration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, current_workflow_edition())
-    factory = RetiredFactory()
-    drive("run", factory)
-    assert factory.made == 1

@@ -566,12 +566,9 @@ def test_check_labels_warns_about_ad_hoc_roles_but_not_blessed_or_escape() -> No
     assert any("does not resolve" in message for message in failures), failures
 
 
-def test_runtime_carries_the_resolved_edition(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_runtime_carries_the_resolved_edition() -> None:
     from rlmesh._rlmesh import SESSION_WIRE_REVISION, build_info
 
-    monkeypatch.delenv("RLMESH_WORKFLOW_EDITION", raising=False)
     info = build_info()
     runtime = rlmesh.describe(_TinyModel)["runtime"]
     assert runtime["protocol_generation"] == info.protocol_generation
@@ -606,11 +603,6 @@ def test_runtime_carries_the_resolved_edition(
     act.workflow_edition = "1999.01"  # type: ignore[attr-defined]
     with pytest.raises(ValueError, match=r"1999\.01"):
         _ = rlmesh.describe(Model(act))
-    monkeypatch.setenv("RLMESH_WORKFLOW_EDITION", rlmesh.current_workflow_edition())
-    assert (
-        rlmesh.describe(Impossible)["runtime"]["workflow_edition"]
-        == rlmesh.current_workflow_edition()
-    )
 
 
 def _arm_tags(dim: int = 1) -> Any:
@@ -642,7 +634,6 @@ class _CrashingFactory(rlmesh.EnvFactory):
 def test_check_target_buckets(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     from rlmesh._describe import check_target
 
-    monkeypatch.delenv("RLMESH_WORKFLOW_EDITION", raising=False)
     monkeypatch.chdir(tmp_path)
 
     report = check_target(_SpeccedModel)

@@ -551,10 +551,10 @@ struct RLMeshBytes; /* defined below */
 RLMESH_API RLMeshStatus rlmesh_build_info_repr(struct RLMeshBytes* out);
 
 /* The bare YYYY.MM workflow edition this build runs at (static): the value to
- * declare. A served model or env runs at the RLMESH_WORKFLOW_EDITION environment
- * variable, else its declaration (RLMeshServeOptions.workflow_edition, then the
- * vtable's or factory attributes' workflow_edition), else this edition. An
- * edition this build does not know is ERR_VALUE. */
+ * declare. A served model or env runs at its declaration
+ * (RLMeshServeOptions.workflow_edition, then the vtable's or factory attributes'
+ * workflow_edition), else this edition. An edition this build does not know is
+ * ERR_VALUE. */
 RLMESH_API const char* rlmesh_current_workflow_edition(void);
 
 /* The describe envelope's metadata key and schema version, and the reset

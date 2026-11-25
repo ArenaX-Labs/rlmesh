@@ -8,7 +8,7 @@ pub struct ServeOptions {
     /// Maximum time the env or model close hook may take (default 5 s).
     pub close_timeout: Option<Duration>,
     /// The workflow edition this served env or model declares, in place of its
-    /// type's declaration; `RLMESH_WORKFLOW_EDITION` overrides it.
+    /// type's declaration.
     pub workflow_edition: Option<String>,
 }
 impl ServeOptions {

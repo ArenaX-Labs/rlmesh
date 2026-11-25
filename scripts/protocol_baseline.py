@@ -20,6 +20,9 @@ from pathlib import Path
 import tomllib
 
 RESERVED_RE = re.compile(r"(?:^|[{};])\s*reserved\b")
+WIRE_REVISION_RE = re.compile(r"pub const WIRE_REVISION: u32 = (\d+);")
+WIRE_VERSION = "crates/rlmesh-session-core/src/wire/version.rs"
+WIRE_VECTORS = "crates/rlmesh-session-core/tests/vectors/wire"
 
 
 def _repo_root() -> Path:
@@ -97,6 +100,7 @@ def verify_protocols(root: Path) -> list[str]:
             continue
         errors.extend(f"{name}: {e}" for e in _reserved(root, live))
         if entry["status"] == "provisional":
+            errors.extend(f"{name}: {e}" for e in _unbumped_wire_change(root, entry))
             if base.exists():
                 errors.append(
                     f"{name}: a provisional protocol has no baseline yet "
@@ -112,6 +116,69 @@ def verify_protocols(root: Path) -> list[str]:
         _compare(live, base, diffs)
         errors.extend(f"{name}: {e}" for e in diffs)
     return errors
+
+
+def _git(root: Path, *args: str) -> str:
+    return subprocess.check_output(["git", *args], cwd=root, text=True)
+
+
+def _last_release_tag(root: Path) -> str:
+    try:
+        return _git(root, "describe", "--tags", "--abbrev=0", "--match", "v*").strip()
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(
+            "protocol:baseline-verify needs the last release tag to tell a wire change "
+            "from none, and none is reachable (a shallow clone?): run "
+            "`git fetch --tags --unshallow`"
+        ) from error
+
+
+def _wire_revision(text: str) -> int | None:
+    match = WIRE_REVISION_RE.search(text)
+    return int(match.group(1)) if match else None
+
+
+def _wire_break(proto_changes: list[str], vector_diff: str) -> list[str]:
+    """What changed the wire: any changed proto, and any vector changed or removed.
+
+    A vector only added (a new message, or a new case of an existing one) is no
+    wire change.
+    """
+    vectors = sorted(path for path, n in _removed_lines(vector_diff).items() if n)
+    return [*proto_changes, *vectors]
+
+
+def _removed_lines(diff: str) -> dict[str, int]:
+    removed: dict[str, int] = {}
+    current = ""
+    for line in diff.splitlines():
+        if line.startswith("--- a/"):
+            current = line[len("--- a/") :]
+            removed.setdefault(current, 0)
+        elif line.startswith("-") and not line.startswith("---") and current:
+            removed[current] += 1
+    return removed
+
+
+def _unbumped_wire_change(root: Path, entry: dict) -> list[str]:
+    """A provisional wire that changed since the last release must bump WIRE_REVISION."""
+    tag = _last_release_tag(root)
+    proto_changes = _git(root, "diff", "--name-only", tag, "--", entry["proto"]).split()
+    vector_diff = _git(root, "diff", "-U0", tag, "--", WIRE_VECTORS)
+    changed = _wire_break(proto_changes, vector_diff)
+    if not changed:
+        return []
+    try:
+        released = _wire_revision(_git(root, "show", f"{tag}:{WIRE_VERSION}"))
+    except subprocess.CalledProcessError:
+        released = None
+    current = _wire_revision((root / WIRE_VERSION).read_text(encoding="utf-8"))
+    if released is None or current != released:
+        return []
+    return [
+        f"the wire changed since {tag} ({', '.join(changed)}) but WIRE_REVISION is still "
+        f"{current}; bump it in {WIRE_VERSION}, with a REVISIONS line naming the change"
+    ]
 
 
 def breaking_protocols(root: Path) -> int:

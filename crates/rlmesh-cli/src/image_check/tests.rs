@@ -395,12 +395,18 @@ fn missing_describe_label_on_a_custom_entrypoint_points_at_the_native_describe()
 
 #[test]
 fn edition_table() {
-    let platform = EditionTarget::platform(platform_editions(&[
-        " 2026.06".to_owned(),
-        "2026.10".to_owned(),
-        " ".to_owned(),
-    ]));
-    assert_eq!(platform.editions, ["2026.06", "2026.10"]);
+    let platform = EditionTarget::platform(
+        Some(platform_editions(&[
+            " 2026.06".to_owned(),
+            "2026.10".to_owned(),
+            " ".to_owned(),
+        ])),
+        None,
+    );
+    assert_eq!(
+        platform.editions.as_deref(),
+        Some(&["2026.06".to_owned(), "2026.10".to_owned()][..])
+    );
     let runtime = |generation: Option<&str>, edition: Option<&str>| DescribeRuntime {
         protocol_generation: generation.map(str::to_owned),
         session_wire_revision: Some(WIRE_REVISION),
@@ -492,35 +498,6 @@ fn edition_table() {
 }
 
 #[test]
-fn platform_editions_for_version_knows_only_this_build() {
-    let own = platform_editions_for_version(env!("CARGO_PKG_VERSION")).unwrap();
-    assert_eq!(own, [CURRENT_WORKFLOW_EDITION]);
-    let pep440 = env!("CARGO_PKG_VERSION").replace("-rc.", "rc");
-    assert_eq!(platform_editions_for_version(&pep440), Some(own));
-    assert_eq!(platform_editions_for_version("0.1.0-rc.12"), None);
-    assert_eq!(platform_editions_for_version("0.0.1"), None);
-    assert_eq!(platform_editions_for_version("99.0.0"), None);
-}
-
-#[test]
-fn version_spellings_normalize() {
-    for (raw, expected) in [
-        ("0.1.0-rc.13", "0.1.0-rc.13"),
-        ("0.1.0rc13", "0.1.0-rc.13"),
-        ("0.1.0-rc13", "0.1.0-rc.13"),
-        ("0.1.0.rc.13", "0.1.0-rc.13"),
-        ("v0.1.0RC13", "0.1.0-rc.13"),
-        ("0.1.0", "0.1.0"),
-        ("0.1.0a1", "0.1.0-a.1"),
-        ("0.1.0-alpha.1", "0.1.0-a.1"),
-        ("0.1.0-beta.3", "0.1.0-b.3"),
-        ("0.1.0-dev.abc123", "0.1.0-dev.abc123"),
-    ] {
-        assert_eq!(normalize_version(raw), expected, "{raw}");
-    }
-}
-
-#[test]
 fn host_baked_label_is_refused() {
     let runtime = |os: &str, arch: &str| DescribeRuntime {
         os: Some(os.to_owned()),
@@ -564,7 +541,7 @@ fn host_baked_label_is_refused() {
 }
 
 #[test]
-fn image_declared_edition_overrides_the_label() {
+fn the_image_edition_is_the_label_and_the_old_variable_only_warns() {
     let mut config = image(
         &["python", "-m", "rlmesh.serve", "pkg:Policy"],
         &[],
@@ -582,24 +559,17 @@ fn image_declared_edition_overrides_the_label() {
             }),
         ),
     );
-    let platform = EditionTarget::platform(vec!["2026.06".to_owned()]);
-    assert_eq!(declared_workflow_edition(&config), None);
-    assert!(check_image(&config, Some(&platform)).ok());
-    config.env.push(format!("{WORKFLOW_EDITION_ENV}= "));
-    assert_eq!(declared_workflow_edition(&config), None);
-    assert!(check_image(&config, Some(&platform)).ok());
-    config.env.pop();
-    config.env.push(format!("{WORKFLOW_EDITION_ENV}=2020.01"));
-    assert_eq!(
-        declared_workflow_edition(&config),
-        Some("2020.01".to_owned())
-    );
+    let platform = EditionTarget::platform(Some(vec!["2026.06".to_owned()]), Some(WIRE_REVISION));
     let report = check_image(&config, Some(&platform));
+    assert!(report.ok() && report.warnings.is_empty(), "{report:?}");
+    config.env.push(format!("{WORKFLOW_EDITION_ENV}=2020.01"));
+    let report = check_image(&config, Some(&platform));
+    assert!(report.ok(), "{report:?}");
     assert!(
         report
-            .failed
+            .warnings
             .iter()
-            .any(|m| m.contains("declares workflow edition 2020.01")),
+            .any(|m| m.contains("no longer reads")),
         "{report:?}"
     );
 }

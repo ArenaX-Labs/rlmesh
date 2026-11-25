@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from ._load_native import load_native
 
@@ -22,10 +22,6 @@ class WorkflowEditionWarning(UserWarning):
     Filter it by category (``warnings.filterwarnings("ignore",
     category=rlmesh.WorkflowEditionWarning)``) rather than by message.
     """
-
-
-#: Process-wide declaration, above every in-source one. Blank declares nothing.
-WORKFLOW_EDITION_ENV_VAR: Final = "RLMESH_WORKFLOW_EDITION"
 
 
 def current_workflow_edition() -> str:
@@ -50,8 +46,8 @@ def resolve_workflow_edition(declared: str | None = None) -> str:
             ``Model.workflow_edition``).
 
     Returns:
-        ``RLMESH_WORKFLOW_EDITION`` when set, else ``declared``, else
-        :func:`current_workflow_edition`; validated and trimmed.
+        ``declared``, else :func:`current_workflow_edition`; validated and
+        trimmed.
 
     Raises:
         ValueError: If the winner names an edition this build does not know.
@@ -64,8 +60,8 @@ def serve_options_declaring(
 ) -> ServeOptions:
     """Return ``options`` carrying the edition the served participant runs at.
 
-    ``RLMESH_WORKFLOW_EDITION``, else ``options``' own ``workflow_edition``, else
-    ``declared``, else the current edition.
+    ``options``' own ``workflow_edition``, else ``declared``, else the current
+    edition.
     """
     own = options.workflow_edition if options is not None else None
     resolved = resolve_workflow_edition(own or declared)

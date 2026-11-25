@@ -110,7 +110,6 @@ static void expect_retired_refusal(RLMeshStatus status) {
         strstr(message, "workflow edition \"2026.06\" is unknown to this rlmesh build") == message);
 }
 static void refuse_retired_edition(State* state) {
-  if (getenv("RLMESH_WORKFLOW_EDITION")) return;
   RLMeshEnvFactoryAttributes attrs = RLMESH_ENV_FACTORY_ATTRIBUTES_INIT;
   attrs.workflow_edition = "2026.06";
   RLMeshEnvFactoryVtable vt = RLMESH_ENV_FACTORY_VTABLE_INIT;

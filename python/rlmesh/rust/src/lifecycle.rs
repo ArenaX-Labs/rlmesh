@@ -131,9 +131,8 @@ pub fn validate_workflow_edition(edition: &str) -> PyResult<String> {
     rlmesh::binding::validate_workflow_edition(edition).map_err(crate::types::to_py_err)
 }
 
-/// The workflow edition a participant runs at: `RLMESH_WORKFLOW_EDITION`, then
-/// its declaration `declared`, then `current_workflow_edition()`; validated and
-/// trimmed.
+/// The workflow edition a participant runs at: its declaration `declared`,
+/// else `current_workflow_edition()`; validated and trimmed.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 #[pyo3(signature = (declared=None))]

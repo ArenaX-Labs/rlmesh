@@ -763,7 +763,6 @@ struct RetiredFactory : EnvFactory<RetiredFactory> {
   }
 };
 void local_runs_refuse_a_retired_edition() {
-  if (std::getenv("RLMESH_WORKFLOW_EDITION")) return;
   const std::string refusal = "workflow edition \"2026.06\" is unknown to this rlmesh build";
   RetiredFactory factory;
   Model model(Greedy{});

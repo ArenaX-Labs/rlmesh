@@ -26,8 +26,7 @@ pub const PACKAGE_LABEL: &str = "dev.rlmesh.package";
 pub const SERVE_PORT: u16 = rlmesh_session::address::DEFAULT_PORT;
 /// The env var `rlmesh.serve` binds.
 pub const ADDRESS_ENV: &str = "RLMESH_ADDRESS";
-/// The env var that declares a served peer's workflow edition, above the
-/// class declaration; empty declares none.
+/// A variable earlier releases read a workflow edition from; nothing reads it now.
 pub const WORKFLOW_EDITION_ENV: &str = "RLMESH_WORKFLOW_EDITION";
 
 /// What a check found, in the buckets the CLI prints.
@@ -422,8 +421,8 @@ pub fn check_label_runtime(runtime: &DescribeRuntime) -> CheckReport {
 /// given on the command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditionTarget {
-    /// The workflow editions the target knows.
-    pub editions: Vec<String>,
+    /// The workflow editions the target knows, when known.
+    pub editions: Option<Vec<String>>,
     /// The target as messages name it (`this rlmesh build`).
     pub name: String,
     /// The session wire revision the target speaks, when known.
@@ -434,18 +433,19 @@ impl EditionTarget {
     /// The rlmesh this CLI was built with.
     pub fn this_build() -> Self {
         Self {
-            editions: known_editions(),
+            editions: Some(known_editions()),
             name: "this rlmesh build".to_owned(),
             wire_revision: Some(WIRE_REVISION),
         }
     }
 
-    /// A target platform that knows `editions`; its wire revision is not known.
-    pub fn platform(editions: Vec<String>) -> Self {
+    /// A target platform that knows `editions` and speaks `wire_revision`,
+    /// each when given.
+    pub fn platform(editions: Option<Vec<String>>, wire_revision: Option<u32>) -> Self {
         Self {
             editions,
             name: "the target platform".to_owned(),
-            wire_revision: None,
+            wire_revision,
         }
     }
 }
@@ -464,43 +464,6 @@ pub fn platform_editions(editions: &[String]) -> Vec<String> {
         .map(|edition| edition.trim().to_owned())
         .filter(|edition| !edition.is_empty())
         .collect()
-}
-
-/// The editions a platform on the `rlmesh` version `version` knows, when that
-/// is this CLI's own version.
-pub fn platform_editions_for_version(version: &str) -> Option<Vec<String>> {
-    (normalize_version(version) == normalize_version(env!("CARGO_PKG_VERSION")))
-        .then(known_editions)
-}
-
-/// Spell a package version the SemVer way this workspace does (`0.1.0-rc.13`),
-/// accepting PEP 440 (`0.1.0rc13`), a loose `0.1.0-rc13` / `0.1.0.rc.13`, a `v`
-/// prefix, and mixed case.
-pub fn normalize_version(version: &str) -> String {
-    let version = version.trim().to_ascii_lowercase();
-    let version = version.strip_prefix('v').unwrap_or(&version);
-    let base_end = version
-        .find(|c: char| !c.is_ascii_digit() && c != '.')
-        .unwrap_or(version.len());
-    let base = version[..base_end].trim_end_matches('.');
-    let rest = version[base_end..].trim_start_matches(['-', '.', '_']);
-    if rest.is_empty() {
-        return base.to_owned();
-    }
-    let tag_end = rest
-        .find(|c: char| !c.is_ascii_alphabetic())
-        .unwrap_or(rest.len());
-    let tag = match &rest[..tag_end] {
-        "alpha" => "a",
-        "beta" => "b",
-        "c" | "pre" | "preview" => "rc",
-        other => other,
-    };
-    let number = rest[tag_end..].trim_start_matches(['-', '.', '_']);
-    if tag.is_empty() || number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
-        return version.to_owned();
-    }
-    format!("{base}-{tag}.{number}")
 }
 
 /// Check that the image's rlmesh speaks the target's protocol generation and
@@ -539,7 +502,17 @@ pub fn check_editions(runtime: &DescribeRuntime, target: &EditionTarget) -> Chec
              field); the session checks it when the image runs"
                 .to_owned(),
         ),
-        Some(edition) if target.editions.iter().any(|known| known == edition) => {
+        Some(edition) if target.editions.is_none() => report.not_checked.push(format!(
+            "editions: workflow edition {edition}: {name} names no editions; pass \
+             --platform-editions"
+        )),
+        Some(edition)
+            if target
+                .editions
+                .iter()
+                .flatten()
+                .any(|known| known == edition) =>
+        {
             report.passed.push(format!(
                 "editions: workflow edition {edition}, which {name} knows"
             ))
@@ -548,7 +521,7 @@ pub fn check_editions(runtime: &DescribeRuntime, target: &EditionTarget) -> Chec
             "editions: the image declares workflow edition {edition}, which {name} does not \
              know (it knows {:?}); run it on an rlmesh release that knows {edition}, or rebuild \
              the image on a release whose edition {name} knows",
-            target.editions,
+            target.editions.as_deref().unwrap_or_default(),
         )),
     }
     report
@@ -557,8 +530,8 @@ pub fn check_editions(runtime: &DescribeRuntime, target: &EditionTarget) -> Chec
 fn check_wire_revision(image: Option<u32>, target: &EditionTarget, report: &mut CheckReport) {
     let Some(own) = target.wire_revision else {
         report.not_checked.push(format!(
-            "editions: session wire revision {}: {} names no wire revision of its own; the \
-             session checks it when the image runs",
+            "editions: session wire revision {}: {} names no wire revision; pass \
+             --platform-wire-revision",
             image.map_or("absent".to_owned(), |revision| revision.to_string()),
             target.name,
         ));
@@ -583,17 +556,6 @@ fn check_wire_revision(image: Option<u32>, target: &EditionTarget, report: &mut 
     }
 }
 
-/// The workflow edition the image's `ENV RLMESH_WORKFLOW_EDITION` declares
-/// above whatever the describe label recorded; `None` when it sets none or a
-/// blank one.
-pub fn declared_workflow_edition(config: &ImageConfig) -> Option<String> {
-    config
-        .env_value(WORKFLOW_EDITION_ENV)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-}
-
 /// Run every image-config check: platform, serve command, labels, the compute
 /// variant ([`crate::variant::check_variant`]: declared or inferred), and (when
 /// the describe label is there) wire and edition compatibility with `target`,
@@ -606,7 +568,7 @@ pub fn check_image(config: &ImageConfig, target: Option<&EditionTarget>) -> Chec
     report.extend(labels);
     report.extend(crate::variant::check_variant(config));
     match describe {
-        Some(mut label) => {
+        Some(label) => {
             let command = parse_serve_command(config);
             if let (Some(served), Some(described)) = (&command.target, &label.target)
                 && served != described
@@ -616,12 +578,11 @@ pub fn check_image(config: &ImageConfig, target: Option<&EditionTarget>) -> Chec
                 ));
             }
             report.extend(check_label_runtime(&label.runtime));
-            if let Some(declared) = declared_workflow_edition(config) {
-                report.passed.push(format!(
-                    "editions: the image declares {declared} (above the label's {})",
-                    label.runtime.workflow_edition.as_deref().unwrap_or("none")
+            if config.env_value(WORKFLOW_EDITION_ENV).is_some() {
+                report.warnings.push(format!(
+                    "editions: the image sets {WORKFLOW_EDITION_ENV}, which rlmesh no longer \
+                     reads; the edition is the one declared in source and stamped in the label"
                 ));
-                label.runtime.workflow_edition = Some(declared);
             }
             match target {
                 Some(target) => report.extend(check_editions(&label.runtime, target)),

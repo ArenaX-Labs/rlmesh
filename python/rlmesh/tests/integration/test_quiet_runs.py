@@ -93,8 +93,7 @@ def _environment(tmp: Path) -> dict[str, str]:
         "PYTHONPATH": str(tmp),
         "RLMESH_STATE_DIR": str(tmp / "state"),
     }
-    for name in ("RLMESH_WORKFLOW_EDITION", "RUST_LOG"):
-        environment.pop(name, None)
+    environment.pop("RUST_LOG", None)
     return environment
 
 

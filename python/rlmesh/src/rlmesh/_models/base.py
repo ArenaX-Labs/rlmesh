@@ -545,7 +545,7 @@ class ModelBase(Generic[ObsT, ActT]):
     #: before ``load(**config)`` runs. See :mod:`rlmesh.params`.
     params: ClassVar[ParamSpec | None] = None
     #: The workflow edition this model was authored against; ``None`` runs at the current
-    #: edition. ``RLMESH_WORKFLOW_EDITION`` overrides it; see :doc:`/editions/index`.
+    #: edition; nothing at deploy time overrides it. See :doc:`/editions/index`.
     workflow_edition: ClassVar[str | None] = None
     #: Compute device for model inputs (torch/jax only). Set it in :meth:`load`; rlmesh moves
     #: every obs tensor leaf onto it before :meth:`predict`. ``None`` leaves obs as decoded.
@@ -1717,8 +1717,8 @@ class ModelBase(Generic[ObsT, ActT]):
         private network.
 
         The model declares its workflow edition in the session's roster:
-        ``RLMESH_WORKFLOW_EDITION``, else ``options``' ``workflow_edition``,
-        else :attr:`workflow_edition`, else the current edition.
+        ``options``' ``workflow_edition``, else :attr:`workflow_edition`, else
+        the current edition.
         """
         from .._editions import serve_options_declaring
 
