@@ -12,7 +12,7 @@ import asyncio
 import time
 from typing import Any
 
-import verifiers as vf  # pyright: ignore[reportMissingImports]
+import verifiers as vf
 from chat_env import (
     DEFAULT_ADDRESS,
     ChatTaskEnv,
@@ -21,7 +21,7 @@ from chat_env import (
     openai_messages,
     serve,
 )
-from verifiers.types import (  # pyright: ignore[reportMissingImports]
+from verifiers.types import (
     Response,
     ResponseMessage,
     ToolCall,

@@ -17,8 +17,8 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-import verifiers.v1 as vf  # pyright: ignore[reportMissingImports]
-import verifiers.v1.interception.server as interception_server  # pyright: ignore[reportMissingImports]
+import verifiers.v1 as vf
+import verifiers.v1.interception.server as interception_server
 from chat_env import (
     DEFAULT_ADDRESS,
     ChatTaskEnv,
@@ -95,7 +95,7 @@ class TasksetEnv(ChatTaskEnv):
         if self.runtime is None:
             await self.task.score(trace)
             return
-        from verifiers.v1.runtimes import (  # pyright: ignore[reportMissingImports]
+        from verifiers.v1.runtimes import (
             provision_runtime,
         )
 

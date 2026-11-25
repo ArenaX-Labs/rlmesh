@@ -29,7 +29,7 @@ STEP_BUDGET_S = 240.0
 
 def openai_chat(model: str, max_tokens: int = DEFAULT_MAX_TOKENS) -> Chat:
     """Chat through the OpenAI-compatible server at ``$OPENAI_BASE_URL``."""
-    from openai import OpenAI, omit  # pyright: ignore[reportMissingImports]
+    from openai import OpenAI, omit
 
     # Messages and tools pass through as plain JSON, not the SDK's TypedDicts.
     client: Any = OpenAI(
