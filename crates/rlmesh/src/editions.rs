@@ -40,9 +40,20 @@ fn nonblank(value: Option<&str>) -> Option<&str> {
 /// # Errors
 /// [`Error::InvalidArgument`] for an edition this build does not know.
 pub fn resolve_workflow_edition(declared: Option<&str>) -> Result<String> {
+    resolve_served(None, declared)
+}
+
+/// [`resolve_workflow_edition`] for a served env or model: a non-blank
+/// `ServeOptions.workflow_edition` `option` stands above the type's `declared`.
+pub(crate) fn resolve_served(option: Option<&str>, declared: Option<&str>) -> Result<String> {
     let environment = std::env::var(WORKFLOW_EDITION_ENV_VAR).ok();
-    let edition = nonblank(environment.as_deref())
-        .or(nonblank(declared))
+    resolve_in(environment.as_deref(), &[option, declared])
+}
+
+fn resolve_in(environment: Option<&str>, declarations: &[Option<&str>]) -> Result<String> {
+    let edition = std::iter::once(environment)
+        .chain(declarations.iter().copied())
+        .find_map(nonblank)
         .unwrap_or(rlmesh_proto::CURRENT_WORKFLOW_EDITION);
     validate_workflow_edition(edition)
 }
@@ -50,60 +61,46 @@ pub fn resolve_workflow_edition(declared: Option<&str>) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::warnings::tests::HANDLER_LOCK;
-
-    #[allow(unsafe_code)]
-    fn with_env(value: Option<&str>, body: impl FnOnce()) {
-        let _guard = HANDLER_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        let previous = std::env::var(WORKFLOW_EDITION_ENV_VAR).ok();
-        // SAFETY: serialized by HANDLER_LOCK; no other test thread reads it.
-        unsafe {
-            match value {
-                Some(value) => std::env::set_var(WORKFLOW_EDITION_ENV_VAR, value),
-                None => std::env::remove_var(WORKFLOW_EDITION_ENV_VAR),
-            }
-        }
-        body();
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var(WORKFLOW_EDITION_ENV_VAR, value),
-                None => std::env::remove_var(WORKFLOW_EDITION_ENV_VAR),
-            }
-        }
-    }
 
     #[test]
-    fn the_environment_then_the_declaration_then_the_current_edition() {
+    fn the_environment_then_the_option_then_the_declaration_then_the_current_edition() {
         let current = current_workflow_edition();
-        with_env(None, || {
-            assert_eq!(resolve_workflow_edition(None).unwrap(), current);
-            assert_eq!(resolve_workflow_edition(Some("  ")).unwrap(), current);
+        let resolve = |environment, option, declared| {
+            resolve_in(environment, &[option, declared]).map_err(|err| err.to_string())
+        };
+        let unknown = Some("2099.01");
+        for (environment, option, declared) in [
+            (None, None, None),
+            (None, Some("  "), None),
+            (None, None, Some(" 2026.10 ")),
+            (None, Some(" "), Some("2026.10")),
+            (Some(current), unknown, unknown),
+            (Some(" "), Some(current), unknown),
+            (None, Some(current), unknown),
+        ] {
             assert_eq!(
-                resolve_workflow_edition(Some(&format!(" {current} "))).unwrap(),
-                current
+                resolve(environment, option, declared).as_deref(),
+                Ok(current),
+                "{environment:?} {option:?} {declared:?}"
             );
-        });
-        with_env(Some(current), || {
-            assert_eq!(resolve_workflow_edition(Some("2099.01")).unwrap(), current);
-        });
-        with_env(Some(" "), || {
-            assert_eq!(resolve_workflow_edition(Some(current)).unwrap(), current);
-        });
-        with_env(Some("2099.01"), || {
-            let err = resolve_workflow_edition(Some(current)).unwrap_err();
-            assert!(err.to_string().contains("\"2099.01\""), "{err}");
-        });
+        }
+        for (environment, option, declared) in [
+            (unknown, Some(current), Some(current)),
+            (None, unknown, Some(current)),
+            (None, Some(" "), unknown),
+        ] {
+            let err = resolve(environment, option, declared).unwrap_err();
+            assert!(err.contains("\"2099.01\""), "{err}");
+        }
     }
 
     #[test]
     fn an_unknown_edition_is_a_value_error() {
-        with_env(None, || {
-            let err = resolve_workflow_edition(Some("2099.01")).unwrap_err();
-            assert_eq!(err.class(), crate::ErrorClass::ValueError);
-            assert!(
-                err.to_string().contains("upgrade the rlmesh runtime"),
-                "{err}"
-            );
-        });
+        let err = validate_workflow_edition("2099.01").unwrap_err();
+        assert_eq!(err.class(), crate::ErrorClass::ValueError);
+        assert!(
+            err.to_string().contains("upgrade the rlmesh runtime"),
+            "{err}"
+        );
     }
 }

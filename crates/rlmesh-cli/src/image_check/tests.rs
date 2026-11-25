@@ -454,7 +454,17 @@ fn edition_table() {
         session_wire_revision: revision,
         ..runtime(Some(PROTOCOL_GENERATION), Some("2026.10"))
     };
-    let report = check_editions(&on(Some(WIRE_REVISION + 1)), &platform);
+    let unchecked = check_editions(&on(Some(WIRE_REVISION + 1)), &platform);
+    assert!(unchecked.ok(), "{unchecked:?}");
+    assert!(
+        unchecked
+            .not_checked
+            .iter()
+            .any(|m| m.contains("the target platform names no wire revision")),
+        "{unchecked:?}"
+    );
+    let this_build = EditionTarget::this_build();
+    let report = check_editions(&on(Some(WIRE_REVISION + 1)), &this_build);
     assert!(
         report.failed.iter().any(|m| m.contains(&format!(
             "the image speaks session wire revision {} (a later pre-release)",
@@ -462,7 +472,7 @@ fn edition_table() {
         ))),
         "{report:?}"
     );
-    let report = check_editions(&on(Some(1)), &platform);
+    let report = check_editions(&on(Some(1)), &this_build);
     assert!(
         report
             .failed
@@ -470,7 +480,7 @@ fn edition_table() {
             .any(|m| m.contains("session wire revision 1 (negotiated editions")),
         "{report:?}"
     );
-    let report = check_editions(&on(None), &platform);
+    let report = check_editions(&on(None), &this_build);
     assert!(report.ok(), "{report:?}");
     assert!(
         report

@@ -2567,18 +2567,24 @@ async fn keep_is_a_host_verb_rate_limited_and_refused_by_a_host_that_records_not
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_host_admits_its_own_wire_revision_or_none_and_refuses_another() {
+async fn a_host_admits_only_its_own_wire_revision_and_refuses_another() {
     let world = World::start().await;
     let credential = world.host.credential();
-    for (id, revision) in [("current", WIRE_REVISION), ("board", 0)] {
-        let mut raw = world
+    let mut raw = world
+        .handshake_on("current", &credential, WIRE_REVISION)
+        .await
+        .unwrap_or_else(|refusal| panic!("revision {WIRE_REVISION} refused: {refusal:?}"));
+    raw.call(1, attach("current", Role::Embodiment))
+        .await
+        .result
+        .expect("attached");
+    for (id, revision) in [("absent", 0), ("previous", 1)] {
+        let refusal = world
             .handshake_on(id, &credential, revision)
             .await
-            .unwrap_or_else(|refusal| panic!("revision {revision} refused: {refusal:?}"));
-        raw.call(1, attach(id, Role::Embodiment))
-            .await
-            .result
-            .expect("attached");
+            .err()
+            .unwrap_or_else(|| panic!("revision {revision} reached attach"));
+        assert_eq!(refusal.status, CtlStatus::Incompatible, "{refusal:?}");
     }
     let refusal = world
         .handshake_on("later", &credential, WIRE_REVISION + 1)

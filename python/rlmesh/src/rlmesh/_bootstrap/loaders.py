@@ -110,6 +110,16 @@ def load_env_from_spec(spec: Mapping[str, object]) -> object:
     raise ValueError(f"unsupported bootstrap kind: {kind}")
 
 
+def declared_edition(spec: Mapping[str, object]) -> str | None:
+    """The workflow edition a bootstrap spec's factory declares, if any."""
+    if spec.get("kind") != "factory":
+        return None
+    entrypoint = expect_str(spec.get("entrypoint"), "bootstrap spec.entrypoint")
+    factory = resolve_entrypoint(entrypoint, label="env entrypoint")
+    declared = getattr(factory, "workflow_edition", None)
+    return declared if isinstance(declared, str) else None
+
+
 def load_factory_env(spec: Mapping[str, object]) -> object:
     """Construct an :class:`~rlmesh.EnvFactory` env from a bootstrap spec.
 

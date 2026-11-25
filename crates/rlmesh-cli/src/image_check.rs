@@ -426,6 +426,8 @@ pub struct EditionTarget {
     pub editions: Vec<String>,
     /// The target as messages name it (`this rlmesh build`).
     pub name: String,
+    /// The session wire revision the target speaks, when known.
+    pub wire_revision: Option<u32>,
 }
 
 impl EditionTarget {
@@ -434,14 +436,16 @@ impl EditionTarget {
         Self {
             editions: known_editions(),
             name: "this rlmesh build".to_owned(),
+            wire_revision: Some(WIRE_REVISION),
         }
     }
 
-    /// A target platform that knows `editions`.
+    /// A target platform that knows `editions`; its wire revision is not known.
     pub fn platform(editions: Vec<String>) -> Self {
         Self {
             editions,
             name: "the target platform".to_owned(),
+            wire_revision: None,
         }
     }
 }
@@ -521,7 +525,7 @@ pub fn check_editions(runtime: &DescribeRuntime, target: &EditionTarget) -> Chec
             report.passed.push(format!(
                 "editions: protocol generation {PROTOCOL_GENERATION}"
             ));
-            check_wire_revision(runtime.session_wire_revision, &mut report);
+            check_wire_revision(runtime.session_wire_revision, target, &mut report);
         }
     }
     match runtime
@@ -550,22 +554,32 @@ pub fn check_editions(runtime: &DescribeRuntime, target: &EditionTarget) -> Chec
     report
 }
 
-fn check_wire_revision(image: Option<u32>, report: &mut CheckReport) {
+fn check_wire_revision(image: Option<u32>, target: &EditionTarget, report: &mut CheckReport) {
+    let Some(own) = target.wire_revision else {
+        report.not_checked.push(format!(
+            "editions: session wire revision {}: {} names no wire revision of its own; the \
+             session checks it when the image runs",
+            image.map_or("absent".to_owned(), |revision| revision.to_string()),
+            target.name,
+        ));
+        return;
+    };
     match image {
         None => report.warnings.push(format!(
             "editions: describe carries no session_wire_revision (an rlmesh 0.2 pre-release \
              from before the field, whose session host listened on four ports); this rlmesh \
              speaks revision {WIRE_REVISION}: rebuild the image against it"
         )),
-        Some(revision) if revision != WIRE_REVISION => report.failed.push(format!(
-            "editions: the image speaks session wire revision {revision} ({}), this rlmesh \
-             speaks revision {WIRE_REVISION} ({}); rebuild both from the same release",
+        Some(revision) if revision != own => report.failed.push(format!(
+            "editions: the image speaks session wire revision {revision} ({}), {} speaks \
+             revision {own} ({}); rebuild both from the same release",
             wire_revision_name(revision),
-            wire_revision_name(WIRE_REVISION),
+            target.name,
+            wire_revision_name(own),
         )),
         Some(_) => report
             .passed
-            .push(format!("editions: session wire revision {WIRE_REVISION}")),
+            .push(format!("editions: session wire revision {own}")),
     }
 }
 

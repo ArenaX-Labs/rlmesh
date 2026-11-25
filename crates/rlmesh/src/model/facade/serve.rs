@@ -56,11 +56,9 @@ pub(super) fn serve_blocking(
                  rlmesh 0.2 for a session address)",
             ));
         }
-        let edition = crate::editions::resolve_workflow_edition(
-            serve
-                .workflow_edition
-                .as_deref()
-                .or(shared.decl.workflow_edition.as_deref()),
+        let edition = crate::editions::resolve_served(
+            serve.workflow_edition.as_deref(),
+            shared.decl.workflow_edition.as_deref(),
         )?;
         let join = serve.close_timeout.unwrap_or(SESSION_JOIN);
         let batching = batching.unwrap_or_default();

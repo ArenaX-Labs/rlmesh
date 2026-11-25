@@ -22,13 +22,12 @@ class MyEnv(rlmesh.EnvFactory):
 
 A participant's edition is, highest first:
 
-| Source                                                                                                                                                                                                                                                        | Scope       |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| `RLMESH_WORKFLOW_EDITION`                                                                                                                                                                                                                                     | one process |
-| the in-source declaration: `EnvFactory.workflow_edition` / `Model.workflow_edition` in Python, `EnvFactory::workflow_edition` / `Policy::workflow_edition` in Rust (and `ServeOptions.workflow_edition` for a served env or model with no type to declare on) | the source  |
-| the build's current edition (`rlmesh.current_workflow_edition()`)                                                                                                                                                                                             | the build   |
+1. `RLMESH_WORKFLOW_EDITION`, for the whole process.
+2. For a served env or model, `ServeOptions.workflow_edition`.
+3. The in-source declaration: `EnvFactory.workflow_edition` / `Model.workflow_edition` in Python, `EnvFactory::workflow_edition` / `Policy::workflow_edition` in Rust, the factory attributes or model vtable in C.
+4. The build's current edition (`rlmesh.current_workflow_edition()`).
 
-A blank value declares nothing. Every build of a release line, release, prerelease or source build, has the same current edition: the bare `YYYY.MM`.
+A blank value at any step declares nothing and falls through. Only the winner is validated, when the participant runs or serves; Python, Rust, C and C++ resolve the same way. Every build of a release line, release, prerelease or source build, has the same current edition: the bare `YYYY.MM`.
 
 `rlmesh describe` stamps the resolved edition into the image's describe label at build time, so an image always carries one.
 

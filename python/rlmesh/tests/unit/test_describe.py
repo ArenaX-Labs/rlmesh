@@ -597,6 +597,15 @@ def test_runtime_carries_the_resolved_edition(
 
     with pytest.raises(ValueError, match=r"1999\.01"):
         _ = rlmesh.describe(Impossible)
+    pytest.importorskip("numpy")
+    from rlmesh.numpy import Model
+
+    def act(observation: object) -> object:
+        return observation
+
+    act.workflow_edition = "1999.01"  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match=r"1999\.01"):
+        _ = rlmesh.describe(Model(act))
     monkeypatch.setenv("RLMESH_WORKFLOW_EDITION", rlmesh.current_workflow_edition())
     assert (
         rlmesh.describe(Impossible)["runtime"]["workflow_edition"]
