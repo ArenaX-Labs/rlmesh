@@ -66,15 +66,15 @@ def main(
             )
         address = os.environ.get("RLMESH_ADDRESS") or "0.0.0.0:7447"
         name = os.environ.get("RLMESH_NAME") or "env"
-        from .._editions import serve_options_declaring
+        from .._editions import declaring
 
-        server = EnvServer(
-            env,
-            f"{address.rstrip('/')}/{name}",
-            framework=framework,
-            device=device,
-            options=serve_options_declaring(declared=declared_edition(spec)),
-        )
+        with declaring(declared_edition(spec)):
+            server = EnvServer(
+                env,
+                f"{address.rstrip('/')}/{name}",
+                framework=framework,
+                device=device,
+            )
         # The bound address carries the session key; don't print it.
         print(f"RLMesh sandbox serving {redact_address(server.address)}", flush=True)
         server.serve()

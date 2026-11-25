@@ -142,10 +142,6 @@ fn defaults_match_python_literals() {
         value.close_timeout.is_none(),
         "rlmesh:ServeOptions.close_timeout_seconds"
     );
-    assert!(
-        value.workflow_edition.is_none(),
-        "rlmesh:ServeOptions.workflow_edition"
-    );
     let value = rlmesh::View::default();
     assert_eq!(value.backend.to_string(), "terminal", "rlmesh:View.backend");
     assert_eq!(value.port, 8008, "rlmesh:View.port");
@@ -171,10 +167,6 @@ fn defaults_match_python_literals() {
     assert!(
         value.served_env.is_none(),
         "rlmesh:describe_json.served_env"
-    );
-    assert!(
-        value.workflow_edition.is_none(),
-        "rlmesh:describe_json.workflow_edition"
     );
     let value = rlmesh::adapters::Action::new(Vec::<rlmesh::adapters::Actuator>::new());
     assert!(value.clip.is_none(), "rlmesh.adapters:Action.clip");

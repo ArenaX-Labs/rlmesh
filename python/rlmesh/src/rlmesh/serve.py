@@ -81,16 +81,13 @@ def _stamp_startup(
     kind: str,
     target: object,
     served_env: object | None = None,
-    *,
-    options: ServeOptions | None = None,
 ) -> None:
     from ._peer_info import register_python_peer_info
     from ._rlmesh import DESCRIBE_METADATA_KEY
 
     _mark("listen")
     extra = startup_marks()
-    resolved = (options.workflow_edition if options is not None else None) or ""
-    if describe := _handshake_describe(target, kind, served_env, resolved):
+    if describe := _handshake_describe(target, kind, served_env):
         extra[DESCRIBE_METADATA_KEY] = describe
     register_python_peer_info(extra=extra)
 
@@ -123,14 +120,12 @@ def _serving_line() -> Iterator[None]:
 
 
 def _handshake_describe(
-    target: object, kind: str, served_env: object | None, workflow_edition: str
+    target: object, kind: str, served_env: object | None
 ) -> str | None:
     from ._describe import describe_json
 
     try:
-        return describe_json(
-            target, kind=kind, served_env=served_env, workflow_edition=workflow_edition
-        )
+        return describe_json(target, kind=kind, served_env=served_env)
     except Exception as exc:
         print(
             f"RLMesh could not describe the served {kind} ({exc}); the handshake "
@@ -143,7 +138,6 @@ def _handshake_describe(
 
 if TYPE_CHECKING:
     from rlmesh._models.base import BatchOptions, ModelBase
-    from rlmesh._rlmesh import ServeOptions
     from rlmesh._value_conversion import ValueBridge
     from rlmesh.types import EnvLike
 
@@ -537,18 +531,13 @@ def serve_model(
     ``batching`` coalesces its predicts (:class:`rlmesh.BatchOptions`' defaults
     when ``None``).
     """
-    from ._editions import serve_options_declaring
-
     _refuse_unlaunched_wide_bind(address)
     model = _resolve_model(model_source, binding)
     _mark("model")
     _warn_without_spec(model)
-    options = serve_options_declaring(
-        declared=model._class_workflow_edition(),  # pyright: ignore[reportPrivateUsage]
-    )
-    _stamp_startup("model", model, options=options)
+    _stamp_startup("model", model)
     with _serving_line():
-        model.serve(address, name=name, options=options, batching=batching)
+        model.serve(address, name=name, batching=batching)
 
 
 def _warn_without_spec(model: object) -> None:
@@ -664,22 +653,18 @@ def serve_env(
             )
         else:
             env = make_env(**make_kwargs)
-    from ._editions import serve_options_declaring
+    from ._editions import declaring
 
-    declared = getattr(env_source, "workflow_edition", None)
-    options = serve_options_declaring(
-        declared=declared if isinstance(declared, str) else None
-    )
-    server = EnvServer(
-        env,
-        address,
-        tags=cast("Any", tags),
-        framework=env_framework,
-        device=_gate_device(device, env_framework),
-        options=options,
-    )
+    with declaring(getattr(env_source, "workflow_edition", None)):
+        server = EnvServer(
+            env,
+            address,
+            tags=cast("Any", tags),
+            framework=env_framework,
+            device=_gate_device(device, env_framework),
+        )
     _mark("env")
-    _stamp_startup("env", env_source, env, options=options)
+    _stamp_startup("env", env_source, env)
     with _serving_line():
         server.serve()
 

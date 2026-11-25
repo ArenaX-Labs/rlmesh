@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, cast
-
 import pytest
 import rlmesh
 from rlmesh import serve
@@ -192,7 +190,7 @@ class _Declared(rlmesh.Model):
         self.options = options
 
 
-def test_envelope_edition_is_what_the_serve_options_declare(
+def test_envelope_edition_is_the_class_declaration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import json
@@ -213,9 +211,7 @@ def test_envelope_edition_is_what_the_serve_options_declare(
     serve.serve_model(_Declared, "127.0.0.1:0")
 
     envelope = json.loads(stamped[rlmesh.DESCRIBE_METADATA_KEY])
-    options = cast("Any", served.options)
-    assert options.workflow_edition == build_info().workflow_edition
-    assert envelope["runtime"]["workflow_edition"] == options.workflow_edition
+    assert envelope["runtime"]["workflow_edition"] == build_info().workflow_edition
 
 
 def test_an_env_prints_no_serving_line_before_it_answers(

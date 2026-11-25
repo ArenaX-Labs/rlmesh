@@ -1599,9 +1599,6 @@ namespace RLMesh.Interop
         public fixed byte _reserved[7];
 
         public double close_timeout_seconds;
-
-        [NativeTypeName("const char *")]
-        public sbyte* workflow_edition;
     }
 
     internal unsafe partial struct RLMeshExtEnvServerOptions
@@ -2096,9 +2093,6 @@ namespace RLMesh.Interop
 
         [NativeTypeName("const RLMeshVectorEnv *")]
         public RLMeshVectorEnv* served_vector_env;
-
-        [NativeTypeName("const char *")]
-        public sbyte* workflow_edition;
 
         public RLMeshDescribeKind kind;
 

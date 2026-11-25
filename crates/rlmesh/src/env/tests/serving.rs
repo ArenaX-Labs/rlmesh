@@ -195,7 +195,6 @@ fn a_zero_timeout_is_refused_at_construction() {
         EnvServerOptions {
             options: Some(crate::ServeOptions {
                 close_timeout: Some(Duration::ZERO),
-                ..Default::default()
             }),
             ..Default::default()
         },

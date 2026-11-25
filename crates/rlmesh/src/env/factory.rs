@@ -252,10 +252,7 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
     let edition = crate::editions::resolve_workflow_edition(F::workflow_edition().as_deref())?;
     let server_options = EnvServerOptions {
         address: Some(address.to_string()),
-        options: Some(ServeOptions {
-            workflow_edition: Some(edition.clone()),
-            ..ServeOptions::default()
-        }),
+        options: Some(ServeOptions::default()),
         tags: if F::tag_params().is_empty() {
             F::tags()
         } else {
@@ -268,7 +265,6 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
             factory.into(),
             crate::describe::DescribeJsonOptions {
                 served_env: Some(served),
-                workflow_edition: Some(edition.clone()),
                 ..Default::default()
             },
             host,
@@ -278,6 +274,7 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
         let made = factory.make_env(&options.make_kwargs)?;
         let publish = Publish {
             envelope: describe_with(factory, crate::env::ServedEnv::from(&made)),
+            workflow_edition: edition.clone(),
         };
         match made {
             MadeEnv::Env(env) => EnvServer::lanes_resolved(vec![env], server_options, publish)?,
@@ -302,6 +299,7 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
         );
         let publish = Publish {
             envelope: describe_with(factory, served),
+            workflow_edition: edition.clone(),
         };
         EnvServer::lanes_resolved(lanes, server_options, publish)?
     };

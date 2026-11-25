@@ -51,8 +51,7 @@ int main(void) {
   NUM(serve, struct_size);
   NUM(serve, has_close_timeout_seconds);
   ZERO(serve, _reserved);
-  NUM(serve, close_timeout_seconds);
-  LASTPTR(serve, workflow_edition);
+  LAST(serve, close_timeout_seconds);
   printf(",\"server\":{");
   NUM(server, struct_size);
   PTR(server, address);

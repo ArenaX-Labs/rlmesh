@@ -60,9 +60,6 @@ pub struct DescribeJsonOptions<'a> {
     pub generated_at: Option<String>,
     /// The env a server hosts: its spaces replace the default branch's build.
     pub served_env: Option<ServedEnv<'a>>,
-    /// The edition a server resolved, used as given; `None` (or blank)
-    /// resolves the type's declaration here.
-    pub workflow_edition: Option<String>,
 }
 
 /// What can be described: a model or env factory type, or an instance.
@@ -351,13 +348,6 @@ pub(crate) fn runtime_json(host: &Host, workflow_edition: &str) -> Json {
     runtime
 }
 
-fn edition(declared: Option<&str>, given: Option<&str>) -> Result<String> {
-    match given.filter(|given| !given.trim().is_empty()) {
-        Some(given) => crate::editions::validate_workflow_edition(given),
-        None => crate::editions::resolve_workflow_edition(declared),
-    }
-}
-
 fn tag_param_type(value: &Value) -> &'static str {
     match value {
         Value::Bool(_) => "bool",
@@ -381,12 +371,7 @@ fn kind_error(asked: DescribeKind, actual: DescribeKind) -> Error {
     ))
 }
 
-fn model_pieces(
-    decl: &PolicyDecl,
-    spec: Option<&SpecArg>,
-    edition: Option<&str>,
-    host: &Host,
-) -> Result<Json> {
+fn model_pieces(decl: &PolicyDecl, spec: Option<&SpecArg>, host: &Host) -> Result<Json> {
     if let Some(native) = decl.native_chunk {
         if !decl.corners.has_chunk() {
             return Err(Error::Type(
@@ -402,7 +387,7 @@ fn model_pieces(
             )));
         }
     }
-    let edition = self::edition(decl.workflow_edition.as_deref(), edition)?;
+    let edition = crate::editions::resolve_workflow_edition(decl.workflow_edition.as_deref())?;
     let signature_tier: Vec<Json> = decl
         .load_keys
         .iter()
@@ -433,11 +418,10 @@ fn model_pieces(
 fn factory_pieces(
     form: &mut dyn FactoryForm,
     served: Option<&ServedEnv<'_>>,
-    edition: Option<&str>,
     host: &Host,
 ) -> Result<Json> {
     let served = served.map(ServedEnv::read).transpose()?;
-    let edition = self::edition(form.workflow_edition().as_deref(), edition)?;
+    let edition = crate::editions::resolve_workflow_edition(form.workflow_edition().as_deref())?;
     let tag_params = form.tag_params();
     let signature_tier = tag_params
         .iter()
@@ -523,7 +507,6 @@ pub(crate) fn envelope(
         kind,
         generated_at,
         served_env,
-        workflow_edition,
     } = options;
     let mut target = obj.0;
     let actual = match &target {
@@ -544,18 +527,13 @@ pub(crate) fn envelope(
             spec,
             execution_horizon,
         } => {
-            let mut pieces = model_pieces(decl, spec.as_ref(), workflow_edition.as_deref(), host)?;
+            let mut pieces = model_pieces(decl, spec.as_ref(), host)?;
             if let Some(horizon) = execution_horizon {
                 pieces["execution_horizon"] = json!(horizon);
             }
             pieces
         }
-        Target::Factory(form) => factory_pieces(
-            form.as_mut(),
-            served_env.as_ref(),
-            workflow_edition.as_deref(),
-            host,
-        )?,
+        Target::Factory(form) => factory_pieces(form.as_mut(), served_env.as_ref(), host)?,
     };
     build_describe_envelope(
         actual.as_str(),

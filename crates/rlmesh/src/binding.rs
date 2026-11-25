@@ -220,7 +220,6 @@ pub fn env_describe_envelope(
     component: &'static str,
     language: &'static str,
     host_runtime: serde_json::Map<String, serde_json::Value>,
-    workflow_edition: Option<&str>,
 ) -> Result<String> {
     crate::env::envelope::env_envelope(
         contract,
@@ -231,7 +230,7 @@ pub fn env_describe_envelope(
             language,
             extra: host_runtime,
         },
-        workflow_edition,
+        None,
         contract.num_envs() > 1,
     )
 }

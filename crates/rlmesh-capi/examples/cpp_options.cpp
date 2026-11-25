@@ -49,11 +49,8 @@ void options_setters() {
   static_assert(std::is_aggregate_v<rlmesh::ServeOptions>);
   {
     rlmesh::ServeOptions options;
-    options.with_close_timeout(options.close_timeout)
-        .with_workflow_edition(options.workflow_edition);
-    std::move(options)
-        .with_close_timeout(options.close_timeout)
-        .with_workflow_edition(options.workflow_edition);
+    options.with_close_timeout(options.close_timeout);
+    std::move(options).with_close_timeout(options.close_timeout);
   }
   static_assert(std::is_aggregate_v<rlmesh::ext::EnvServerOptions>);
   {
@@ -267,12 +264,10 @@ void options_setters() {
     rlmesh::DescribeJsonOptions options;
     options.with_kind(options.kind)
         .with_generated_at(options.generated_at)
-        .with_served_env(options.served_env)
-        .with_workflow_edition(options.workflow_edition);
+        .with_served_env(options.served_env);
     std::move(options)
         .with_kind(options.kind)
         .with_generated_at(options.generated_at)
-        .with_served_env(options.served_env)
-        .with_workflow_edition(options.workflow_edition);
+        .with_served_env(options.served_env);
   }
 }

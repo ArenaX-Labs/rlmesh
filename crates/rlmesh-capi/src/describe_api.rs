@@ -28,7 +28,6 @@ pub struct RLMeshDescribeJsonOptions {
     pub served_env: *const *const RLMeshEnv,
     pub served_env_len: usize,
     pub served_vector_env: *const RLMeshVectorEnv,
-    pub workflow_edition: *const c_char,
     pub kind: i32,
     pub has_kind: bool,
     pub _reserved: [u8; 3],
@@ -136,7 +135,6 @@ unsafe fn json(
         }
         opts.kind = kind(o.has_kind, o.kind)?;
         opts.generated_at = unsafe { ffi::text(o.generated_at) }?;
-        opts.workflow_edition = unsafe { ffi::text(o.workflow_edition) }?;
     }
     let text = unsafe {
         with_served(o, |served_env| {

@@ -146,25 +146,6 @@ fn describe_refuses_a_contradicting_kind_and_a_bad_timestamp() {
     assert_eq!(envelope["generated_at"], "2026-10-15T00:00:00Z");
 }
 
-#[test]
-fn a_given_edition_is_validated_and_a_blank_one_resolves() {
-    let edition = |given: &str| {
-        describe_json(
-            Describable::model::<Planner>(),
-            DescribeJsonOptions {
-                workflow_edition: Some(given.into()),
-                ..Default::default()
-            },
-        )
-        .map(|text| json(&text)["runtime"]["workflow_edition"].clone())
-    };
-    let current = rlmesh_proto::CURRENT_WORKFLOW_EDITION;
-    assert_eq!(edition(&format!(" {current} ")).unwrap(), current);
-    assert_eq!(edition("").unwrap(), current);
-    let unknown = edition("2099.01").unwrap_err();
-    assert_eq!(unknown.class(), crate::ErrorClass::ValueError, "{unknown}");
-}
-
 struct Sized {
     size: i64,
 }

@@ -6,10 +6,10 @@ import pytest
 import rlmesh
 from rlmesh._editions import (
     current_workflow_edition,
+    declared_edition,
+    declaring,
     resolve_workflow_edition,
-    serve_options_declaring,
 )
-from rlmesh._rlmesh import ServeOptions
 
 UNKNOWN_EDITION = "2099.01"
 
@@ -30,7 +30,6 @@ def test_the_declaration_else_the_current_edition(declared: str | None) -> None:
 def test_the_environment_declares_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RLMESH_WORKFLOW_EDITION", UNKNOWN_EDITION)
     assert resolve_workflow_edition(None) == EDITION
-    assert serve_options_declaring().workflow_edition == EDITION
 
 
 def test_an_unknown_edition_is_refused_naming_the_known_ones_and_the_remedy() -> None:
@@ -40,23 +39,17 @@ def test_an_unknown_edition_is_refused_naming_the_known_ones_and_the_remedy() ->
     )
     with pytest.raises(ValueError, match=pattern):
         _ = resolve_workflow_edition(UNKNOWN_EDITION)
-    with pytest.raises(ValueError, match=pattern):
-        _ = serve_options_declaring(ServeOptions(workflow_edition=UNKNOWN_EDITION))
 
 
-def test_serve_options_carry_the_resolved_edition() -> None:
-    assert serve_options_declaring().workflow_edition == EDITION
-    assert serve_options_declaring(declared=EDITION).workflow_edition == EDITION
-    options = ServeOptions(close_timeout_seconds=2.0)
-    stamped = serve_options_declaring(options)
-    assert stamped.workflow_edition == EDITION
-    assert stamped.close_timeout_seconds == 2.0
-    with pytest.raises(ValueError, match=UNKNOWN_EDITION):
-        _ = serve_options_declaring(declared=UNKNOWN_EDITION)
-    assert ServeOptions(workflow_edition=" ").workflow_edition is None
-    assert (
-        serve_options_declaring(
-            ServeOptions(workflow_edition=EDITION), declared=UNKNOWN_EDITION
-        ).workflow_edition
-        == EDITION
-    )
+def test_serve_options_declare_nothing() -> None:
+    with pytest.raises(TypeError):
+        _ = rlmesh.ServeOptions(workflow_edition=EDITION)  # type: ignore[call-arg]
+
+
+def test_a_server_built_inside_declaring_takes_its_declaration() -> None:
+    assert declared_edition() is None
+    with declaring(EDITION):
+        assert declared_edition() == EDITION
+        with declaring(None):
+            assert declared_edition() is None
+    assert declared_edition() is None

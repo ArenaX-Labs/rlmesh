@@ -194,7 +194,6 @@ int main(void) {
   CHECK(state.makes == 1 && state.reentry == 1);
   RLMeshEnvServer* server = NULL;
   RLMeshServeOptions serve = RLMESH_SERVE_OPTIONS_INIT;
-  serve.workflow_edition = attrs.workflow_edition;
   RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
   so.options = &serve;
   CHECK(rlmesh_env_server_new(&env, 1, &so, &server) == RLMESH_OK);

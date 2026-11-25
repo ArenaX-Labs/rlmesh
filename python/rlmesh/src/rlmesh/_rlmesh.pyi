@@ -432,7 +432,7 @@ class PyEnvServer:
         r"""
         Alias for env_contract.
         """
-    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ..., close_env_on_shutdown: builtins.bool = ..., announce: builtins.bool = ...) -> PyEnvServer:
+    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ..., close_env_on_shutdown: builtins.bool = ..., announce: builtins.bool = ..., workflow_edition: typing.Optional[builtins.str] = None) -> PyEnvServer:
         r"""
         Create a new RLMesh environment server.
         # Arguments
@@ -510,7 +510,7 @@ class PyModel:
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0) -> dict[str, typing.Any]: ...
     def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, hooks: object | None = None, invite_at: str | None = None) -> dict[str, typing.Any]: ...
-    def serve(self, address: str, name: str, options: ServeOptions | None = None, envelope: str | None = None, max_batch_size: int | None = None, batch_window_ms: int | None = None, batch_byte_budget: int | None = None, max_in_flight_batches: int | None = None, batch_records: str | os.PathLike[str] | None = None) -> None: ...
+    def serve(self, address: str, name: str, options: ServeOptions | None = None, envelope: str | None = None, max_batch_size: int | None = None, batch_window_ms: int | None = None, batch_byte_budget: int | None = None, max_in_flight_batches: int | None = None, batch_records: str | os.PathLike[str] | None = None, workflow_edition: str | None = None) -> None: ...
 
 @typing.final
 class PyVectorEnvClient:
@@ -532,7 +532,7 @@ class PyVectorEnvServer:
     def env_contract(self) -> EnvContract: ...
     @property
     def spec(self) -> EnvContract: ...
-    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ..., close_env_on_shutdown: builtins.bool = ..., announce: builtins.bool = ...) -> PyVectorEnvServer:
+    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ..., close_env_on_shutdown: builtins.bool = ..., announce: builtins.bool = ..., workflow_edition: typing.Optional[builtins.str] = None) -> PyVectorEnvServer:
         r"""
         Create a new vectorized RLMesh environment server.
         # Arguments
@@ -627,9 +627,7 @@ class PyViewer:
 class ServeOptions:
     @property
     def close_timeout_seconds(self) -> typing.Optional[builtins.float]: ...
-    @property
-    def workflow_edition(self) -> typing.Optional[builtins.str]: ...
-    def __new__(cls, *, close_timeout_seconds: typing.Optional[builtins.float] = None, workflow_edition: typing.Optional[builtins.str] = None) -> ServeOptions: ...
+    def __new__(cls, *, close_timeout_seconds: typing.Optional[builtins.float] = None) -> ServeOptions: ...
 
 @typing.final
 class Space:

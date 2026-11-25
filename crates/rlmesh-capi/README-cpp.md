@@ -274,7 +274,7 @@ try {
 
 ## Workflow editions
 
-Every served env and model runs at a workflow edition, a row of behavioural defaults it keeps across upgrades and that nothing at deploy time changes: its declaration (a static `workflow_edition` on a policy or factory, or `ServeOptions::workflow_edition`), else the build's current edition. See the [documentation](https://rlmesh.dev/docs/).
+Every served env and model runs at a workflow edition, a row of behavioural defaults it keeps across upgrades and that nothing at deploy time changes: its declaration (a static `workflow_edition` on a policy or factory), else the build's current edition. See the [documentation](https://rlmesh.dev/docs/).
 
 ## Compatibility
 
