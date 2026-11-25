@@ -1,0 +1,2 @@
+# color-codeword asks for a verifiers dev release; the pinned one serves it fine.
+verifiers==0.1.14

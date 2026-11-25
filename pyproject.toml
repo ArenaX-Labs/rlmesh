@@ -30,7 +30,7 @@ include = [
   "python/rlmesh/tests/type_contract/fixtures",
   "tools/rlmesh_api_surface/src/rlmesh_api_surface",
 ]
-exclude = ["examples/python/isaacsim", "examples/python/coding_agent"]
+exclude = ["examples/python/isaacsim", "examples/python/coding_agent", "**/.venv*"]
 typeCheckingMode = "basic"
 strict = ["python/rlmesh/src/rlmesh"]
 defineConstant = { DEBUG = true }
@@ -46,7 +46,11 @@ reportImplicitOverride = "none"
 
 pythonVersion = "3.10"
 pythonPlatform = "All"
-executionEnvironments = [{ root = "tools", pythonVersion = "3.11" }, { root = "." }]
+executionEnvironments = [
+  { root = "tools", pythonVersion = "3.11" },
+  { root = "examples/python/llm_agent", reportMissingImports = "none" },
+  { root = "." },
+]
 
 [tool.pytest.ini_options]
 addopts = "-m 'not perf and not docker'"
