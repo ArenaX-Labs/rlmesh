@@ -1,17 +1,24 @@
-"""Serve a Prime verifiers v1 taskset (math500, humaneval, ...) as an RLMesh env.
+"""Serve a Prime verifiers v1 taskset or environment as an RLMesh env.
 
 Run with the v1 venv (``requirements-v1.txt``). Each episode is one task picked
-by the reset seed; the first assistant reply is the answer, scored by the
-task's own ``score``.
+by the reset seed. ``--taskset`` (math500, humaneval, ...) takes the first
+assistant reply as the answer, scored by the task's own ``score``. ``--env``
+(tau2-bench, ...) runs the environment's own episode; where its harness would
+call the model, a bridge client hands the request to RLMesh as an observation
+and waits for the next action.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import time
+from collections.abc import Mapping
 from typing import Any
 
 import verifiers.v1 as vf  # pyright: ignore[reportMissingImports]
+import verifiers.v1.interception.server as interception_server  # pyright: ignore[reportMissingImports]
 from chat_env import (
     DEFAULT_ADDRESS,
     ChatTaskEnv,
@@ -96,9 +103,184 @@ class TasksetEnv(ChatTaskEnv):
             await self.task.score(trace, runtime=runtime)
 
 
+Request = tuple[dict[str, Any], "asyncio.Future[Message]"]
+
+
+class _BridgeClient(vf.Client):
+    """A verifiers client whose model is whoever sends the next RLMesh action."""
+
+    def __init__(self, env: V1EnvEnv) -> None:
+        self.env = env
+
+    async def get_response(
+        self,
+        dialect: Any,
+        body: dict,
+        sampling: Any,
+        session_id: str | None = None,
+        turn: Any = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> Any:
+        if dialect.upstream_path != "/chat/completions":
+            raise ValueError(f"the bridge serves chat completions, not {dialect}")
+        reply: asyncio.Future[Message] = asyncio.get_running_loop().create_future()
+        self.env.request.set_result((body, reply))
+        message = {**await reply, "role": "assistant"}
+        raw = {
+            "id": "rlmesh",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": body.get("model", "rlmesh"),
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": "tool_calls"
+                    if message.get("tool_calls")
+                    else "stop",
+                }
+            ],
+        }
+        response = dialect.parse_response(dialect.validate_response(raw))
+        response.raw = raw
+        return response
+
+
+class V1EnvEnv(ChatTaskEnv):
+    """One episode of a v1 environment (its own harness and scoring) per episode."""
+
+    def __init__(
+        self, env_id: str, domain: str | None = None, max_steps: int | None = None
+    ) -> None:
+        super().__init__()
+        self.max_steps = max_steps
+        self.steps = 0
+        taskset = vf.taskset_config_type(env_id)(
+            id=env_id, **({"domain": domain} if domain else {})
+        )
+        self.env = vf.load_environment(vf.env_config_type(env_id)(taskset=taskset))
+        self.tasks: list[Any] = list(self.env.taskset.load())
+        self.loop = asyncio.new_event_loop()
+        self.client = _BridgeClient(self)
+        # The interception server only resolves eval/train endpoints; route it to RLMesh.
+        interception_server.resolve_client = lambda config: self.client
+        self.serving = contextlib.AsyncExitStack()
+        self.loop.run_until_complete(
+            self.serving.enter_async_context(self.env.serving())
+        )
+        self.ctx = vf.ModelContext(model="rlmesh", client=vf.EvalClientConfig())
+        self.episode: asyncio.Task[Any] | None = None
+        self.request: asyncio.Future[Request] = self.loop.create_future()
+        self.reply: asyncio.Future[Message] | None = None
+
+    def start(self, index: int) -> Turn:
+        self._abandon()
+        task = self.tasks[index % len(self.tasks)]
+        self.task_id = str(task.data.name or task.data.id or task.data.idx)
+        self.steps = 0
+        episode = self.episode = self.loop.create_task(
+            self.env.run_episode(task, self.ctx)
+        )
+        turn = self._advance(first=True)
+        if turn is None:
+            errors = _errors(episode.result())
+            raise RuntimeError(
+                f"the environment ended before its first model call: {errors}"
+            )
+        return turn
+
+    def respond(self, reply: Message) -> Turn:
+        assert self.reply is not None and self.episode is not None
+        self.reply.set_result(reply)
+        self.steps += 1
+        turn = self._advance()
+        if turn is not None:
+            if self.max_steps is None or self.steps < self.max_steps:
+                return turn
+            # A simulated user that never hangs up would otherwise run for hours.
+            self._abandon()
+            return Turn(
+                [], rewards={}, truncated=True, info={"stop_condition": "max_steps"}
+            )
+        episode = self.episode.result()
+        self.episode = None
+        errors = _errors(episode)
+        info: dict[str, Any] = {}
+        rewards: dict[str, float] = {}
+        reward = 0.0
+        truncated = episode.is_timeout
+        if episode.traces:
+            trace = episode.traces[-1]
+            rewards = {k: r.score for k, r in trace.rewards.items() if r is not None}
+            reward = trace.reward
+            # tau2 reports its own step limit as tau2_max_steps, not a truncation.
+            truncated = (
+                truncated
+                or trace.is_timeout
+                or trace.is_truncated
+                or trace.stop_condition.endswith("max_steps")
+            )
+            info["stop_condition"] = trace.stop_condition
+            info["metrics"] = {k: v for k, v in trace.metrics.items() if v is not None}
+        if errors:
+            info["errors"] = errors
+        return Turn([], rewards=rewards, reward=reward, truncated=truncated, info=info)
+
+    def close(self) -> None:
+        self._abandon()
+        self.loop.run_until_complete(self.serving.aclose())
+        self.loop.close()
+
+    def _advance(self, first: bool = False) -> Turn | None:
+        """Run the episode until it asks the model again (a turn) or ends (None).
+
+        The first turn carries the whole prompt; later turns carry what follows
+        the last assistant message.
+        """
+        assert self.episode is not None
+        self.request = self.loop.create_future()
+        self.loop.run_until_complete(
+            asyncio.wait(
+                [self.request, self.episode], return_when=asyncio.FIRST_COMPLETED
+            )
+        )
+        if not self.request.done():
+            return None
+        body, self.reply = self.request.result()
+        messages = body["messages"]
+        new = 0
+        if not first:
+            new = 1 + max(
+                (i for i, m in enumerate(messages) if m["role"] == "assistant"),
+                default=-1,
+            )
+        return Turn(messages[new:], body.get("tools") or [])
+
+    def _abandon(self) -> None:
+        if self.episode is not None:
+            self.episode.cancel()
+            self.loop.run_until_complete(
+                asyncio.gather(self.episode, return_exceptions=True)
+            )
+            self.episode = None
+
+
+def _errors(episode: Any) -> list[str]:
+    errors = [*episode.errors, *(e for t in episode.traces for e in t.errors)]
+    return [f"{e.type}: {e.message}" for e in errors]
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Serve a v1 taskset.")
-    parser.add_argument("--taskset", default="primeintellect/math500")
+    parser = argparse.ArgumentParser(description="Serve a v1 taskset or environment.")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--taskset", default="primeintellect/math500")
+    source.add_argument("--env", help="serve a v1 environment (e.g. tau2-bench)")
+    parser.add_argument("--domain", help="the environment's domain (tau2-bench)")
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        help="end an --env episode as truncated after this many replies",
+    )
     parser.add_argument(
         "--runtime",
         choices=["subprocess"],
@@ -106,7 +288,14 @@ def main() -> None:
     )
     parser.add_argument("--address", default=DEFAULT_ADDRESS, help="bind address")
     args = parser.parse_args()
-    serve(TasksetEnv(args.taskset, args.runtime), args.address)
+    if args.max_steps is not None and args.max_steps < 1:
+        parser.error("--max-steps must be at least 1")
+    env = (
+        V1EnvEnv(args.env, args.domain, args.max_steps)
+        if args.env
+        else TasksetEnv(args.taskset, args.runtime)
+    )
+    serve(env, args.address)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,6 @@ SKIPPED_PATH_PARTS = {
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
-    ".venv",
     "__pycache__",
 }
 
@@ -71,7 +70,9 @@ def _python_files(repo_root: Path) -> list[Path]:
         if not root.exists():
             continue
         for path in root.rglob("*.py"):
-            if SKIPPED_PATH_PARTS.isdisjoint(path.parts):
+            if SKIPPED_PATH_PARTS.isdisjoint(path.parts) and not any(
+                part.startswith(".venv") for part in path.parts
+            ):
                 files.append(path)
     return sorted(files)
 

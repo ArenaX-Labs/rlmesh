@@ -6,11 +6,11 @@ FROM python:3.11-slim
 COPY --from=ghcr.io/astral-sh/uv:0.11.0 /uv /uvx /bin/
 
 ARG RLMESH_VERSION=0.2.0a1
-COPY requirements-v0.txt .
+COPY requirements-v0.txt overrides-v0.txt .
 # wordle on PyPI is another package, so Prime's index goes first.
 RUN uv pip install --system --no-cache \
       --index https://hub.primeintellect.ai/primeintellect/simple \
-      --index-strategy unsafe-first-match \
+      --index-strategy unsafe-first-match --override overrides-v0.txt \
       -r requirements-v0.txt "rlmesh==${RLMESH_VERSION}"
 
 WORKDIR /app

@@ -5,3 +5,5 @@ wordle
 mastermind
 alphabet-sort
 tool-test
+color-codeword
+pillow

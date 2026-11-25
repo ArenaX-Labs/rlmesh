@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sys
@@ -166,3 +167,287 @@ def test_v0_bridge_turns_reset_and_close(
     with pytest.raises(RuntimeError, match=re.escape(repr(ValueError("bad setup")))):
         erroring.reset(seed=0)
     erroring.close()
+
+
+class _FakeV1Env:
+    def __init__(self, config: Any) -> None:
+        self.taskset = SimpleNamespace(
+            load=lambda: [SimpleNamespace(data=SimpleNamespace(name="t7"))]
+        )
+        self.seen: list[Any] = []
+        self.served = False
+        self.calls = 2
+        self.trace_errors: list[Any] = []
+        self.episode_errors: list[Any] = []
+        self.stop_condition = "user_completed"
+
+    @contextlib.asynccontextmanager
+    async def serving(self) -> Any:
+        self.served = True
+        yield
+        self.served = False
+
+    async def run_episode(self, task: Any, ctx: Any) -> Any:
+        client = sys.modules["verifiers.v1.interception.server"].resolve_client(None)
+        dialect = SimpleNamespace(
+            upstream_path="/chat/completions",
+            validate_response=lambda raw: raw,
+            parse_response=lambda raw: SimpleNamespace(
+                message=raw["choices"][0]["message"]
+            ),
+        )
+        tools = [{"type": "function", "function": {"name": "lookup"}}]
+        messages = [
+            {"role": "system", "content": "policy"},
+            {"role": "user", "content": "my phone is broken"},
+        ]
+        for _ in range(self.calls):
+            reply = await client.get_response(
+                dialect,
+                {"messages": messages, "tools": tools},
+                None,
+                session_id="s",
+                turn=None,
+                headers={},
+            )
+            self.seen.append(reply.message)
+            messages = [
+                *messages,
+                reply.message,
+                {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+            ]
+        reward = SimpleNamespace(score=1.0)
+        trace = SimpleNamespace(
+            rewards={"tau2_reward": reward, "skipped": None},
+            reward=1.0,
+            metrics={"turns": 2.0},
+            stop_condition=self.stop_condition,
+            is_timeout=False,
+            is_truncated=False,
+            errors=self.trace_errors,
+        )
+        return SimpleNamespace(
+            traces=[trace], errors=self.episode_errors, is_timeout=False
+        )
+
+
+def _stub_verifiers_v1(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    v1 = ModuleType("verifiers.v1")
+    v1.__dict__.update(
+        Client=object,
+        taskset_config_type=lambda env_id: SimpleNamespace,
+        env_config_type=lambda env_id: SimpleNamespace,
+        load_environment=_FakeV1Env,
+        ModelContext=SimpleNamespace,
+        EvalClientConfig=SimpleNamespace,
+    )
+    interception = ModuleType("verifiers.v1.interception")
+    server = ModuleType("verifiers.v1.interception.server")
+    verifiers = ModuleType("verifiers")
+    verifiers.__dict__["v1"] = v1
+    v1.__dict__["interception"] = interception
+    interception.__dict__["server"] = server
+    for module in (verifiers, v1, interception, server):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.delitem(sys.modules, "serve_v1", raising=False)
+    request.addfinalizer(lambda: sys.modules.pop("serve_v1", None))
+
+
+def test_v1_env_bridge_turns_and_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    monkeypatch.setenv("RLMESH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.syspath_prepend(str(EXAMPLES / "llm_agent"))
+    _stub_verifiers_v1(monkeypatch, request)
+    from serve_v1 import V1EnvEnv
+
+    env = V1EnvEnv("tau2", "telecom")
+    obs, info = env.reset(seed=0)
+    assert json.loads(obs) == {
+        "messages": [
+            {"role": "system", "content": "policy"},
+            {"role": "user", "content": "my phone is broken"},
+        ],
+        "tools": [{"type": "function", "function": {"name": "lookup"}}],
+    }
+    assert info == {"task_id": "t7"}
+    call = {
+        "id": "c1",
+        "type": "function",
+        "function": {"name": "lookup", "arguments": "{}"},
+    }
+    obs, _, done, _, _ = env.step(json.dumps({"content": None, "tool_calls": [call]}))
+    assert env.env.seen[0] == {
+        "content": None,
+        "tool_calls": [call],
+        "role": "assistant",
+    }
+    assert json.loads(obs)["messages"] == [
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"}
+    ]
+    assert not done
+    _, reward, done, truncated, info = env.step(
+        json.dumps({"role": "assistant", "content": "fixed"})
+    )
+    assert (reward, done, truncated, info["is_success"]) == (1.0, True, False, True)
+    assert info["rewards"] == {"tau2_reward": 1.0}
+    assert info["stop_condition"] == "user_completed"
+
+    env.env.episode_errors = [SimpleNamespace(type="EnvError", message="no seat")]
+    env.env.trace_errors = [SimpleNamespace(type="HarnessError", message="exited 1")]
+    env.env.calls = 0
+    with pytest.raises(
+        RuntimeError,
+        match=r"first model call: \['EnvError: no seat', 'HarnessError: exited 1'\]",
+    ):
+        env.reset(seed=1)
+
+    env.close()
+    assert env.loop.is_closed() and not env.env.served
+
+
+def test_v1_env_bridge_max_steps_truncates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    monkeypatch.setenv("RLMESH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.syspath_prepend(str(EXAMPLES / "llm_agent"))
+    _stub_verifiers_v1(monkeypatch, request)
+    from serve_v1 import V1EnvEnv
+
+    env = V1EnvEnv("tau2", max_steps=1)
+    env.reset(seed=0)
+    obs, reward, done, truncated, info = env.step(json.dumps({"content": "hi"}))
+    assert (json.loads(obs)["messages"], reward, done, truncated) == (
+        [],
+        0.0,
+        False,
+        True,
+    )
+    assert (info["stop_condition"], info["is_success"]) == ("max_steps", False)
+    assert env.episode is None and len(env.env.seen) == 1
+
+    env.env.calls = 1
+    env.env.stop_condition = "tau2_max_steps"
+    env.reset(seed=0)
+    _, _, done, truncated, info = env.step(json.dumps({"content": "hi"}))
+    assert (done, truncated, info["stop_condition"]) == (False, True, "tau2_max_steps")
+    env.close()
+
+
+def test_transcript_redacts_image_data_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.syspath_prepend(str(EXAMPLES / "llm_agent"))
+    from harness import redact_images
+
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}
+    remote = {"type": "image_url", "image_url": {"url": "https://x/a.png"}}
+    text = {"type": "text", "text": "hi"}
+    messages = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": [image, remote, text]},
+    ]
+    assert redact_images(messages) == [
+        {"role": "system", "content": "rules"},
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,<4 bytes>"},
+                },
+                remote,
+                text,
+            ],
+        },
+    ]
+    assert image["image_url"]["url"] == "data:image/png;base64,QUJD"
+
+
+def test_predict_logs_redacted_images_but_sends_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RLMESH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.syspath_prepend(str(EXAMPLES / "llm_agent"))
+    from harness import LLMHarness
+
+    sent: list[Any] = []
+
+    def chat(messages: Any, tools: Any) -> tuple[dict[str, Any], None]:
+        sent.append(json.loads(json.dumps(messages)))
+        raise RuntimeError(f"bad request: {messages[0]['content'][0]}")
+
+    harness = LLMHarness(model="fake", chat=chat, retries=0)
+    url = "data:image/png;base64,QUJD"
+    observation = json.dumps(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "image_url", "image_url": {"url": url}}],
+                }
+            ],
+            "tools": [],
+        }
+    )
+    context: Any = {
+        "episode_id": "ep",
+        "episode_seed": None,
+        "predict_index": 0,
+        "predict_seed": None,
+        "state": {},
+    }
+    with pytest.raises(RuntimeError):
+        harness.predict(observation, context)
+
+    assert sent[0][0]["content"][0]["image_url"]["url"] == url
+    assert context["state"]["messages"][0]["content"][0]["image_url"]["url"] == url
+    (line,) = (tmp_path / "transcripts" / "ep.jsonl").read_text().splitlines()
+    assert "QUJD" not in line
+    record = json.loads(line)
+    assert (
+        record["request"]["messages"][0]["content"][0]["image_url"]["url"]
+        == "data:image/png;base64,<4 bytes>"
+    )
+    assert "<redacted>" in record["error"]
+
+
+def test_tictactoe_scores_both_seats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RLMESH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.syspath_prepend(str(EXAMPLES / "llm_agent"))
+    from chat_env import TicTacToeTask
+
+    def play(*moves: str, seed: int = 0) -> tuple[list[str], dict[str, Any]]:
+        env = TicTacToeTask()
+        obs, _ = env.reset(seed=seed)
+        prompts = [json.loads(obs)["messages"][0]["content"]]
+        for move in moves:
+            obs, _, done, _, info = env.step(
+                json.dumps({"role": "assistant", "content": move})
+            )
+            if done:
+                return prompts, info
+            prompts.append(json.loads(obs)["messages"][0]["content"])
+        raise AssertionError("game did not end")
+
+    prompts, info = play("1", "4", "2", "5", "3")
+    assert [p.split("You are ")[1][0] for p in prompts] == ["X", "O", "X", "O", "X"]
+    assert info["rewards"] == {"X": 1.0, "O": -1.0}
+    assert (info["is_success"], info["reward"], info["winner"]) == (True, 1.0, "X")
+
+    _, info = play("1", "1")
+    assert info["rewards"] == {"X": 1.0, "O": -1.0} and info["winner"] == "X"
+    _, info = play("seven")
+    assert info["rewards"] == {"X": -1.0, "O": 1.0} and info["is_success"] is False
+
+    prompts, info = play("seven", seed=1)
+    assert prompts[0].split("You are ")[1][0] == "O"
+    assert info["rewards"] == {"X": 1.0, "O": -1.0} and info["reward"] == 1.0
+
+    _, info = play(json.dumps([{"type": "text", "text": "5"}]))
+    assert info["winner"] == "O"
+
+    _, info = play("1", "2", "3", "5", "4", "6", "8", "7", "9")
+    assert info["rewards"] == {"X": 0.0, "O": 0.0} and info["winner"] == "draw"

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -60,6 +61,30 @@ def openai_chat(model: str, max_tokens: int = DEFAULT_MAX_TOKENS) -> Chat:
     return chat
 
 
+_DATA_URL = re.compile(r"(data:[\w/+.-]+;base64,)[A-Za-z0-9+/=]+")
+
+
+def redact_images(messages: list[Message]) -> list[Message]:
+    """Return ``messages`` with each image data URL cut to its MIME type and size."""
+    return [
+        {**message, "content": [_redact_part(part) for part in message["content"]]}
+        if isinstance(message.get("content"), list)
+        else message
+        for message in messages
+    ]
+
+
+def _redact_part(part: Any) -> Any:
+    image = part.get("image_url") if isinstance(part, dict) else None
+    url = image.get("url", "") if isinstance(image, dict) else ""
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return part
+    header, _, payload = url.partition(",")
+    mime = header.removeprefix("data:").split(";")[0]
+    redacted = f"data:{mime};base64,<{len(payload)} bytes>"
+    return {**part, "image_url": {**part["image_url"], "url": redacted}}
+
+
 class LLMHarness(rlmesh.Model):
     """Answer each observation with the LLM's next assistant message.
 
@@ -108,7 +133,7 @@ class LLMHarness(rlmesh.Model):
                 "call": call,
                 "request": {
                     "model": self.model_name,
-                    "messages": messages,
+                    "messages": redact_images(messages),
                     "tools": tools,
                 },
             }
@@ -117,7 +142,7 @@ class LLMHarness(rlmesh.Model):
                 reply, usage = self.chat(messages, tools)
                 record.update(response=reply, usage=usage)
             except Exception as exc:
-                record["error"] = repr(exc)
+                record["error"] = _DATA_URL.sub(r"\1<redacted>", repr(exc))
                 raise
             finally:
                 record["latency_ms"] = round((time.monotonic() - started) * 1000, 1)
