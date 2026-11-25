@@ -99,9 +99,10 @@ as an RLMesh 0.1 (gRPC) server does. RLMesh 0.2 can't connect to 0.1; serve it w
 ValueError: workflow edition "2026.06" is unknown to this rlmesh build, which knows 2026.10; [...]
 ```
 
-0.2 reads an edition from two places only: `RLMESH_WORKFLOW_EDITION`, then `workflow_edition` on the `EnvFactory` or `Model` class. Remove the rest:
+0.2 reads an edition from the source only: `workflow_edition` on the `EnvFactory` or `Model` class. Remove the rest:
 
-- `RLMESH_WORKFLOW_EDITION=2026.06` in a Dockerfile or launch script, and `workflow_edition = "2026.06"` on a class
+- `workflow_edition = "2026.06"` on a class
+- `RLMESH_WORKFLOW_EDITION` in a Dockerfile or launch script (no longer read)
 - `python -m rlmesh.serve --workflow-edition ...` (the flag is gone)
 - `run(..., workflow_edition=...)`, `bind(..., workflow_edition=...)` and `RemoteEnv(..., workflow_edition=...)` (the keywords are gone)
 - `[tool.rlmesh] workflow_edition` in `pyproject.toml` (no longer read)

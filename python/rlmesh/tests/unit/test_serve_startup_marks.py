@@ -192,9 +192,8 @@ class _Declared(rlmesh.Model):
         self.options = options
 
 
-@pytest.mark.parametrize("env_var", [None, ""])
 def test_envelope_edition_is_what_the_serve_options_declare(
-    monkeypatch: pytest.MonkeyPatch, env_var: str | None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import json
 
@@ -208,10 +207,6 @@ def test_envelope_edition_is_what_the_serve_options_declare(
         "register_python_peer_info",
         lambda extra=None: stamped.update(extra or {}),
     )
-    if env_var is None:
-        monkeypatch.delenv("RLMESH_WORKFLOW_EDITION", raising=False)
-    else:
-        monkeypatch.setenv("RLMESH_WORKFLOW_EDITION", env_var)
     served = _Declared()
     monkeypatch.setattr(serve, "_resolve_model", lambda source, binding: served)
 

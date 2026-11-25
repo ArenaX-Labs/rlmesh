@@ -64,7 +64,7 @@ class EnvFactory(ABC):
     #: ``max_episode_steps`` is refused before its first reset.
     requires_episode_cap: ClassVar[bool] = False
     #: Workflow edition this env was authored against (see :func:`rlmesh.current_workflow_edition`).
-    #: ``None`` runs at the current edition. ``RLMESH_WORKFLOW_EDITION`` overrides it.
+    #: ``None`` runs at the current edition; nothing at deploy time overrides it.
     workflow_edition: ClassVar[str | None] = None
     #: Framework bridge pinned by a framework-specific subclass; ``None`` is numpy.
     _bridge: ClassVar[ValueBridge | None] = None

@@ -1382,9 +1382,8 @@ def resolve_execution_horizon(explicit: typing.Optional[builtins.int] = None, lo
 
 def resolve_workflow_edition(declared: typing.Optional[builtins.str] = None) -> builtins.str:
     r"""
-    The workflow edition a participant runs at: `RLMESH_WORKFLOW_EDITION`, then
-    its declaration `declared`, then `current_workflow_edition()`; validated and
-    trimmed.
+    The workflow edition a participant runs at: its declaration `declared`,
+    else `current_workflow_edition()`; validated and trimmed.
     """
 
 def run_cli(args: list[str]) -> int: ...

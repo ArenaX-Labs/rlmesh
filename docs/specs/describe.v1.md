@@ -93,8 +93,8 @@ _format_ is shared.
   `protocol_generation` (the generation the build speaks; gated by equality),
   `session_wire_revision` (the wire revision inside that generation; gated by
   equality), and `workflow_edition` (the edition the described peer runs at,
-  resolved when the envelope is generated: `RLMESH_WORKFLOW_EDITION`, else the
-  class's `workflow_edition`, else the build's current edition; a runtime that
+  resolved when the envelope is generated: the class's `workflow_edition`, else
+  the build's current edition; a runtime that
   does not know it refuses the image). Describing a class that declares an
   edition the build does not know fails. Because `runtime` is the generating
   machine's, a label baked on a laptop describes the laptop; the platform fails

@@ -37,7 +37,7 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     scratch = target / "parity-tmp"
     scratch.mkdir(parents=True, exist_ok=True)
-    build_env = {**os.environ, "TMPDIR": str(scratch), "RLMESH_WORKFLOW_EDITION": ""}
+    build_env = {**os.environ, "TMPDIR": str(scratch)}
     run([sys.executable, ROOT / "tests/parity/generate_defaults.py", "--check"])
     if not args.no_build:
         run(["cargo", "build", "-p", "rlmesh-capi", "--lib"], env=build_env)

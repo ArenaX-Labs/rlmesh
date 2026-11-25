@@ -7,9 +7,6 @@ import socket
 import tempfile
 
 import pytest
-from rlmesh._editions import WORKFLOW_EDITION_ENV_VAR
-
-os.environ.setdefault(WORKFLOW_EDITION_ENV_VAR, "")
 
 if "RLMESH_RUNTIME_DIR" not in os.environ:
     _runtime_dir = tempfile.mkdtemp(prefix="rlmesh-test-runtime-")

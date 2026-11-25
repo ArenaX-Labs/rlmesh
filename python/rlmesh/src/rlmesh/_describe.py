@@ -70,8 +70,7 @@ def describe_json(
     ``workflow_edition`` is the edition a server already resolved for the peer
     it hosts, which the envelope's ``runtime.workflow_edition`` must match.
     ``None`` or ``""`` (the default, for a class described on its own) resolves
-    ``RLMESH_WORKFLOW_EDITION``, then the class's declaration, then the current
-    edition; an edition this build does not know raises :class:`ValueError`.
+    the class's declaration, else the current edition; an edition this build does not know raises :class:`ValueError`.
     """
     entrypoint: str | None = None
     if isinstance(obj, str):

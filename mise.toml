@@ -306,6 +306,10 @@ run = "uv run pytest python/rlmesh/tests -m perf -q"
 description = "Run Python API surface tests"
 run = "uv run pytest python/rlmesh/tests/api_surface -q"
 
+[tasks."test:python:wire-previous"]
+description = "Run a live session between this tree and the last release (from PyPI) and check that a wire revision change refuses both ways by name"
+run = "uv run pytest python/rlmesh/tests/release -q"
+
 [tasks."test:python:examples"]
 description = "Run the headless example programs end to end"
 run = "uv run pytest python/rlmesh/tests/examples -q"
@@ -506,6 +510,7 @@ run = [
   "mise run release:artifacts:licenses",
   "mise run test:system:heavy",
   "mise run test:python:floors",
+  "mise run test:python:wire-previous",
   "mise run test:sandbox:docker --require",
 ]
 

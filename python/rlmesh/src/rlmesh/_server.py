@@ -111,9 +111,8 @@ class EnvServer:
             naming the session form.
         options: Optional serve lifecycle options: the close timeout and the
             workflow edition this endpoint declares (see
-            :doc:`/editions/index`). An edition set here is declared verbatim;
-            options without one take ``RLMESH_WORKFLOW_EDITION``, then
-            ``[tool.rlmesh]``.
+            :doc:`/editions/index`). An edition set here stands above the env's
+            class declaration.
         tags: Optional adapter env tags
             (:class:`rlmesh.adapters.EnvTags`) to publish for this env.
             They are validated against the env's spaces and merged into its

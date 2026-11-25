@@ -20,16 +20,9 @@ class MyEnv(rlmesh.EnvFactory):
     def make(self): ...
 ```
 
-A participant's edition is, highest first:
+A participant runs at its declaration, else the build's current edition (`rlmesh.current_workflow_edition()`). The declaration is in source: `EnvFactory.workflow_edition` / `Model.workflow_edition` in Python, `EnvFactory::workflow_edition` / `Policy::workflow_edition` in Rust, the factory attributes or model vtable in C. For a served env or model, `ServeOptions.workflow_edition` stands above the type's. A blank value declares nothing. Only the winner is validated, when the participant runs or serves, and every language resolves the same way. Every build of a release line, release, prerelease or source build, has the same current edition: the bare `YYYY.MM`.
 
-1. `RLMESH_WORKFLOW_EDITION`, for the whole process.
-2. For a served env or model, `ServeOptions.workflow_edition`.
-3. The in-source declaration: `EnvFactory.workflow_edition` / `Model.workflow_edition` in Python, `EnvFactory::workflow_edition` / `Policy::workflow_edition` in Rust, the factory attributes or model vtable in C.
-4. The build's current edition (`rlmesh.current_workflow_edition()`).
-
-A blank value at any step declares nothing and falls through. Only the winner is validated, when the participant runs or serves; Python, Rust, C and C++ resolve the same way. Every build of a release line, release, prerelease or source build, has the same current edition: the bare `YYYY.MM`.
-
-`rlmesh describe` stamps the resolved edition into the image's describe label at build time, so an image always carries one.
+`rlmesh describe` stamps the resolved edition into the image's describe label at build time, so an image always carries one, and nothing at deploy time changes it: no environment variable or flag overrides an edition, so a running image behaves as the edition it was written against.
 
 ## Applying Defaults
 

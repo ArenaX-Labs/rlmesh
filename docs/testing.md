@@ -217,7 +217,9 @@ mise run release:check
 ```
 
 It includes the sandbox Docker gate with `--require`, so the release machine
-needs a Docker daemon.
+needs a Docker daemon, and `test:python:wire-previous`, which installs the last
+release from PyPI and checks that it and this tree refuse each other by name
+when the session wire revision has changed since (it skips when it has not).
 
 ## When parity:check or parity:fixtures fails
 

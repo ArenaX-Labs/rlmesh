@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import builtins
-import os
 import pathlib
 import subprocess
 import sys
@@ -201,7 +200,6 @@ def execute(case):
                     try:
                         variant = case["variant"]
                         if variant == "workflow":
-                            os.environ.pop("RLMESH_WORKFLOW_EDITION", None)
 
                             class Authored(rlmesh.Model):
                                 def predict(self, observation):
