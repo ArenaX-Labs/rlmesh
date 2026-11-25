@@ -100,7 +100,7 @@ class ChatTaskEnv:
         pass
 
     def make(self) -> ChatTaskEnv:
-        """Return a new env of this class, so ``rlmesh.serve`` and ``rlmesh._describe`` can use the class as a factory (one env per lane)."""
+        """Return a new env of this class, so the class serves as its own factory (one env per lane)."""
         return type(self)()
 
 

@@ -177,7 +177,7 @@ docker/publish.sh "$NS" v1 --no-push   # build and stamp only
 rlmesh check-image "$NS/llm-env-chat:v1"
 ```
 
-It publishes `llm-harness` (model), `llm-env-chat`, `llm-env-math500`, `llm-env-tau2` and `llm-env-wordle`; names after the tag (and `--no-push`) publish only those. No key is baked: the platform injects `OPENAI_*` and `ANTHROPIC_*` into the model container from an `api_key` connection named in `models[].connections`. The push-time probe runs with no key and sends random text, which the harness answers with an empty message and the chat env scores 0. An evaluation request:
+It publishes `llm-harness` (model), `llm-env-chat`, `llm-env-math500`, `llm-env-tau2` and `llm-env-wordle`; names after the tag (and `--no-push`) publish only those, and `OPENAI_MODEL` sets the harness's model name (default `qwen3:4b`; `OPENAI_MODEL=gpt-4.1-mini docker/publish.sh ...`). No key is baked: the platform sets `OPENAI_API_KEY` and `OPENAI_BASE_URL` in the model container from an OpenAI-compatible `api_key` connection named in `models[].connections` (the harness speaks only OpenAI's API, so not an `anthropic` one), and in the env container from one named in `tasks[].connections`, which tau2's simulated customer needs. The push-time probe runs with no key and sends random text, which the harness answers with an empty message and the chat env scores 0. An evaluation request:
 
 ```json
 {

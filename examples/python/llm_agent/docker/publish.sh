@@ -5,7 +5,8 @@
 #   docker/publish.sh REGISTRY/NAMESPACE TAG [--no-push] [NAME...]
 #
 # NAME picks images from the table below (default all); --no-push may come
-# anywhere after TAG and keeps the stamped images local instead.
+# anywhere after TAG and keeps the stamped images local instead. $OPENAI_MODEL
+# names the model the harness asks its provider for.
 set -euo pipefail
 
 usage() {
@@ -18,7 +19,7 @@ shift 2
 
 # name kind target dockerfile [build args...]
 images=(
-  "llm-harness model harness:LLMHarness harness.Dockerfile"
+  "llm-harness model harness:LLMHarness harness.Dockerfile --build-arg OPENAI_MODEL=${OPENAI_MODEL:-qwen3:4b}"
   "llm-env-chat env chat_env:AdditionTask env-chat.Dockerfile"
   "llm-env-math500 env serve_v1:TasksetEnv env-v1.Dockerfile"
   "llm-env-tau2 env serve_v1:V1EnvEnv env-v1.Dockerfile --target environment --build-arg ENV_ID=primeintellect/tau2-bench"
@@ -64,17 +65,12 @@ for k in ("env_spec", "model_spec"):
     echo "$name ($iid): describe failed: $error" >&2
     exit 1
   fi
-  if [ "$kind" = env ]; then
-    entrypoint="[\"python\", \"-m\", \"rlmesh.serve\", \"--env\", \"$target\"]"
-  else
-    entrypoint="[\"python\", \"-m\", \"rlmesh.serve\", \"$target\"]"
-  fi
   # BuildKit takes no image id in FROM, and looks any other name up in its
   # registry first (an unreachable one stalls), so name the base by its id.
   base=rlmesh-publish/$name:${iid#sha256:}
   docker tag "$iid" "$base"
   # The platform registry refuses docker-format manifests, so push the OCI build itself.
-  printf 'FROM %s\nENTRYPOINT %s\n' "$base" "$entrypoint" |
+  printf 'FROM %s\n' "$base" |
     docker build --platform linux/amd64 \
       --output "type=image,name=$ref,oci-mediatypes=true,push=$push" \
       --provenance=false --sbom=false \
