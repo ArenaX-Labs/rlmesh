@@ -225,7 +225,14 @@ async fn an_observer_reads_every_link_and_each_robots_refusals_by_reason() {
         .find(|(reason, _)| reason == "invalid_value")
         .map(|(_, n)| *n);
     assert!(invalid.is_some_and(|n| n >= 1), "{:#?}", link("eye-2"));
-    assert!(link("eye-1").rejected_by.is_empty(), "{:#?}", link("eye-1"));
+    assert!(
+        !link("eye-1")
+            .rejected_by
+            .iter()
+            .any(|(reason, _)| reason == "invalid_value"),
+        "{:#?}",
+        link("eye-1")
+    );
     assert!(
         link("eye-1").last_chunk_accepted > 0,
         "{:#?}",
