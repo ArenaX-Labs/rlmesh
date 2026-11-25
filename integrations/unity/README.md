@@ -21,9 +21,11 @@ RLMesh release (local build: `target/csharp-pkg/com.rlmesh.rlmesh-*.tgz`, or
 directory install needs `package.json` at the package root, beside
 `Runtime/RLMesh.dll` and `Runtime/Plugins/`.
 
-Then **Install package from disk** on `integrations/unity`.
+Then **Install package from disk** on `integrations/unity/package.json`, or
+**Install package from tarball** on the `com.rlmesh.unity` tarball that
+`python integrations/unity/tools/package.py` writes to `target/csharp-pkg/`.
 
-Both packages must have matching versions (currently `0.2.0-alpha.1`). The core
+Both packages must have matching versions. The core
 native plugins must be enabled for the Editor and the matching Standalone OS.
 Only desktop 64-bit targets are in scope: Linux x64, Windows x64 and macOS
 (universal). Mobile and WebGL are unsupported. A platform's release gate must
