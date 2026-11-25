@@ -73,7 +73,7 @@ rlmesh host
 
 ## Rust
 
-Grab the [`rlmesh`](crates/rlmesh/README.md) crate. 0.2.0-alpha.1 isn't on crates.io yet (it publishes the Python package only), so depend on this repository until a later 0.2 pre-release: `rlmesh = { git = "https://github.com/ArenaX-Labs/rlmesh", tag = "v0.2.0-alpha.1" }`. You'll need `protoc` installed (`apt install protobuf-compiler` / `brew install protobuf`) since the session protobuf messages are generated at build time.
+Grab the [`rlmesh`](crates/rlmesh/README.md) crate. The 0.2 pre-releases publish the Python package only, so until the crates reach crates.io, depend on this repository at a release tag from the [releases page](https://github.com/ArenaX-Labs/rlmesh/releases): `rlmesh = { git = "https://github.com/ArenaX-Labs/rlmesh", tag = "<release tag>" }`. You'll need `protoc` installed (`apt install protobuf-compiler` / `brew install protobuf`) since the session protobuf messages are generated at build time.
 
 ## C and C++
 
