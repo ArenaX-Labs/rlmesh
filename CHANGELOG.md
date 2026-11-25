@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+## [0.2.0-alpha.2] - 2026-11-25
+
+Workflow editions become a local declaration, and the session wire revision is the one compatibility gate inside 0.2. This release is wire revision 2: it does not talk to 0.2.0-alpha.1, so rebuild images on it.
+
 ### Breaking
 
 - Workflow editions are declared locally and never negotiated. A participant runs at its class's `workflow_edition` (the `Policy` / `EnvFactory` declaration in Rust, the vtable or factory attributes in C), else the build's current edition, and every build (release, prerelease or source) reports the bare `2026.10`. An edition the runtime does not know is refused with the edition, the editions it knows and the remedy. Builds of one protocol generation interoperate exactly when their session wire revisions match. Removed: `workflow_edition=` on `run`, `bind`, `run_routes`, `RemoteEnv`, `RemoteVectorEnv`, `EnvFactory.serve` and `rlmesh.serve.serve_env` / `serve_model`; `--workflow-edition` on `python -m rlmesh.serve`; `[tool.rlmesh] workflow_edition` in `pyproject.toml`; `RemoteEnv.selected_workflow_edition`; and `BuildInfo.workflow_edition_base`, `supported_workflow_editions` and `build_cohort`. The same goes in Rust (`RunOptions`, `BindOptions`, `RemoteEnvOptions` and `EnvFactoryServeOptions` lose `workflow_edition`), C and C++.
@@ -15,11 +19,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - `rlmesh check-image --platform-version` is gone; pass the platform runtime's `--platform-wire-revision` (and `--platform-editions`). `mise run check` refuses a change to the session protos or a changed or removed wire vector since the last release unless `WIRE_REVISION` is bumped.
 - The describe envelope's `runtime` block carries `workflow_edition` in place of `supported_workflow_editions`, `preferred_workflow_edition`, `workflow_edition_floats` and `workflow_edition_error`; describing a class that declares an unknown edition fails. `rlmesh check-image` checks the image's edition is one the target knows, and `check`, `check-image` and `doctor` no longer warn about undeclared editions.
 
+### Added
+
+- An example that runs Prime Environments Hub tasks with an LLM agent harness (`examples/python/llm_agent`).
+
 ### Changed
+
+- Sampling a Box no longer holds a bound and a scalar for every element, so sampling a camera image uses memory close to the image's own size. `rlmesh doctor` and `rlmesh bench` use far less memory on image observations.
 
 #### Other bindings (not published)
 
 - JavaScript: Node's `Robot`, `Policy` and `SessionRecorder` follow Python's hosting rule. With no session or `''` (now `Robot.connect`'s default), or a loopback port that nothing listens on, the participant hosts the session in its own process until it closes, so a script ported from Python no longer waits for a host that never comes. `robot.address` is its participant address. `EdgeStats` gains `received`, `lost`, `lateMs`, `lateMaxMs`, `gapMaxMs` and `clockRefused`, and `PolicyStats` gains `clockRefused` and `waiting`, as in Python. The package refuses a native addon of another version, naming both. It no longer exports the unreleased lobby and scenes (`Robot.waitInLobby`, `robot.leaving`, `runScene`, `Scene`). See [the Node binding](docs/node.md).
+
+### Fixed
+
+#### Python
+
+- A served model no longer segfaults on Python 3.10 when a short-chunk warning is raised while an audit hook is installed (importing `transformers` installs one).
 
 ## [0.2.0-alpha.1] - 2026-11-15
 
@@ -413,6 +429,7 @@ RLMesh connects models to environments across process, dependency, and machine b
 - The describe envelope's `runtime` block advertises the edition handshake under the wire's names: `protocol_generation`, `supported_workflow_editions`, and `preferred_workflow_edition`, and `rlmesh.build_info().supported_workflow_editions` lists the editions a build can drive.
 - `python -m rlmesh.serve` warns at startup when the served model declares no `spec`: automated input synthesis requires a `ModelSpec`.
 
-[Unreleased]: https://github.com/ArenaX-Labs/rlmesh/compare/v0.2.0-alpha.1...HEAD
+[Unreleased]: https://github.com/ArenaX-Labs/rlmesh/compare/v0.2.0-alpha.2...HEAD
+[0.2.0-alpha.2]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.2.0-alpha.2
 [0.2.0-alpha.1]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.2.0-alpha.1
 [0.1.0]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0
