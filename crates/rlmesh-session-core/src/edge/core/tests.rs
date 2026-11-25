@@ -93,7 +93,6 @@ impl Fixture {
                     supports: Vec::new(),
                     requires: Vec::new(),
                     workflow_edition: String::new(),
-                    workflow_editions: Vec::new(),
                     estop: None,
                 },
             );

@@ -136,10 +136,6 @@
       "BuildInfo": {
         "kind": "class",
         "members": {
-          "build_cohort": {
-            "kind": "property",
-            "signature": "property build_cohort: str"
-          },
           "build_source": {
             "kind": "property",
             "signature": "property build_source: str"
@@ -156,10 +152,6 @@
             "kind": "property",
             "signature": "property session_wire_revision: int"
           },
-          "supported_workflow_editions": {
-            "kind": "property",
-            "signature": "property supported_workflow_editions: list[str]"
-          },
           "version": {
             "kind": "property",
             "signature": "property version: str"
@@ -167,10 +159,6 @@
           "workflow_edition": {
             "kind": "property",
             "signature": "property workflow_edition: str"
-          },
-          "workflow_edition_base": {
-            "kind": "property",
-            "signature": "property workflow_edition_base: str"
           }
         },
         "stability": "Stable"
@@ -230,7 +218,7 @@
           },
           "serve": {
             "kind": "function",
-            "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, workflow_edition: str | None = None, **make_kwargs: Any) -> None"
+            "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, **make_kwargs: Any) -> None"
           },
           "tag_params": {
             "kind": "attribute",
@@ -413,7 +401,7 @@
           },
           "bind": {
             "kind": "function",
-            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int | None = None, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
+            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int | None = None, close_env: bool = False) -> Binding[ObsT, ActT]"
           },
           "close": {
             "kind": "function",
@@ -474,11 +462,11 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, view: ViewArg = None) -> RunResult"
           },
           "run_routes": {
             "kind": "function",
-            "signature": "run_routes(envs: Sequence[LocalEnvTarget], *, episodes: int | None = None, seeds: Sequence[int] | None = None, base_seed: int | None = None, seed_key: str | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, close_env: bool = False) -> list[RunResult | Exception]",
+            "signature": "run_routes(envs: Sequence[LocalEnvTarget], *, episodes: int | None = None, seeds: Sequence[int] | None = None, base_seed: int | None = None, seed_key: str | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, close_env: bool = False) -> list[RunResult | Exception]",
             "stability": "Experimental"
           },
           "serve": {
@@ -692,10 +680,6 @@
             "kind": "function",
             "signature": "reset(*, seed: int | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
           },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
-          },
           "spec": {
             "kind": "property",
             "signature": "property spec: Any"
@@ -705,7 +689,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
         "stability": "Stable"
       },
       "RemoteVectorEnv": {
@@ -767,10 +751,6 @@
             "kind": "function",
             "signature": "reset(*, seed: int | list[int] | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
           },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -788,7 +768,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
         "stability": "Stable"
       },
       "RunContext": {
@@ -991,10 +971,6 @@
             "kind": "attribute",
             "signature": "sandbox"
           },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
-          },
           "source": {
             "kind": "property",
             "signature": "property source: str"
@@ -1135,10 +1111,6 @@
           "sandbox": {
             "kind": "attribute",
             "signature": "sandbox"
-          },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
           },
           "single_action_space": {
             "kind": "property",
@@ -1453,7 +1425,7 @@
       },
       "run": {
         "kind": "function",
-        "signature": "run(model: object, env: EnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, view: ViewArg = None, workflow_edition: str | None = None, trial_index_base: int = 0)",
+        "signature": "run(model: object, env: EnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, view: ViewArg = None, trial_index_base: int = 0)",
         "stability": "Stable"
       },
       "sanitize_metadata": {
@@ -2657,7 +2629,7 @@
           },
           "serve": {
             "kind": "function",
-            "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, workflow_edition: str | None = None, **make_kwargs: Any) -> None"
+            "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, **make_kwargs: Any) -> None"
           },
           "tag_params": {
             "kind": "attribute",
@@ -2692,7 +2664,7 @@
           },
           "bind": {
             "kind": "function",
-            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int | None = None, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
+            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int | None = None, close_env: bool = False) -> Binding[ObsT, ActT]"
           },
           "close": {
             "kind": "function",
@@ -2752,11 +2724,11 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, view: ViewArg = None) -> RunResult"
           },
           "run_routes": {
             "kind": "function",
-            "signature": "run_routes(envs: Sequence[LocalEnvTarget], *, episodes: int | None = None, seeds: Sequence[int] | None = None, base_seed: int | None = None, seed_key: str | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, close_env: bool = False) -> list[RunResult | Exception]"
+            "signature": "run_routes(envs: Sequence[LocalEnvTarget], *, episodes: int | None = None, seeds: Sequence[int] | None = None, base_seed: int | None = None, seed_key: str | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, close_env: bool = False) -> list[RunResult | Exception]"
           },
           "serve": {
             "kind": "function",
@@ -2829,10 +2801,6 @@
             "kind": "function",
             "signature": "reset(*, seed: int | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
           },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
-          },
           "spec": {
             "kind": "property",
             "signature": "property spec: Any"
@@ -2842,7 +2810,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteModel": {
@@ -2909,10 +2877,6 @@
             "kind": "function",
             "signature": "reset(*, seed: int | list[int] | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
           },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -2930,7 +2894,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
         "stability": "Experimental"
       },
       "SandboxBuild": {
@@ -3022,10 +2986,6 @@
           "sandbox": {
             "kind": "attribute",
             "signature": "sandbox"
-          },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
           },
           "source": {
             "kind": "property",
@@ -3190,10 +3150,6 @@
           "sandbox": {
             "kind": "attribute",
             "signature": "sandbox"
-          },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
           },
           "single_action_space": {
             "kind": "property",
@@ -3411,7 +3367,7 @@
           },
           "serve": {
             "kind": "function",
-            "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, workflow_edition: str | None = None, **make_kwargs: Any) -> None"
+            "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, **make_kwargs: Any) -> None"
           },
           "tag_params": {
             "kind": "attribute",
@@ -3441,7 +3397,7 @@
           },
           "bind": {
             "kind": "function",
-            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int | None = None, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
+            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int | None = None, close_env: bool = False) -> Binding[ObsT, ActT]"
           },
           "close": {
             "kind": "function",
@@ -3502,11 +3458,11 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, view: ViewArg = None) -> RunResult"
           },
           "run_routes": {
             "kind": "function",
-            "signature": "run_routes(envs: Sequence[LocalEnvTarget], *, episodes: int | None = None, seeds: Sequence[int] | None = None, base_seed: int | None = None, seed_key: str | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, close_env: bool = False) -> list[RunResult | Exception]",
+            "signature": "run_routes(envs: Sequence[LocalEnvTarget], *, episodes: int | None = None, seeds: Sequence[int] | None = None, base_seed: int | None = None, seed_key: str | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, close_env: bool = False) -> list[RunResult | Exception]",
             "stability": "Experimental"
           },
           "serve": {
@@ -3585,10 +3541,6 @@
             "kind": "function",
             "signature": "reset(*, seed: int | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
           },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
-          },
           "spec": {
             "kind": "property",
             "signature": "property spec: Any"
@@ -3598,7 +3550,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
         "stability": "Stable"
       },
       "RemoteModel": {
@@ -3665,10 +3617,6 @@
             "kind": "function",
             "signature": "reset(*, seed: int | list[int] | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
           },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -3686,7 +3634,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
         "stability": "Stable"
       },
       "SandboxBuild": {
@@ -3778,10 +3726,6 @@
           "sandbox": {
             "kind": "attribute",
             "signature": "sandbox"
-          },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
           },
           "source": {
             "kind": "property",
@@ -3946,10 +3890,6 @@
           "sandbox": {
             "kind": "attribute",
             "signature": "sandbox"
-          },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
           },
           "single_action_space": {
             "kind": "property",
@@ -6526,7 +6466,7 @@
           },
           "serve": {
             "kind": "function",
-            "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, workflow_edition: str | None = None, **make_kwargs: Any) -> None"
+            "signature": "serve(address: str, *, num_envs: int = 1, vectorization_mode: str | None = None, framework: str | None = None, device: object | None = None, **make_kwargs: Any) -> None"
           },
           "tag_params": {
             "kind": "attribute",
@@ -6556,7 +6496,7 @@
           },
           "bind": {
             "kind": "function",
-            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int | None = None, close_env: bool = False, workflow_edition: str | None = None) -> Binding[ObsT, ActT]"
+            "signature": "bind(target: LocalEnvTarget, *, hooks: HooksArg = None, view: ViewArg = None, execution_horizon: int | None = None, close_env: bool = False) -> Binding[ObsT, ActT]"
           },
           "close": {
             "kind": "function",
@@ -6616,11 +6556,11 @@
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, view: ViewArg = None) -> RunResult"
+            "signature": "run(env_or_address: LocalEnvTarget, *, seeds: Sequence[int] | None = None, episodes: int | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, hooks: HooksArg = None, instruction: str | None = None, close_env: bool = False, trust_entrypoints: bool | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, view: ViewArg = None) -> RunResult"
           },
           "run_routes": {
             "kind": "function",
-            "signature": "run_routes(envs: Sequence[LocalEnvTarget], *, episodes: int | None = None, seeds: Sequence[int] | None = None, base_seed: int | None = None, seed_key: str | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, workflow_edition: str | None = None, close_env: bool = False) -> list[RunResult | Exception]"
+            "signature": "run_routes(envs: Sequence[LocalEnvTarget], *, episodes: int | None = None, seeds: Sequence[int] | None = None, base_seed: int | None = None, seed_key: str | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, execution_horizon: int | None = None, prefetch_lead: int = 0, trial_index_base: int = 0, close_env: bool = False) -> list[RunResult | Exception]"
           },
           "serve": {
             "kind": "function",
@@ -6693,10 +6633,6 @@
             "kind": "function",
             "signature": "reset(*, seed: int | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
           },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
-          },
           "spec": {
             "kind": "property",
             "signature": "property spec: Any"
@@ -6706,7 +6642,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteModel": {
@@ -6773,10 +6709,6 @@
             "kind": "function",
             "signature": "reset(*, seed: int | list[int] | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
           },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
-          },
           "single_action_space": {
             "kind": "property",
             "signature": "property single_action_space: Space[ActionT]"
@@ -6794,7 +6726,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None) -> None",
+        "signature": "RemoteVectorEnv(address: str | None = None, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None",
         "stability": "Experimental"
       },
       "SandboxBuild": {
@@ -6886,10 +6818,6 @@
           "sandbox": {
             "kind": "attribute",
             "signature": "sandbox"
-          },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
           },
           "source": {
             "kind": "property",
@@ -7054,10 +6982,6 @@
           "sandbox": {
             "kind": "attribute",
             "signature": "sandbox"
-          },
-          "selected_workflow_edition": {
-            "kind": "property",
-            "signature": "property selected_workflow_edition: str"
           },
           "single_action_space": {
             "kind": "property",

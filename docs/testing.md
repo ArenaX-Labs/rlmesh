@@ -178,9 +178,8 @@ mise run test:sandbox:docker --require      # fails instead (release machines)
 mise run test:sandbox:docker --starts 30 --runs 10
 ```
 
-Both sides of every session must be the same build, so it builds this tree
-as the release cohort (`RLMESH_RELEASE_BUILD=1`, see
-[local development](local-dev.md)): the in-tree extension
+Both sides of every session run this tree, built as a release build
+(`RLMESH_RELEASE_BUILD=1`, see [local development](local-dev.md)): the in-tree extension
 (`build:python:develop`, which your editable install then keeps) and the
 manylinux wheel (`build:python:docker`, rebuilt unless it was made from this
 tree state; `--rebuild` forces it). It builds env, model and failing-env

@@ -98,7 +98,7 @@ pub struct ModelService<H> {
     routes: Mutex<HashMap<String, Arc<Route>>>,
     released: tokio::sync::Notify,
     describe: String,
-    editions: (String, Vec<String>),
+    workflow_edition: String,
     flights: Arc<Flights>,
     closing: std::sync::atomic::AtomicBool,
     closed: watch::Sender<Option<Result<(), Error>>>,

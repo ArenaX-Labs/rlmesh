@@ -295,7 +295,6 @@ async fn spec_handler(
                 ResolveOptions {
                     execution_horizon: horizon,
                     delivers_history: false,
-                    workflow_edition: None,
                 },
             )
             .await
@@ -645,7 +644,6 @@ async fn camera_grouped_predict_timing() {
                 ResolveOptions {
                     execution_horizon: 10,
                     delivers_history: false,
-                    workflow_edition: None,
                 },
             )
             .await
@@ -815,7 +813,6 @@ async fn resolve_once(
             ResolveOptions {
                 execution_horizon: horizon,
                 delivers_history: false,
-                workflow_edition: None,
             },
         )
         .await
@@ -1182,7 +1179,6 @@ async fn stacked_handler(
             ResolveOptions {
                 execution_horizon: horizon,
                 delivers_history,
-                workflow_edition: None,
             },
         )
         .await?;
@@ -1221,7 +1217,6 @@ async fn a_stacked_route_needs_history_only_when_the_runtime_offers_it() {
             ResolveOptions {
                 execution_horizon: 4,
                 delivers_history: true,
-                workflow_edition: None,
             },
         )
         .await
@@ -1280,7 +1275,6 @@ async fn held_state_is_an_endpoint_total_kept_by_route_deltas() {
             ResolveOptions {
                 execution_horizon: 1,
                 delivers_history: true,
-                workflow_edition: None,
             },
         )
         .await
@@ -1524,7 +1518,6 @@ async fn previous_handler(
             ResolveOptions {
                 execution_horizon: horizon,
                 delivers_history,
-                workflow_edition: None,
             },
         )
         .await?;
@@ -1760,7 +1753,6 @@ async fn fresh_lanes_are_admitted_against_the_endpoint_window_budget() {
                 ResolveOptions {
                     execution_horizon: 1,
                     delivers_history: true,
-                    workflow_edition: None,
                 },
             )
             .await

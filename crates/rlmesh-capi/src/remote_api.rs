@@ -23,7 +23,6 @@ pub struct RLMeshRemoteEnvOptions {
     pub connect_timeout_seconds: f64,
     pub has_request_timeout_seconds: bool,
     pub request_timeout_seconds: f64,
-    pub workflow_edition: *const c_char,
 }
 unsafe fn env_options(p: *const RLMeshRemoteEnvOptions) -> Result<RemoteEnvOptions, CapiError> {
     let Some(o) = unsafe { sizing::read(p, "RLMeshRemoteEnvOptions") }? else {
@@ -41,7 +40,6 @@ unsafe fn env_options(p: *const RLMeshRemoteEnvOptions) -> Result<RemoteEnvOptio
                 .then_some(o.request_timeout_seconds),
             "request_timeout_seconds",
         )?,
-        workflow_edition: unsafe { ffi::text(o.workflow_edition) }?,
     })
 }
 struct Common {
@@ -55,7 +53,6 @@ struct Common {
     observation_spec: RLMeshSpaceSpec,
     action_spec: RLMeshSpaceSpec,
     num_envs: u64,
-    edition: rlmesh::binding::env::EditionCell,
     cancel: rlmesh::ext::CancelToken,
 }
 #[allow(clippy::too_many_arguments)]
@@ -66,7 +63,6 @@ fn common(
     metadata: &rlmesh::Metadata,
     observation: &rlmesh::spaces::Space,
     action: &rlmesh::spaces::Space,
-    edition: rlmesh::binding::env::EditionCell,
     cancel: rlmesh::ext::CancelToken,
 ) -> Result<Common, CapiError> {
     Ok(Common {
@@ -82,7 +78,6 @@ fn common(
         ),
         action_spec: RLMeshSpaceSpec(rlmesh::binding::space_spec_wire(c.action_space()).clone()),
         num_envs: c.num_envs(),
-        edition,
         cancel,
     })
 }
@@ -95,7 +90,7 @@ pub struct RLMeshRemoteVectorEnv {
     client: Arc<Mutex<Option<RemoteVectorEnv>>>,
 }
 // A short operation and a run use the same exclusive borrow. Immutable
-// accessors live outside it; the edition is the facade's shared pin cell.
+// accessors live outside it.
 pub(crate) struct Lease<T> {
     pub(crate) client: Option<Box<T>>,
     owner: Arc<Mutex<Option<T>>>,
@@ -162,7 +157,6 @@ fn env_output(c: RemoteEnv, out: *mut *mut RLMeshRemoteEnv) -> Result<(), CapiEr
         c.metadata(),
         c.observation_space(),
         c.action_space(),
-        rlmesh::binding::env::env_core(&c)?.edition_cell(),
         c.cancel_handle(),
     )?;
     unsafe {
@@ -201,7 +195,6 @@ fn vector_output(
         c.metadata(),
         c.single_observation_space(),
         c.single_action_space(),
-        rlmesh::binding::env::vector_env_core(&c)?.edition_cell(),
         c.cancel_handle(),
     )?;
     unsafe {
@@ -314,16 +307,6 @@ common_ptr!(
     action_spec
 );
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_remote_env_selected_workflow_edition(
-    p: *mut RLMeshRemoteEnv,
-    out: *mut RLMeshBytes,
-) -> RLMeshStatus {
-    guard(|| {
-        let h = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null remote env"))?;
-        ffi::bytes(out, h.common.edition.get())
-    })
-}
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_remote_env_render_mode(
     p: *mut RLMeshRemoteEnv,
     has: *mut bool,
@@ -432,16 +415,6 @@ common_ptr!(
     RLMeshSpaceSpec,
     action_spec
 );
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rlmesh_remote_vector_env_selected_workflow_edition(
-    p: *mut RLMeshRemoteVectorEnv,
-    out: *mut RLMeshBytes,
-) -> RLMeshStatus {
-    guard(|| {
-        let h = unsafe { p.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null remote env"))?;
-        ffi::bytes(out, h.common.edition.get())
-    })
-}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_remote_vector_env_render_mode(
     p: *mut RLMeshRemoteVectorEnv,

@@ -166,17 +166,14 @@ static void models(void) {
   v.native_chunk = 3;
   CHECK(loads == 0 && loaded_reads == 0 && model_frees == 0 && model_closes == 0);
   v.workflow_edition = "2099.01";
-  CHECK(rlmesh_model_vtable_describe(&v, NULL, &desc) == RLMESH_OK);
-  CHECK(get(get(desc, "runtime"), "workflow_edition_error") != NULL);
-  rlmesh_value_free(desc);
-  jo.workflow_edition = "arbitrary-not-validated";
+  CHECK(rlmesh_model_vtable_describe(&v, NULL, &desc) == RLMESH_ERR_INVALID_ARGUMENT && !desc);
+  jo.workflow_edition = "2099.01";
+  CHECK(rlmesh_model_vtable_describe_json(&v, &jo, &json) == RLMESH_ERR_INVALID_ARGUMENT);
+  jo.workflow_edition = rlmesh_current_workflow_edition();
   CHECK(rlmesh_model_vtable_describe_json(&v, &jo, &json) == RLMESH_OK &&
-        has(&json, "arbitrary-not-validated") && !has(&json, "workflow_edition_error"));
+        has(&json, rlmesh_current_workflow_edition()));
   rlmesh_bytes_free(json);
-  jo.workflow_edition = "";
-  CHECK(rlmesh_model_vtable_describe_json(&v, &jo, &json) == RLMESH_OK &&
-        !has(&json, "workflow_edition_error"));
-  rlmesh_bytes_free(json);
+  jo.workflow_edition = NULL;
   v.workflow_edition = rlmesh_current_workflow_edition();
   RLMeshValue *weights = NULL, *config = NULL;
   CHECK(rlmesh_value_text(rlmesh_str("checkpoint"), &weights) == RLMESH_OK);

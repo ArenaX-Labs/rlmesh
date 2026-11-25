@@ -1415,7 +1415,6 @@ impl Robot {
             .collect(),
             requires: Vec::new(),
             workflow_edition: String::new(),
-            workflow_editions: Vec::new(),
             estop: self.estop.clone(),
         });
         self.next_ctl(now_us);

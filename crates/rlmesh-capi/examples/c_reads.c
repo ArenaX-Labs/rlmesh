@@ -287,7 +287,6 @@ int main(void) {
   RLMeshRunOptions run = RLMESH_RUN_OPTIONS_INIT;
   run.hooks = hooks;
   run.instruction = "override";
-  run.workflow_edition = rlmesh_current_workflow_edition();
   run.close_env = false;
   CHECK(rlmesh_model_run(model, rlmesh_env_target(env), &run, &result) == RLMESH_OK);
   CHECK(state.reads == 1 && state.predicts == 1 && rlmesh_run_result_advisories_len(result) > 0);
@@ -305,7 +304,6 @@ int main(void) {
         rlmesh_frame_sources_labels_len(empty) == 0);
   rlmesh_frame_sources_free(empty);
   RLMeshBindOptions bind_options = RLMESH_BIND_OPTIONS_INIT;
-  bind_options.workflow_edition = rlmesh_current_workflow_edition();
   RLMeshBinding* binding = NULL;
   CHECK(rlmesh_model_bind(model, rlmesh_env_target(env), &bind_options, &binding) == RLMESH_OK);
   RLMeshValue* observation = NULL;

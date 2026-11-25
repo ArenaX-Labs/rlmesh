@@ -11,8 +11,6 @@ STRING_FIELDS = (
     "version",
     "protocol_generation",
     "workflow_edition",
-    "workflow_edition_base",
-    "build_cohort",
     "build_source",
 )
 
@@ -37,25 +35,19 @@ def test_version_and_generation() -> None:
     assert info.session_wire_revision == rlmesh._rlmesh.SESSION_WIRE_REVISION
 
 
-def test_base_is_year_month_and_prefixes_edition() -> None:
+def test_the_edition_is_the_bare_year_month_on_every_build() -> None:
     info = rlmesh.build_info()
 
-    assert BASE.match(info.workflow_edition_base)
-    assert info.workflow_edition_base == rlmesh.current_workflow_edition()
-    assert info.workflow_edition.startswith(info.workflow_edition_base)
-    suffix = info.workflow_edition.removeprefix(info.workflow_edition_base)
-    if info.build_cohort == "stable":
-        assert suffix == ""
-    else:
-        assert suffix == f"-{info.build_cohort}"
+    assert BASE.match(info.workflow_edition)
+    assert info.workflow_edition == rlmesh.current_workflow_edition()
 
 
-def test_git_is_the_dev_cohort_token() -> None:
+def test_git_is_the_commit_of_a_source_build() -> None:
     info = rlmesh.build_info()
 
     if info.build_source == "git":
         assert info.git is not None
-        assert info.build_cohort == f"dev.{info.git}"
+        assert re.fullmatch(r"[0-9a-f]{4,40}", info.git)
     else:
         assert info.build_source in ("release", "package")
         assert info.git is None
@@ -70,8 +62,6 @@ def test_repr_is_stable() -> None:
         f'protocol_generation="{info.protocol_generation}", '
         f"session_wire_revision={info.session_wire_revision}, "
         f'workflow_edition="{info.workflow_edition}", '
-        f'workflow_edition_base="{info.workflow_edition_base}", '
-        f'build_cohort="{info.build_cohort}", '
         f'build_source="{info.build_source}", '
         f"git={git})"
     )

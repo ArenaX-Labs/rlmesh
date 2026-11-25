@@ -7,7 +7,6 @@ use crate::lifecycle::ShutdownTrigger;
 
 use super::queue::Shared;
 use super::{CancelWatcher, Model, ModelServeOptions};
-use crate::editions::EditionSources;
 use crate::{Error, Result};
 
 pub(super) fn serve_blocking(
@@ -57,11 +56,12 @@ pub(super) fn serve_blocking(
                  rlmesh 0.2 for a session address)",
             ));
         }
-        let edition = crate::editions::resolve_native(EditionSources {
-            call: serve.workflow_edition.as_deref(),
-            option: None,
-            declared: shared.decl.workflow_edition.as_deref(),
-        })?;
+        let edition = crate::editions::resolve_workflow_edition(
+            serve
+                .workflow_edition
+                .as_deref()
+                .or(shared.decl.workflow_edition.as_deref()),
+        )?;
         let join = serve.close_timeout.unwrap_or(SESSION_JOIN);
         let batching = batching.unwrap_or_default();
         serve_session(shared, address, edition, batching, join, foreground, tokens)
@@ -73,7 +73,7 @@ const SESSION_JOIN: Duration = Duration::from_secs(30);
 fn serve_session(
     shared: &Arc<Shared>,
     address: &str,
-    edition: Option<String>,
+    edition: String,
     batching: crate::BatchOptions,
     join: Duration,
     foreground: bool,
@@ -83,13 +83,13 @@ fn serve_session(
     let describe = crate::describe::describe_json(
         crate::describe::Describable::built(shared),
         crate::describe::DescribeJsonOptions {
-            workflow_edition: Some(edition.clone().unwrap_or_default()),
+            workflow_edition: Some(edition.clone()),
             ..Default::default()
         },
     )?;
     let service = Arc::new(
         crate::lockstep::ModelService::new(handler, describe)
-            .declaring(edition.as_deref())
+            .declaring(Some(&edition))
             .batching(batching)?,
     );
     let binding = crate::run::drive::block_on_library(crate::lockstep::ModelBinding::bind(address))

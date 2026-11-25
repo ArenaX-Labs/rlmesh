@@ -107,8 +107,7 @@ fn snapshot() -> AuthoritySnapshot {
             protocol_minor: PROTOCOL_MINOR,
             supports: vec!["frame.fixed".into()],
             requires: vec!["merge.blend".into()],
-            workflow_edition: "2026.06".into(),
-            workflow_editions: vec!["2026.06".into()],
+            workflow_edition: "2026.10".into(),
             present: false,
             left: Some(Reason {
                 code: ReasonCode::RobotLost,

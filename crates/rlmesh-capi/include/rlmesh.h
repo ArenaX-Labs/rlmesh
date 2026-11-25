@@ -514,7 +514,7 @@ RLMESH_API bool rlmesh_error_class_is_subclass(RLMeshErrorClass cls, RLMeshError
 
 /* ---- build info, editions, warnings -------------------------------------- */
 
-/* Where a build's cohort came from. */
+/* How a build was made. */
 typedef enum RLMeshBuildSource {
   RLMESH_BUILD_SOURCE_INVALID = 0,
   RLMESH_BUILD_SOURCE_RELEASE = 1, /* "release" */
@@ -526,27 +526,21 @@ typedef enum RLMeshBuildSource {
 RLMESH_API const char* rlmesh_build_source_str(RLMeshBuildSource source);
 
 /* The linked library's identity. Every string is static, NUL-terminated UTF-8 with
- * process lifetime; nothing is freed. supported_workflow_editions lists
- * supported_workflow_editions_len editions, newest first; git is NULL when the build was
- * not stamped from git. session_wire_revision is the session wire revision the library
+ * process lifetime; nothing is freed. git is the short commit a source build was
+ * stamped from, NULL otherwise. session_wire_revision is the session wire revision the library
  * speaks (two builds on different revisions cannot talk), 0 from a library built
  * before the field. */
 typedef struct RLMeshBuildInfo {
   size_t struct_size;
   const char* version;
   const char* protocol_generation;
-  const char* workflow_edition;      /* the exact spelling this build advertises */
-  const char* workflow_edition_base; /* its bare YYYY.MM base */
-  const char* const* supported_workflow_editions;
-  size_t supported_workflow_editions_len;
-  const char* build_cohort;
+  const char* workflow_edition; /* the bare YYYY.MM edition this build runs at */
   RLMeshBuildSource build_source;
   uint32_t session_wire_revision;
   const char* git;
 } RLMeshBuildInfo;
-#define RLMESH_BUILD_INFO_INIT                                         \
-  {sizeof(RLMeshBuildInfo),     NULL, NULL, NULL, NULL, NULL, 0, NULL, \
-   RLMESH_BUILD_SOURCE_INVALID, 0,    NULL}
+#define RLMESH_BUILD_INFO_INIT \
+  {sizeof(RLMeshBuildInfo), NULL, NULL, NULL, RLMESH_BUILD_SOURCE_INVALID, 0, NULL}
 #define RLMESH_BUILD_INFO_MIN_SIZE (offsetof(RLMeshBuildInfo, git) + sizeof(const char*))
 
 /* Fill `*out` (initialized with RLMESH_BUILD_INFO_INIT). */
@@ -557,10 +551,10 @@ struct RLMeshBytes; /* defined below */
 RLMESH_API RLMeshStatus rlmesh_build_info_repr(struct RLMeshBytes* out);
 
 /* The bare YYYY.MM workflow edition this build runs at (static): the value to
- * declare. A served model or env resolves its edition from
- * RLMeshServeOptions.workflow_edition, else the RLMESH_WORKFLOW_EDITION
- * environment variable (set but blank: float deliberately, quietly); one that
- * declares neither floats to the newest edition and warns once per process. */
+ * declare. A served model or env runs at the RLMESH_WORKFLOW_EDITION environment
+ * variable, else its declaration (RLMeshServeOptions.workflow_edition, then the
+ * vtable's or factory attributes' workflow_edition), else this edition. An
+ * edition this build does not know is ERR_VALUE. */
 RLMESH_API const char* rlmesh_current_workflow_edition(void);
 
 /* The describe envelope's metadata key and schema version, and the reset
@@ -2830,7 +2824,6 @@ typedef struct RLMeshExtEnvFactoryServeOptions {
 typedef struct RLMeshEnvFactoryServeOptions {
   size_t struct_size;
   int64_t num_envs;               /* 1; <= 1 serves one env */
-  const char* workflow_edition;   /* NULL/""/blank = None */
   const RLMeshValue* make_kwargs; /* DICT; NULL = {} */
   RLMeshExtCancelToken* cancel;   /* NULL = none, borrowed for the call */
   uint64_t _reserved;             /* 0 */
@@ -2841,10 +2834,10 @@ typedef struct RLMeshEnvFactoryServeOptions {
 } RLMeshEnvFactoryServeOptions;
 #if UINTPTR_MAX == UINT32_MAX
 #define RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT \
-  {sizeof(RLMeshEnvFactoryServeOptions), 1, NULL, NULL, NULL, 0, NULL, {0}}
+  {sizeof(RLMeshEnvFactoryServeOptions), 1, NULL, NULL, 0, NULL, {0}}
 #else
 #define RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT \
-  {sizeof(RLMeshEnvFactoryServeOptions), 1, NULL, NULL, NULL, 0, NULL}
+  {sizeof(RLMeshEnvFactoryServeOptions), 1, NULL, NULL, 0, NULL}
 #endif
 
 typedef struct RLMeshTagParam {
@@ -3213,7 +3206,7 @@ typedef struct RLMeshDescribeJsonOptions {
  * builds. The Value result is an owned Dict, JSON is owned RLMeshBytes.
  * served_env NULL/0 = None; non-NULL/0 is an invalid empty list. At most one
  * served form may be set. It replaces the default build and is never closed.
- * workflow_edition NULL resolves/records refusal; "" explicitly declares none. */
+ * workflow_edition NULL or blank resolves the type's declaration. */
 RLMESH_API RLMeshStatus rlmesh_model_vtable_describe(const RLMeshModelVtable* vtable,
                                                      const RLMeshDescribeOptions* options,
                                                      RLMeshValue** out);
@@ -3525,7 +3518,6 @@ typedef struct RLMeshRunOptions {
   const int64_t* seeds;
   size_t seeds_len;
   RLMeshRunHooks* hooks;
-  const char* workflow_edition;
   const RLMeshExtCancelToken* cancel;
   uint64_t episodes;
   uint64_t max_episode_steps;
@@ -3549,7 +3541,6 @@ typedef struct RLMeshRunOptions {
   {sizeof(RLMeshRunOptions),    \
    NULL,                        \
    0,                           \
-   NULL,                        \
    NULL,                        \
    NULL,                        \
    0,                           \
@@ -3587,8 +3578,7 @@ RLMESH_API RLMeshStatus rlmesh_model_run(RLMeshModel* model, RLMeshEnvTarget env
 typedef struct RLMeshBinding RLMeshBinding;
 typedef struct RLMeshBindOptions {
   size_t struct_size;
-  const char* workflow_edition; /* NULL = None; copied. */
-  uint32_t execution_horizon;   /* with has_execution_horizon; unset: the model's own, else 1 */
+  uint32_t execution_horizon; /* with has_execution_horizon; unset: the model's own, else 1 */
   bool close_env;
   bool has_execution_horizon;
   uint8_t _reserved[2];
@@ -3599,8 +3589,7 @@ typedef struct RLMeshBindOptions {
   const RLMeshView* view; /* NULL = None; native loop refuses a set view. */
 } RLMeshBindOptions;
 #define RLMESH_BIND_OPTIONS_MIN_SIZE offsetof(RLMeshBindOptions, hooks)
-#define RLMESH_BIND_OPTIONS_INIT \
-  {sizeof(RLMeshBindOptions), NULL, 0, false, false, {0, 0}, NULL, NULL}
+#define RLMESH_BIND_OPTIONS_INIT {sizeof(RLMeshBindOptions), 0, false, false, {0, 0}, NULL, NULL}
 RLMESH_API RLMeshStatus rlmesh_bind(RLMeshModelTarget model, RLMeshEnvTarget target,
                                     const RLMeshBindOptions* options /* NULL = INIT */,
                                     RLMeshBinding** out);
@@ -3667,11 +3656,10 @@ typedef struct RLMeshRemoteEnvOptions {
   double connect_timeout_seconds;
   bool has_request_timeout_seconds;
   double request_timeout_seconds;
-  const char* workflow_edition;
 } RLMeshRemoteEnvOptions;
 #define RLMESH_REMOTE_ENV_OPTIONS_MIN_SIZE sizeof(RLMeshRemoteEnvOptions)
 #define RLMESH_REMOTE_ENV_OPTIONS_INIT \
-  {sizeof(RLMeshRemoteEnvOptions), NULL, false, 0.0, false, 0.0, NULL}
+  {sizeof(RLMeshRemoteEnvOptions), NULL, false, 0.0, false, 0.0}
 
 RLMESH_API RLMeshStatus rlmesh_remote_env_new(const RLMeshRemoteEnvOptions* options,
                                               RLMeshRemoteEnv** out);
@@ -3684,8 +3672,6 @@ RLMESH_API RLMeshStatus rlmesh_remote_env_address(const RLMeshRemoteEnv* remote_
                                                   RLMeshBytes* out);
 RLMESH_API RLMeshStatus rlmesh_remote_env_env_id(const RLMeshRemoteEnv* remote_env,
                                                  RLMeshBytes* out);
-RLMESH_API RLMeshStatus
-rlmesh_remote_env_selected_workflow_edition(const RLMeshRemoteEnv* remote_env, RLMeshBytes* out);
 RLMESH_API const RLMeshEnvContract* rlmesh_remote_env_env_contract(
     const RLMeshRemoteEnv* remote_env);
 RLMESH_API const RLMeshValue* rlmesh_remote_env_metadata(const RLMeshRemoteEnv* remote_env);
@@ -3708,8 +3694,6 @@ RLMESH_API RLMeshStatus
 rlmesh_remote_vector_env_address(const RLMeshRemoteVectorEnv* remote_vector_env, RLMeshBytes* out);
 RLMESH_API RLMeshStatus
 rlmesh_remote_vector_env_env_id(const RLMeshRemoteVectorEnv* remote_vector_env, RLMeshBytes* out);
-RLMESH_API RLMeshStatus rlmesh_remote_vector_env_selected_workflow_edition(
-    const RLMeshRemoteVectorEnv* remote_vector_env, RLMeshBytes* out);
 RLMESH_API const RLMeshEnvContract* rlmesh_remote_vector_env_env_contract(
     const RLMeshRemoteVectorEnv* remote_vector_env);
 RLMESH_API const RLMeshValue* rlmesh_remote_vector_env_metadata(

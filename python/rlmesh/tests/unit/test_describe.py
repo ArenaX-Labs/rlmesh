@@ -4,7 +4,7 @@ from typing import Any, ClassVar, cast
 
 import pytest
 import rlmesh
-from rlmesh._describe import _catalog, _gather, _variations, check_target
+from rlmesh._describe import _catalog, _gather, _variations
 
 
 def test_variations_treats_bare_str_axis_as_one_value() -> None:
@@ -341,8 +341,7 @@ def test_a_wrapping_model_describes_its_policy() -> None:
     assert wrapped["params"] == direct["params"]
     assert wrapped["corners"] == direct["corners"] == ["predict", "predict_batch"]
     assert (
-        wrapped["runtime"]["preferred_workflow_edition"]
-        == direct["runtime"]["preferred_workflow_edition"]
+        wrapped["runtime"]["workflow_edition"] == direct["runtime"]["workflow_edition"]
     )
     assert direct["model_spec"] is None
     assert wrapped["model_spec"] is not None
@@ -567,52 +566,42 @@ def test_check_labels_warns_about_ad_hoc_roles_but_not_blessed_or_escape() -> No
     assert any("does not resolve" in message for message in failures), failures
 
 
-def test_runtime_carries_the_edition_handshake(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+def test_runtime_carries_the_resolved_edition(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from rlmesh._rlmesh import SESSION_WIRE_REVISION, build_info
 
     monkeypatch.delenv("RLMESH_WORKFLOW_EDITION", raising=False)
-    monkeypatch.chdir(tmp_path)
     info = build_info()
     runtime = rlmesh.describe(_TinyModel)["runtime"]
     assert runtime["protocol_generation"] == info.protocol_generation
     assert runtime["session_wire_revision"] == SESSION_WIRE_REVISION >= 1
-    assert runtime["supported_workflow_editions"] == list(
-        info.supported_workflow_editions
-    )
-    assert runtime["supported_workflow_editions"][0] == info.workflow_edition
-    assert runtime["preferred_workflow_edition"] == info.workflow_edition
-    assert "workflow_edition_error" not in runtime
-    assert runtime["workflow_edition_floats"] is True
+    assert runtime["workflow_edition"] == rlmesh.current_workflow_edition()
+    for gone in (
+        "supported_workflow_editions",
+        "preferred_workflow_edition",
+        "workflow_edition_floats",
+        "workflow_edition_error",
+    ):
+        assert gone not in runtime
 
     class Declared(_TinyModel):
         workflow_edition = rlmesh.current_workflow_edition()
 
     runtime = rlmesh.describe(Declared)["runtime"]
-    assert runtime["preferred_workflow_edition"] == rlmesh.current_workflow_edition()
-    assert "workflow_edition_floats" not in runtime
+    assert runtime["workflow_edition"] == rlmesh.current_workflow_edition()
+    assert rlmesh.describe_json(Declared) == rlmesh.describe_json(Declared)
 
     class Impossible(_TinyModel):
         workflow_edition = "1999.01"
 
-    runtime = rlmesh.describe(Impossible)["runtime"]
-    assert "1999.01" in runtime["workflow_edition_error"]
-    assert runtime["preferred_workflow_edition"] == info.workflow_edition
-    assert rlmesh.describe_json(Declared) == rlmesh.describe_json(Declared)
-
-
-def test_check_says_where_to_pin_an_undeclared_edition(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
-) -> None:
-    monkeypatch.delenv("RLMESH_WORKFLOW_EDITION", raising=False)
-    monkeypatch.chdir(tmp_path)
-    nudge = [w for w in check_target(_TinyModel).warnings if "Pin it" in w]
-    assert len(nudge) == 1, check_target(_TinyModel)
-    assert f'workflow_edition = "{rlmesh.current_workflow_edition()}"' in nudge[0]
-    monkeypatch.setenv("RLMESH_WORKFLOW_EDITION", "")
-    assert not [w for w in check_target(_TinyModel).warnings if "Pin it" in w]
-    assert "workflow_edition_floats" not in rlmesh.describe(_TinyModel)["runtime"]
+    with pytest.raises(ValueError, match=r"1999\.01"):
+        _ = rlmesh.describe(Impossible)
+    monkeypatch.setenv("RLMESH_WORKFLOW_EDITION", rlmesh.current_workflow_edition())
+    assert (
+        rlmesh.describe(Impossible)["runtime"]["workflow_edition"]
+        == rlmesh.current_workflow_edition()
+    )
 
 
 def _arm_tags(dim: int = 1) -> Any:

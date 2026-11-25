@@ -544,9 +544,8 @@ class ModelBase(Generic[ObsT, ActT]):
     #: Declared construction parameters for ``load``; keywords are validated against it
     #: before ``load(**config)`` runs. See :mod:`rlmesh.params`.
     params: ClassVar[ParamSpec | None] = None
-    #: The workflow edition this model was authored against; ``None`` floats to the newest.
-    #: Overridden by ``RLMESH_WORKFLOW_EDITION`` and an explicit ``run``/``session`` keyword;
-    #: see :doc:`the precedence table </editions/index>`.
+    #: The workflow edition this model was authored against; ``None`` runs at the current
+    #: edition. ``RLMESH_WORKFLOW_EDITION`` overrides it; see :doc:`/editions/index`.
     workflow_edition: ClassVar[str | None] = None
     #: Compute device for model inputs (torch/jax only). Set it in :meth:`load`; rlmesh moves
     #: every obs tensor leaf onto it before :meth:`predict`. ``None`` leaves obs as decoded.
@@ -1318,7 +1317,6 @@ class ModelBase(Generic[ObsT, ActT]):
         execution_horizon: int | None = None,
         prefetch_lead: int = 0,
         trial_index_base: int = 0,
-        workflow_edition: str | None = None,
         view: ViewArg = None,
     ) -> RunResult:
         """Drive this model against an env on the native runtime loop.
@@ -1387,14 +1385,6 @@ class ModelBase(Generic[ObsT, ActT]):
         be attributed to the model forward, the env step, serialization, or
         queueing without a profiler.
 
-        ``workflow_edition`` pins the semantics this run is evaluated under --
-        the runtime's own declaration, above every other surface. It defaults to
-        ``RLMESH_WORKFLOW_EDITION``, then :attr:`workflow_edition` on this model,
-        then ``[tool.rlmesh] workflow_edition``; declaring none floats the run to
-        this build's newest edition (reported once per process). An edition
-        neither side can run is refused before any episode starts, naming what
-        each tier wants and can do.
-
         ``hooks`` observes the loop: a :class:`~rlmesh.RunHooks` (or a list of
         them, each called in order) receives the
         runtime's own events -- episode starts, every step as a
@@ -1436,8 +1426,8 @@ class ModelBase(Generic[ObsT, ActT]):
             context,
             trust=trust_entrypoints,
             instruction=instruction,
-            workflow_edition=workflow_edition,
         )
+        self._workflow_edition()
         failed = True
         try:
             report = self._install_worker().run_facade(
@@ -1452,7 +1442,6 @@ class ModelBase(Generic[ObsT, ActT]):
                     prefetch_lead=prefetch_lead,
                     trial_index_base=trial_index_base,
                     close_env=close_env,
-                    workflow_edition=self._declared_workflow_edition(workflow_edition),
                 ),
             )
             failed = False
@@ -1478,7 +1467,6 @@ class ModelBase(Generic[ObsT, ActT]):
         execution_horizon: int | None = None,
         prefetch_lead: int = 0,
         trial_index_base: int = 0,
-        workflow_edition: str | None = None,
         close_env: bool = False,
     ) -> list[RunResult | Exception]:
         """Drive this model against every env in ``envs`` at once, one route each.
@@ -1553,7 +1541,6 @@ class ModelBase(Generic[ObsT, ActT]):
         results, interrupt = self._run_routes(
             routes,
             execution_horizon=execution_horizon,
-            workflow_edition=workflow_edition,
         )
         if interrupt is not None:
             raise interrupt
@@ -1564,7 +1551,6 @@ class ModelBase(Generic[ObsT, ActT]):
         routes: Sequence[tuple[LocalEnvTarget, dict[str, Any]]],
         *,
         execution_horizon: int | None = None,
-        workflow_edition: str | None = None,
     ) -> tuple[list[RunResult | BaseException], BaseException | None]:
         """:meth:`run_routes` with each route's own options.
 
@@ -1582,16 +1568,15 @@ class ModelBase(Generic[ObsT, ActT]):
         self._calls.check_open("run_routes()")
         self._require_device_support()
         horizon = self._execution_horizon(execution_horizon)
-        edition = self._declared_workflow_edition(workflow_edition)
+        self._workflow_edition()
         native_routes: list[tuple[object, dict[str, Any]]] = [
             (
                 EnvTarget(
                     self,
                     env,
                     NativeRunContext(trust=bool(self._trust_entrypoints)),
-                    workflow_edition=workflow_edition,
                 ),
-                {**options, "execution_horizon": horizon, "workflow_edition": edition},
+                {**options, "execution_horizon": horizon},
             )
             for env, options in routes
         ]
@@ -1609,7 +1594,7 @@ class ModelBase(Generic[ObsT, ActT]):
             for report in reports
         ], interrupt
 
-    def _serve_here(self, env_obj: object, workflow_edition: str | None) -> EnvServer:
+    def _serve_here(self, env_obj: object, workflow_edition: str) -> EnvServer:
         """Serve the local env ``env_obj`` in this process for one run or binding.
 
         In a session of its own, on a served model's host (which the model
@@ -1635,8 +1620,6 @@ class ModelBase(Generic[ObsT, ActT]):
                 local_contract(env_obj),
                 trust_entrypoints=self._trust_entrypoints,
             )
-        # The in-process server takes the caller's already-resolved
-        # declaration verbatim rather than re-resolving.
         token = loopback.set(True)
         try:
             address = f"{load_native('run_session')(self._served_address)}/env"
@@ -1644,11 +1627,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 cast("VectorServerEnvLike", env_obj),
                 address,
                 framework=getattr(env_obj, "_bridge", None),
-                options=(
-                    load_native("ServeOptions")(workflow_edition=workflow_edition)
-                    if workflow_edition is not None
-                    else None
-                ),
+                options=load_native("ServeOptions")(workflow_edition=workflow_edition),
                 # The env is borrowed or built here; its close() is
                 # the caller's decision.
                 close_env_on_shutdown=False,
@@ -1668,7 +1647,6 @@ class ModelBase(Generic[ObsT, ActT]):
         view: ViewArg = None,
         execution_horizon: int | None = None,
         close_env: bool = False,
-        workflow_edition: str | None = None,
     ) -> Binding[ObsT, ActT]:
         """Bind this model to one env and return a :class:`Binding` to step by hand.
 
@@ -1691,14 +1669,10 @@ class ModelBase(Generic[ObsT, ActT]):
         self._calls.check_open("bind()")
         self._require_device_support()
         view = resolve_view(view)
-        declared = self._declared_workflow_edition(workflow_edition)
+        self._workflow_edition()
         horizon = self._execution_horizon(execution_horizon)
-        target_adapter = EnvTarget(
-            self, target, binding=True, workflow_edition=workflow_edition
-        )
-        native = self._install_worker().bind_facade(
-            target_adapter, horizon, declared, close_env
-        )
+        target_adapter = EnvTarget(self, target, binding=True)
+        native = self._install_worker().bind_facade(target_adapter, horizon, close_env)
         try:
             return Binding._create(  # pyright: ignore[reportPrivateUsage]
                 native=native,
@@ -1742,20 +1716,16 @@ class ModelBase(Generic[ObsT, ActT]):
         ``RLMESH_MODEL_ENDPOINT_TOKEN`` is refused: keep the session on a
         private network.
 
-        The model declares a workflow edition in the session's roster, where a
-        driver negotiates the run's edition: ``options``' own
-        ``workflow_edition`` if it sets one, else the resolved declaration
-        (``RLMESH_WORKFLOW_EDITION``, :attr:`workflow_edition`, ``[tool.rlmesh]``).
+        The model declares its workflow edition in the session's roster:
+        ``RLMESH_WORKFLOW_EDITION``, else ``options``' ``workflow_edition``,
+        else :attr:`workflow_edition`, else the current edition.
         """
         from .._editions import serve_options_declaring
 
         self._calls.check_open("serve()")
         self._require_device_support()
         declared = serve_options_declaring(
-            options,
-            call=options.workflow_edition if options is not None else None,
-            declared=self._class_workflow_edition(),
-            origin=self._edition_origin(),
+            options, declared=self._class_workflow_edition()
         )
         if not name:
             from .._client._endpoint import redact_address
@@ -1778,10 +1748,7 @@ class ModelBase(Generic[ObsT, ActT]):
             )
 
             envelope = _handshake_describe(
-                self,
-                "model",
-                None,
-                (declared.workflow_edition if declared is not None else None) or "",
+                self, "model", None, declared.workflow_edition or ""
             )
             batch = batching if batching is not None else BatchOptions()
             worker.serve(
@@ -1840,7 +1807,6 @@ class ModelBase(Generic[ObsT, ActT]):
         close_env: bool = False,
         trial_index_base: int = 0,
         prefetch_lead: int = 0,
-        workflow_edition: str | None = None,
         hooks: object | None = None,
         invite_at: str | None = None,
     ) -> dict[str, Any]:
@@ -1861,31 +1827,22 @@ class ModelBase(Generic[ObsT, ActT]):
             close_env,
             trial_index_base,
             prefetch_lead,
-            workflow_edition,
             hooks,
             invite_at,
         )
 
-    def _declared_workflow_edition(self, call: str | None) -> str | None:
-        """This model's declaration for one run or session.
-
-        The explicit call keyword, else the process / class / project surfaces
-        (see :mod:`rlmesh._editions`).
-        """
+    def _workflow_edition(self) -> str:
+        """The edition this model runs at; an edition this build does not know raises."""
         from .._editions import resolve_workflow_edition
 
-        return resolve_workflow_edition(
-            call=call,
-            declared=self._class_workflow_edition(),
-            origin=self._edition_origin(),
-        )
+        return resolve_workflow_edition(self._class_workflow_edition())
 
     def _edition_origin(self) -> object:
         """Where this model's edition is declared: the type or callable it was authored as.
 
         A subclass's own type; for a wrapping ``Model(policy)``, the wrapped
         policy type (``describe`` reads the same one); for a bare callable,
-        the callable. Its module's project holds the ``[tool.rlmesh]`` rung.
+        the callable.
         """
         if self._policy is self:
             return type(self)
@@ -1975,7 +1932,6 @@ def run(
     execution_horizon: int | None = None,
     prefetch_lead: int = 0,
     view: ViewArg = None,
-    workflow_edition: str | None = None,
     trial_index_base: int = 0,
 ) -> RunResult:
     """Drive ``model`` against ``env`` to completion and return a :class:`RunResult`.
@@ -2013,7 +1969,6 @@ def run(
             trust_entrypoints=trust_entrypoints,
             execution_horizon=execution_horizon,
             prefetch_lead=prefetch_lead,
-            workflow_edition=workflow_edition,
             trial_index_base=trial_index_base,
             view=view,
         )

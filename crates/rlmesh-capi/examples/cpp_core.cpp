@@ -24,11 +24,9 @@ int main() {
   rlmesh::BuildInfo info = rlmesh::build_info();
   CHECK(info.version == rlmesh::VERSION);
   CHECK(info.protocol_generation == "rlmesh-realtime-v1");
-  CHECK(info.workflow_edition_base == rlmesh::current_workflow_edition());
-  CHECK(!info.supported_workflow_editions.empty());
-  CHECK(info.supported_workflow_editions.front() == info.workflow_edition);
+  CHECK(info.workflow_edition == rlmesh::current_workflow_edition());
   CHECK(!rlmesh::to_string(info.build_source).empty());
-  CHECK(info.git.has_value() == (info.build_cohort.substr(0, 4) == "dev."));
+  CHECK(info.git.has_value() == (info.build_source == rlmesh::BuildSource::Git));
   CHECK(info.session_wire_revision >= 1);
   std::ostringstream repr;
   repr << info;

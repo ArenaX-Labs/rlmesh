@@ -64,7 +64,7 @@ impl fmt::Debug for ModelTarget<'_> {
 pub(crate) trait ErasedFactory {
     fn make(&mut self) -> Result<MadeEnv>;
 
-    fn local_edition(&self, call: Option<&str>) -> Result<Option<String>>;
+    fn local_edition(&self) -> Result<String>;
 }
 
 struct Factory<'a, F>(&'a mut F);
@@ -75,12 +75,8 @@ impl<F: EnvFactory> ErasedFactory for Factory<'_, F> {
         self.0.make_env(&Kwargs::new())
     }
 
-    fn local_edition(&self, call: Option<&str>) -> Result<Option<String>> {
-        crate::editions::resolve_native(crate::editions::EditionSources {
-            call,
-            option: None,
-            declared: F::workflow_edition().as_deref(),
-        })
+    fn local_edition(&self) -> Result<String> {
+        crate::editions::resolve_workflow_edition(F::workflow_edition().as_deref())
     }
 }
 

@@ -109,16 +109,17 @@ fn describe_with(
 
 fn edition_target(args: &CheckImageArgs) -> Result<(Option<EditionTarget>, String)> {
     if !args.platform_editions.is_empty() {
-        let offer = image_check::platform_offer(&args.platform_editions);
-        if offer.editions.is_empty() {
+        let editions = image_check::platform_editions(&args.platform_editions);
+        if editions.is_empty() {
             bail!("--platform-editions names no edition");
         }
-        let against = format!("platform editions {:?}", offer.editions);
-        return Ok((Some(EditionTarget::platform(offer)), against));
+        let against = format!("platform editions {editions:?}");
+        return Ok((Some(EditionTarget::platform(editions)), against));
     }
     if let Some(version) = &args.platform_version {
-        let offer = image_check::platform_offer_for_version(version).map(EditionTarget::platform);
-        let against = match &offer {
+        let target =
+            image_check::platform_editions_for_version(version).map(EditionTarget::platform);
+        let against = match &target {
             Some(_) => format!("a platform on rlmesh {} (this CLI's build)", version.trim()),
             None => format!(
                 "a platform on rlmesh {} (not this CLI's {}, editions unknown)",
@@ -126,7 +127,7 @@ fn edition_target(args: &CheckImageArgs) -> Result<(Option<EditionTarget>, Strin
                 env!("CARGO_PKG_VERSION")
             ),
         };
-        return Ok((offer, against));
+        return Ok((target, against));
     }
     Ok((
         Some(EditionTarget::this_build()),
@@ -361,8 +362,8 @@ mod tests {
         let (target, against) = edition_target(&args(&[], None)).unwrap();
         assert_eq!(target, Some(EditionTarget::this_build()));
         assert_eq!(
-            target.unwrap().offer,
-            rlmesh_proto::SessionOffer::this_build(None)
+            target.unwrap().editions,
+            [rlmesh::current_workflow_edition()]
         );
         assert_eq!(
             against,
@@ -371,7 +372,7 @@ mod tests {
         assert!(!against.contains("platform"), "{against}");
         let (target, _) = edition_target(&args(&["2026.06", " "], None)).unwrap();
         let target = target.unwrap();
-        assert_eq!(target.offer, rlmesh_proto::SessionOffer::new(&["2026.06"]));
+        assert_eq!(target.editions, ["2026.06"]);
         assert_eq!(target.name, "the target platform");
         assert!(edition_target(&args(&[" "], None)).is_err());
         let (target, against) = edition_target(&args(&[], Some("0.0.1"))).unwrap();
@@ -379,8 +380,8 @@ mod tests {
         assert!(against.contains("editions unknown"), "{against}");
         let (target, _) = edition_target(&args(&[], Some(env!("CARGO_PKG_VERSION")))).unwrap();
         assert_eq!(
-            target.map(|t| t.offer.editions),
-            Some(rlmesh_proto::supported_workflow_editions())
+            target.map(|t| t.editions),
+            Some(vec![rlmesh::current_workflow_edition().to_owned()])
         );
     }
 
@@ -393,9 +394,7 @@ mod tests {
                 "labels: the describe label was generated on macos".to_owned(),
                 "variant: requires accel.cuda needs accel.vendor".to_owned(),
             ],
-            not_checked: vec![
-                "editions: describe carries no supported_workflow_editions".to_owned(),
-            ],
+            not_checked: vec!["editions: describe carries no workflow_edition".to_owned()],
             ..CheckReport::default()
         };
         let deep = CheckReport {

@@ -240,8 +240,7 @@ class EnvServer:
         normalized_address = normalize_bind_address(address)
         refuse_v1_address("EnvServer", normalized_address)
         server_cls = load_native("PyVectorEnvServer" if is_vector else "PyEnvServer")
-        if options is None or options.workflow_edition is None:
-            options = serve_options_declaring(options)
+        options = serve_options_declaring(options)
         self._server: PyEnvServer | PyVectorEnvServer = server_cls(
             env=env,
             address=normalized_address,

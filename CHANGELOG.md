@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+### Breaking
+
+- Workflow editions are declared locally and never negotiated. A participant runs at `RLMESH_WORKFLOW_EDITION`, else its class's `workflow_edition`, else the build's current edition, and every build (release, prerelease or source) reports the bare `2026.10`. An edition the runtime does not know is refused with the edition, the editions it knows and the remedy. Builds of one protocol generation interoperate exactly when their session wire revisions match. Removed: `workflow_edition=` on `run`, `bind`, `run_routes`, `RemoteEnv`, `RemoteVectorEnv`, `EnvFactory.serve` and `rlmesh.serve.serve_env` / `serve_model`; `--workflow-edition` on `python -m rlmesh.serve`; `[tool.rlmesh] workflow_edition` in `pyproject.toml`; `RemoteEnv.selected_workflow_edition`; and `BuildInfo.workflow_edition_base`, `supported_workflow_editions` and `build_cohort`. The same goes in Rust (`RunOptions`, `BindOptions`, `RemoteEnvOptions` and `EnvFactoryServeOptions` lose `workflow_edition`), C and C++. `ServeOptions.workflow_edition` stays as a served participant's declaration.
+- The session wire is revision 2: `Attach` and the roster entry no longer carry `workflow_editions`, and `ModelResolve` no longer carries `workflow_edition`. A build on revision 1 and one on revision 2 refuse each other by name.
+- The describe envelope's `runtime` block carries `workflow_edition` in place of `supported_workflow_editions`, `preferred_workflow_edition`, `workflow_edition_floats` and `workflow_edition_error`; describing a class that declares an unknown edition fails. `rlmesh check-image` checks the image's edition is one the target knows, and `check`, `check-image` and `doctor` no longer warn about undeclared editions.
+
 ### Changed
 
 #### Other bindings (not published)

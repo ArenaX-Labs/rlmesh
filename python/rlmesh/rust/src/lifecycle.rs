@@ -46,13 +46,9 @@ impl PyServeOptions {
     }
 }
 
-/// The bare `YYYY.MM` workflow edition this build runs at — the value to paste
-/// into a declaration, on every build.
-///
-/// A bare base selects whichever spelling of it both sides offer: the sealed name on a
-/// release, this build's cohort (`YYYY.MM-<cohort>`, as `rlmesh.build_info().workflow_edition`
-/// reports) on a prerelease or local build. The cohort spelling is also accepted as a
-/// declaration, pinning that exact moving build.
+/// The bare `YYYY.MM` workflow edition this build runs at when nothing declares
+/// one: the value to paste into a declaration, the same on every build of a
+/// release line.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 pub fn current_workflow_edition() -> &'static str {
@@ -89,41 +85,15 @@ impl PyBuildInfo {
         rlmesh::build_info().session_wire_revision
     }
 
-    /// The exact workflow edition spelling this build advertises: the sealed
-    /// `YYYY.MM` base on a release, `YYYY.MM-<cohort>` on a prerelease or
-    /// source build.
+    /// The bare `YYYY.MM` workflow edition this build runs at when nothing
+    /// declares one; what `current_workflow_edition()` returns, on a release,
+    /// prerelease and source build alike.
     #[getter]
     fn workflow_edition(&self) -> &'static str {
         rlmesh::build_info().workflow_edition
     }
 
-    /// The sealed `YYYY.MM` base of `workflow_edition`, the same on every build
-    /// of the edition; what `current_workflow_edition()` returns.
-    #[getter]
-    fn workflow_edition_base(&self) -> &'static str {
-        rlmesh::build_info().workflow_edition_base
-    }
-
-    /// Every workflow edition this build can drive a session at, newest first; the list a served
-    /// peer offers in its handshake.
-    #[getter]
-    fn supported_workflow_editions(&self) -> Vec<String> {
-        rlmesh::build_info()
-            .supported_workflow_editions
-            .iter()
-            .map(|edition| (*edition).to_string())
-            .collect()
-    }
-
-    /// The cohort that spells `workflow_edition`: `stable` on a sealed release,
-    /// the prerelease version (`0.1.0-rc.12`) on a prerelease, `dev.<git>` on a
-    /// source build.
-    #[getter]
-    fn build_cohort(&self) -> &'static str {
-        rlmesh::build_info().build_cohort
-    }
-
-    /// Where the cohort came from: `release` (a release build), `package` (a
+    /// How the build was made: `release` (a release build), `package` (a
     /// published crate or a checkout without git), or `git` (a source build
     /// stamped from its commit).
     #[getter]
@@ -131,9 +101,8 @@ impl PyBuildInfo {
         rlmesh::build_info().build_source.as_str()
     }
 
-    /// The git state a source build was stamped from — the short commit sha,
-    /// suffixed `.dirty.<fingerprint>` when the tree had uncommitted changes —
-    /// or `None` when the build was not stamped from git.
+    /// The short commit a source build was stamped from, or `None` when the
+    /// build was not stamped from git.
     #[getter]
     fn git(&self) -> Option<&'static str> {
         rlmesh::build_info().git
@@ -144,46 +113,30 @@ impl PyBuildInfo {
     }
 }
 
-/// This build's identity: the package version, the protocol generation, and
-/// the workflow edition it advertises with the cohort behind that spelling.
+/// This build's identity: the package version, the protocol generation and
+/// session wire revision it speaks, and its workflow edition.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 pub fn build_info() -> PyBuildInfo {
     PyBuildInfo
 }
 
-/// Refuse a declared workflow edition this build cannot run a session at, naming
-/// the value and the editions it offers; return it trimmed otherwise.
+/// Refuse a workflow edition this build does not know, naming it, the editions
+/// this build knows, and the remedy; return it trimmed otherwise.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
 pub fn validate_workflow_edition(edition: &str) -> PyResult<String> {
     rlmesh::binding::validate_workflow_edition(edition).map_err(crate::types::to_py_err)
 }
 
-/// Resolve the workflow edition: the call's value, `RLMESH_WORKFLOW_EDITION`, the served peer's
-/// option, the class declaration. Returns the winner (validated and trimmed) and whether
-/// resolution stopped at a set-but-blank variable; `(None, False)` leaves the
-/// `pyproject.toml` rung to the caller.
+/// The workflow edition a participant runs at: `RLMESH_WORKFLOW_EDITION`, then
+/// its declaration `declared`, then `current_workflow_edition()`; validated and
+/// trimmed.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyfunction)]
 #[pyfunction]
-#[pyo3(signature = (*, call=None, option=None, declared=None))]
-pub fn resolve_workflow_edition_rungs(
-    call: Option<&str>,
-    option: Option<&str>,
-    declared: Option<&str>,
-) -> PyResult<(Option<String>, bool)> {
-    use rlmesh::binding::{EditionResolution, EditionSources};
-    let resolution = rlmesh::binding::resolve_workflow_edition_rungs(EditionSources {
-        call,
-        option,
-        declared,
-    })
-    .map_err(crate::types::to_py_err)?;
-    Ok(match resolution {
-        EditionResolution::Declared(edition) => (Some(edition), false),
-        EditionResolution::FloatsDeliberately => (None, true),
-        EditionResolution::Undeclared => (None, false),
-    })
+#[pyo3(signature = (declared=None))]
+pub fn resolve_workflow_edition(declared: Option<&str>) -> PyResult<String> {
+    rlmesh::binding::resolve_workflow_edition(declared).map_err(crate::types::to_py_err)
 }
 
 /// Call `hook` with `{kind, participant, address, port, pid}` as each env or
@@ -220,7 +173,7 @@ pub fn set_ready_hook(hook: Option<Py<PyAny>>) {
 }
 
 /// Normalize an optional declared edition: blank declares nothing, anything
-/// else must be an edition this build retains.
+/// else must be an edition this build knows.
 pub(crate) fn checked_workflow_edition(edition: Option<String>) -> PyResult<Option<String>> {
     match edition {
         Some(edition) if !edition.trim().is_empty() => {

@@ -106,9 +106,8 @@ static void expect_retired_refusal(RLMeshStatus status) {
   CHECK(status == RLMESH_ERR_INVALID_ARGUMENT);
   CHECK(rlmesh_last_error_class() == RLMESH_ERROR_CLASS_VALUE_ERROR);
   const char* message = rlmesh_last_error_message();
-  CHECK(message && strstr(message,
-                          "runtime cannot drive workflow edition \"2026.06\"; "
-                          "this build implements") == message);
+  CHECK(message &&
+        strstr(message, "workflow edition \"2026.06\" is unknown to this rlmesh build") == message);
 }
 static void refuse_retired_edition(State* state) {
   if (getenv("RLMESH_WORKFLOW_EDITION")) return;

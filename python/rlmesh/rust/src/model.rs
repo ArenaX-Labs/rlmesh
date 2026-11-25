@@ -910,7 +910,6 @@ impl PyModel {
                 prefetch_lead,
                 trial_index_base,
                 close_env: option!("close_env", bool).unwrap_or(false),
-                workflow_edition: option!("workflow_edition", String),
                 ..Default::default()
             },
             default_horizon: option!("default_horizon", u32),
@@ -1306,13 +1305,12 @@ impl PyModel {
         Ok((outcomes, interrupt))
     }
 
-    #[pyo3(signature = (target, execution_horizon=1, workflow_edition=None, close_env=false))]
+    #[pyo3(signature = (target, execution_horizon=1, close_env=false))]
     fn bind_facade(
         &self,
         py: Python<'_>,
         target: Py<PyAny>,
         execution_horizon: u32,
-        workflow_edition: Option<String>,
         close_env: bool,
     ) -> PyResult<crate::bind::PyBinding> {
         self.last_error
@@ -1327,7 +1325,6 @@ impl PyModel {
                 rlmesh::binding::model::adapted_env(Box::new(target)),
                 rlmesh::BindOptions {
                     execution_horizon: Some(execution_horizon),
-                    workflow_edition,
                     close_env,
                     ..Default::default()
                 },
@@ -1345,13 +1342,12 @@ impl PyModel {
 
     /// Binds the model to the env at the session address `env_address`, to
     /// step by hand.
-    #[pyo3(signature = (env_address, execution_horizon=1, workflow_edition=None))]
+    #[pyo3(signature = (env_address, execution_horizon=1))]
     fn bind(
         &self,
         py: Python<'_>,
         env_address: &str,
         execution_horizon: u32,
-        workflow_edition: Option<String>,
     ) -> PyResult<crate::bind::PyBinding> {
         crate::bind::PyBinding::connect(
             py,
@@ -1359,7 +1355,6 @@ impl PyModel {
             Arc::clone(&self.last_error),
             env_address,
             execution_horizon,
-            workflow_edition,
         )
     }
 
@@ -1393,14 +1388,13 @@ impl PyModel {
         }
     }
 
-    #[pyo3(signature = (env_address, execution_horizon=1, prefetch_lead=0, workflow_edition=None))]
+    #[pyo3(signature = (env_address, execution_horizon=1, prefetch_lead=0))]
     fn run_local(
         &self,
         py: Python<'_>,
         env_address: &str,
         execution_horizon: u32,
         prefetch_lead: u32,
-        workflow_edition: Option<String>,
     ) -> PyResult<Py<PyAny>> {
         self.run_local_for_episodes(
             py,
@@ -1413,7 +1407,6 @@ impl PyModel {
             false,
             None,
             prefetch_lead,
-            workflow_edition,
             None,
             None,
         )
@@ -1428,7 +1421,7 @@ impl PyModel {
     /// raises aborts the run and is re-raised as-is. `invite_at` is the env's
     /// session as a model served elsewhere reaches it, when that differs from
     /// `env_address`'s.
-    #[pyo3(signature = (env_address, episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0, workflow_edition=None, hooks=None, invite_at=None))]
+    #[pyo3(signature = (env_address, episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false, trial_index_base=None, prefetch_lead=0, hooks=None, invite_at=None))]
     #[allow(clippy::too_many_arguments)]
     fn run_local_for_episodes(
         &self,
@@ -1442,7 +1435,6 @@ impl PyModel {
         close_env: bool,
         trial_index_base: Option<u64>,
         prefetch_lead: u32,
-        workflow_edition: Option<String>,
         hooks: Option<Py<PyAny>>,
         invite_at: Option<String>,
     ) -> PyResult<Py<PyAny>> {
@@ -1478,7 +1470,6 @@ impl PyModel {
             execution_horizon: Some(execution_horizon),
             prefetch_lead: prefetch_lead.into(),
             trial_index_base: trial_index_base.unwrap_or(0),
-            workflow_edition,
             close_env,
             hooks: Some(&mut hooks),
             cancel: Some(cancel),
@@ -1586,13 +1577,13 @@ class PyModel:
     def set_inner_models(self, inners: list[tuple[int, PyModel]]) -> None: ...
     @staticmethod
     def random_sample() -> PyModel: ...
-    def bind(self, env_address: str, execution_horizon: int = 1, workflow_edition: str | None = None) -> PyBinding: ...
+    def bind(self, env_address: str, execution_horizon: int = 1) -> PyBinding: ...
     def run_facade(self, target: object, relay: object, options: dict[str, typing.Any]) -> dict[str, typing.Any]: ...
     def run_routes_facade(self, routes: list[tuple[object, dict[str, typing.Any]]]) -> tuple[list[typing.Any], BaseException | None]: ...
-    def bind_facade(self, target: object, execution_horizon: int = 1, workflow_edition: str | None = None, close_env: bool = False) -> PyBinding: ...
+    def bind_facade(self, target: object, execution_horizon: int = 1, close_env: bool = False) -> PyBinding: ...
     def stop_serving(self) -> None: ...
-    def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0, workflow_edition: str | None = None) -> dict[str, typing.Any]: ...
-    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, workflow_edition: str | None = None, hooks: object | None = None, invite_at: str | None = None) -> dict[str, typing.Any]: ...
+    def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, hooks: object | None = None, invite_at: str | None = None) -> dict[str, typing.Any]: ...
     def serve(self, address: str, name: str, options: ServeOptions | None = None, envelope: str | None = None, max_batch_size: int | None = None, batch_window_ms: int | None = None, batch_byte_budget: int | None = None, max_in_flight_batches: int | None = None, batch_records: str | os.PathLike[str] | None = None) -> None: ...
 "#
     }

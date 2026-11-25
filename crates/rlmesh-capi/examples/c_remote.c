@@ -27,10 +27,6 @@ static RLMeshStatus reset(void* ud, const int64_t* seed, const RLMeshValue* opti
   if (s->remote) {
     CHECK(rlmesh_remote_env_close(s->remote) == RLMESH_ERR_RUNTIME);
     CHECK(rlmesh_value_kind(rlmesh_remote_env_metadata(s->remote)) == RLMESH_VALUE_DICT);
-    RLMeshBytes edition = {NULL, 0, 0};
-    CHECK(rlmesh_remote_env_selected_workflow_edition(s->remote, &edition) == RLMESH_OK &&
-          edition.len > 0);
-    rlmesh_bytes_free(edition);
   }
   return rlmesh_value_int(0, obs);
 }
@@ -111,7 +107,6 @@ int main(void) {
   CHECK(rlmesh_env_server_address(server, &bytes) == RLMESH_OK);
   address = text(bytes);
   eo.address = address;
-  eo.workflow_edition = rlmesh_current_workflow_edition();
   CHECK(rlmesh_remote_vector_env_new(&eo, &vector) == RLMESH_ERR_INVALID_ARGUMENT &&
         vector == NULL);
   CHECK(rlmesh_remote_env_new(&eo, &remote) == RLMESH_OK);

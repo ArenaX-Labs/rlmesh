@@ -88,7 +88,6 @@ impl World {
                     supports: vec![],
                     requires: vec![],
                     workflow_edition: String::new(),
-                    workflow_editions: vec![],
                     estop: None,
                 },
             )

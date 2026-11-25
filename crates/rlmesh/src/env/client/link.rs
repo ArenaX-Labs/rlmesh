@@ -32,39 +32,15 @@ pub(super) fn wire_lane(index: u64) -> Result<u32> {
     })
 }
 
-/// A shared read handle on a client's selected workflow edition: the
-/// handshake selection until a pin replaces it.
-#[derive(Clone, Debug)]
-pub struct EditionCell(pub(super) Edition);
-
-#[derive(Clone, Debug)]
-pub(super) enum Edition {
-    Local(Arc<std::sync::Mutex<String>>),
-}
-
-impl EditionCell {
-    /// The current selection.
-    pub fn get(&self) -> String {
-        match &self.0 {
-            Edition::Local(edition) => edition
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
-        }
-    }
-}
-
 pub(super) enum Link {
     Lockstep {
         client: crate::lockstep::LockstepClient,
         address: String,
-        edition: Arc<std::sync::Mutex<String>>,
         episodes: Episodes,
     },
     View {
         view: Arc<std::sync::Mutex<Option<Arc<crate::lockstep::GymView>>>>,
         address: String,
-        edition: Arc<std::sync::Mutex<String>>,
     },
 }
 

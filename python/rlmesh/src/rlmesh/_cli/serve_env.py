@@ -44,7 +44,6 @@ class ServeArgs:
     verbose: bool
     kwargs: dict[str, Any] | None = None
     ready_fd: int | None = None
-    workflow_edition: str | None = None
 
 
 def write_ready_fd(fd: int, address: str) -> None:
@@ -103,16 +102,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
             "readiness without grepping stdout."
         ),
     )
-    _ = parser.add_argument(
-        "--workflow-edition",
-        help=(
-            "Workflow edition this endpoint declares -- the semantics it was "
-            "authored against, kept until you bump it. Defaults to "
-            "RLMESH_WORKFLOW_EDITION, then the entrypoint class's "
-            "workflow_edition, then [tool.rlmesh] workflow_edition. Paste what "
-            "rlmesh.current_workflow_edition() reports."
-        ),
-    )
     _ = parser.add_argument("--verbose", action="store_true", help="Verbose output")
 
 
@@ -160,10 +149,9 @@ def serve_from_args(args: ServeArgs) -> int:
             )
 
         served_num_envs = _served_num_envs(env, fallback=args.num_envs)
+        declared = getattr(type(env), "workflow_edition", None)
         options = serve_options_declaring(
-            option=args.workflow_edition,
-            declared=getattr(type(env), "workflow_edition", None),
-            origin=type(env),
+            declared=declared if isinstance(declared, str) else None
         )
         server = EnvServer(env, args.address, options=options)
 
@@ -264,7 +252,6 @@ def serve_args_from_namespace(args: argparse.Namespace) -> ServeArgs:
         verbose=args.verbose,
         kwargs=args.kwargs_json,
         ready_fd=args.ready_fd,
-        workflow_edition=args.workflow_edition,
     )
 
 

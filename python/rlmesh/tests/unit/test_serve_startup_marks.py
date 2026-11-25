@@ -193,7 +193,7 @@ class _Declared(rlmesh.Model):
 
 
 @pytest.mark.parametrize("env_var", [None, ""])
-def test_envelope_preferred_edition_is_what_the_serve_options_declare(
+def test_envelope_edition_is_what_the_serve_options_declare(
     monkeypatch: pytest.MonkeyPatch, env_var: str | None
 ) -> None:
     import json
@@ -215,22 +215,12 @@ def test_envelope_preferred_edition_is_what_the_serve_options_declare(
     served = _Declared()
     monkeypatch.setattr(serve, "_resolve_model", lambda source, binding: served)
 
-    option = None if env_var == "" else build_info().workflow_edition
-    serve.serve_model(_Declared, "127.0.0.1:0", workflow_edition=option)
+    serve.serve_model(_Declared, "127.0.0.1:0")
 
     envelope = json.loads(stamped[rlmesh.DESCRIBE_METADATA_KEY])
     options = cast("Any", served.options)
-    wire = (
-        options.workflow_edition if options is not None else None
-    ) or build_info().workflow_edition
-    assert envelope["runtime"]["preferred_workflow_edition"] == wire
-    if env_var == "":
-        assert options is None or options.workflow_edition is None
-    else:
-        assert options.workflow_edition == option
-    assert envelope["runtime"]["supported_workflow_editions"] == list(
-        build_info().supported_workflow_editions
-    )
+    assert options.workflow_edition == build_info().workflow_edition
+    assert envelope["runtime"]["workflow_edition"] == options.workflow_edition
 
 
 def test_an_env_prints_no_serving_line_before_it_answers(

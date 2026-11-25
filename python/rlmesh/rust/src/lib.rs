@@ -143,10 +143,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<lifecycle::PyServeOptions>()?;
     m.add_function(wrap_pyfunction!(lifecycle::current_workflow_edition, m)?)?;
     m.add_function(wrap_pyfunction!(lifecycle::validate_workflow_edition, m)?)?;
-    m.add_function(wrap_pyfunction!(
-        lifecycle::resolve_workflow_edition_rungs,
-        m
-    )?)?;
+    m.add_function(wrap_pyfunction!(lifecycle::resolve_workflow_edition, m)?)?;
     m.add_function(wrap_pyfunction!(lifecycle::set_ready_hook, m)?)?;
     m.add_class::<lifecycle::PyBuildInfo>()?;
     m.add_function(wrap_pyfunction!(lifecycle::build_info, m)?)?;
@@ -158,7 +155,6 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<bind::PyBinding>()?;
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
-    m.add_class::<client::PyEditionCell>()?;
     m.add_class::<viewer::PyViewer>()?;
     m.add_class::<viewer::PyVideoWriter>()?;
     m.add_class::<viewer::PyEpisodeArtifacts>()?;

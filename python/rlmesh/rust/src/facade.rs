@@ -409,12 +409,11 @@ impl rlmesh::binding::model::EnvAdapter for PyEnvTarget {
     }
     fn open(
         &mut self,
-        edition: Option<&str>,
         caller: rlmesh::binding::model::CallerJobs,
     ) -> rlmesh::Result<rlmesh::binding::model::AdaptedEnv> {
         crate::server::py_environment::with_facade_caller(caller, self.error.clone(), || {
             Python::attach(|py| {
-                let out = self.target.bind(py).call_method1("open", (edition,))?;
+                let out = self.target.bind(py).call_method0("open")?;
                 let (address, invite_at, close_over_wire) = out.extract()?;
                 Ok(rlmesh::binding::model::AdaptedEnv {
                     address,
@@ -460,7 +459,6 @@ impl rlmesh::binding::model::EnvAdapter for AddressTarget {
     }
     fn open(
         &mut self,
-        _: Option<&str>,
         _: rlmesh::binding::model::CallerJobs,
     ) -> rlmesh::Result<rlmesh::binding::model::AdaptedEnv> {
         Ok(rlmesh::binding::model::AdaptedEnv {

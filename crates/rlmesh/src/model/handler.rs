@@ -52,9 +52,6 @@ pub struct ResolveOptions {
     /// step it executed from a replayed chunk without predicting). Without it, a stacked
     /// adapter is refused at a horizon above 1.
     pub delivers_history: bool,
-    /// The workflow edition the run executes at, which a model served
-    /// elsewhere is pinned to (`None`: unpinned).
-    pub workflow_edition: Option<rlmesh_proto::Edition>,
 }
 
 /// What a resolved route needs from the runtime, answered on
@@ -213,10 +210,9 @@ pub trait ModelHandler: Send {
         Ok(())
     }
 
-    /// The workflow editions a model served elsewhere declared in its session, after
-    /// [`join`](Self::join): a run executes at the floor across the env, the model and
-    /// itself.
-    async fn workflow_editions(&mut self) -> Result<Option<rlmesh_proto::SessionOffer>> {
+    /// The workflow edition a model served elsewhere declared in its session, after
+    /// [`join`](Self::join).
+    async fn workflow_edition(&mut self) -> Result<Option<String>> {
         Ok(None)
     }
 
@@ -295,8 +291,8 @@ impl<H: ModelHandler + ?Sized> ModelHandler for $ty {
         (**self).join(session).await
     }
 
-    async fn workflow_editions(&mut self) -> Result<Option<rlmesh_proto::SessionOffer>> {
-        (**self).workflow_editions().await
+    async fn workflow_edition(&mut self) -> Result<Option<String>> {
+        (**self).workflow_edition().await
     }
 
     fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {

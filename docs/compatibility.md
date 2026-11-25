@@ -10,7 +10,7 @@ RLMesh documents compatibility at the workflow level rather than freezing every 
 Stable workflows include documented public APIs, supported CLI flows, and supported remote environment/model interactions.
 
 - Imports, signatures, and documented behavior follow the version contract: a breaking change to a stable symbol ships in a minor release with a migration note in the [changelog](../CHANGELOG.md).
-- A participant authored against a sealed workflow edition keeps working with later releases of the other participants, and the session runs at its declared edition. What that covers today, and what it does not yet, is under [Workflow Editions](#workflow-editions) below.
+- A participant keeps the workflow edition it declares across upgrades of the other participants; a runtime that does not know that edition refuses it by name. What that covers today, and what it does not yet, is under [Workflow Editions](#workflow-editions) below.
 - New features may require newer packages or capabilities, but older stable workflows either keep working or fail clearly.
 
 The adapter authoring and resolution surface is Stable. `Adapter.__init__`
@@ -49,7 +49,7 @@ deferred.
 > The dtype values `int8/16` and `uint16/32/64` are not negotiated. A peer from an earlier release fails with a decode error naming the unknown dtype when it meets an environment that uses them: a clean refusal at the decoding peer, not a conversion. A per-leg dtype ceiling that refuses on the sending side instead is on the roadmap below.
 
 > [!WARNING]
-> RLMesh 0.2 speaks `rlmesh-realtime-v1` over session addresses only. The 0.1 gRPC protocol requires a 0.1 runner. Prerelease and local builds carry exact cohort suffixes so incompatible moving builds fail clearly.
+> RLMesh 0.2 speaks `rlmesh-realtime-v1` over session addresses only. The 0.1 gRPC protocol requires a 0.1 runner. Two 0.2 builds on different session wire revisions refuse each other by name.
 
 ## Native APIs: Rust, C and C++
 
@@ -61,9 +61,9 @@ The `rlmesh` Rust facade crate, the C API (`rlmesh.h`) and the C++ header (`rlme
 
   What such a runner should know:
 
-  - Connect an env with `LockstepEnv::connect(address, options, declared_edition)`: it makes the checks `Model.run` makes before driving one (an autoreset mode and spaces the driver represents, a workflow edition the env and the runner share) and returns what the driver's session spec needs. `LockstepEnv::new` over a bare `lockstep::connect` skips them.
+  - Connect an env with `LockstepEnv::connect(address, options)`: it makes the checks `Model.run` makes before driving one (an autoreset mode and spaces the driver represents, a declared workflow edition this build knows) and returns what the driver's session spec needs. `LockstepEnv::new` over a bare `lockstep::connect` skips them.
   - The driver takes its model by value. Set `close_model_on_end` in the session spec for a model the run alone owns, so the driver closes it when the run ends (a served model then leaves its host, where a dropped one is logged as lost); leave it unset for a model other runs share.
-  - Whether a failed call can succeed when retried is `rlmesh::ext::ErrorExt::is_transient` (and `GymError::is_transient` on the lockstep layer): a host not listening yet, a robot not joined yet, a deadline or a peer's recoverable failure is transient; a key the host refuses, an edition the env does not run or a malformed address is final. A robot name the session never sees reads as one not joined yet, since the session cannot tell them apart. `Error::is_recoverable` answers a different question, whether the session stays usable after the failure. A `ModelHandler` signals a failure worth retrying with `Error::model_recoverable`. In Python the class says the same: a refused key raises `ProtocolException`, not the `ConnectionError` a launcher retries until the host listens.
+  - Whether a failed call can succeed when retried is `rlmesh::ext::ErrorExt::is_transient` (and `GymError::is_transient` on the lockstep layer): a host not listening yet, a robot not joined yet, a deadline or a peer's recoverable failure is transient; a key the host refuses, an edition this build does not know or a malformed address is final. A robot name the session never sees reads as one not joined yet, since the session cannot tell them apart. `Error::is_recoverable` answers a different question, whether the session stays usable after the failure. A `ModelHandler` signals a failure worth retrying with `Error::model_recoverable`. In Python the class says the same: a refused key raises `ProtocolException`, not the `ConnectionError` a launcher retries until the host listens.
   - The 0.2 driver sends the groups waiting for a prediction to the model as one `predict_grouped` call, whether or not the model fuses them, and applies the results when that call returns. A `ModelHandler` takes `&mut self` and is called one call at a time, so one predict per group would only queue behind it. The 0.1 driver instead kept one predict per group in flight and applied each as it landed, so with a lane-served env and a model that does not fuse, a lane no longer gets its action before the slowest group of its call. A handler that can serve groups concurrently (one in front of a pool) does so inside `predict_grouped`, and reports how many lanes rode its forward with `ModelHandler::take_group_size`, which the `group.size` metric records.
 
 - **C API (`rlmesh.h`): Experimental.** Binary compatibility is tracked by the ABI generation, currently 6: `RLMESH_ABI_VERSION`, the `librlmesh_capi.so.6` SONAME and the CMake package version. 0.2 does not ship the C ABI; generation 6 grew after it was cut without a bump, so the first release that ships it publishes that surface as ABI 7. A layout or enum change, a signature retype or a removed symbol bumps the generation, which may happen in any minor release; binaries and sources built for another generation do not load or build against it. Within a generation, a sized struct (options, vtables, attributes, out-structs) grows only by appending optional fields whose all-zero bytes mean the default, so a caller compiled against an older header keeps working; a field that must be supplied needs a new generation. A struct below its `RLMESH_<NAME>_MIN_SIZE` is refused, and a newer caller's nonzero bytes past the library's struct size are refused rather than ignored. C-only extras are fenced under `rlmesh_ext_` / `RLMeshExt` names.
@@ -98,29 +98,17 @@ The floor harness runs via `mise run test:python:floors`, which builds a `cp310`
 
 ## Workflow Editions
 
-Workflow semantics are governed by a negotiated workflow edition. Each base edition names a behavioral contract documented in [workflow editions](editions/index.md); prerelease and local builds append exact cohort suffixes. Editions change only on deliberate semantic redesigns; new features and new APIs do not mint editions. The `2026.06` edition sealed at 0.1.0.
-
-An edition is a sticky declaration in a participant's source, not a version: it records the contract an env or model was authored against, and upgrading the rlmesh package never moves it. How to declare one, and which surface wins when several are set, is in [workflow editions](editions/index.md).
+A workflow edition is a named row of behavioural defaults, declared once in a participant's source and never negotiated. Upgrading the rlmesh package never moves it. How to declare one is in [workflow editions](editions/index.md); how editions relate to the package version, the protocol generation and the wire revision is in [versioning](versioning.md).
 
 ### What you can rely on
 
 RLMesh is pre-1.0, so the promises are in three tiers, from strongest to weakest:
 
-1. **A frozen environment image reproduces its results.** The environment never changes inside its container, whatever RLMesh release drives it later, as long as that release still speaks the image's protocol.
-2. **An edition locks default behaviour within a release line.** A participant authored against a sealed edition keeps running at that edition with any later release of the same line (for example, every 0.2.x), as long as the other side does not require something the older one cannot express. The session runs at the older participant's declared edition; a genuinely new type the old side never knew is a clean refusal, not a silent conversion. Keeping an edition across every future release is the goal for 1.0, not a promise yet.
-3. **Before 1.0, the wire can change between minor versions.** A minor release may replace the protocol, as 0.2 replaced the 0.1 gRPC wire with real-time sessions, and may stop offering an older edition. Upgrading `rlmesh` never forces your simulator or model framework to move with it: they stay in their own images. Components must use compatible protocol versions; interoperation between 0.1 and 0.2 is not implemented.
+1. **A frozen environment image reproduces its results.** The environment never changes inside its container, whatever RLMesh release drives it later, as long as that release speaks the image's wire revision.
+2. **Builds of one minor interoperate.** Every 0.2.x build talks to every 0.2.x build, and prereleases interoperate whenever their wire revisions match. A runtime that does not know an image's declared edition refuses it by name before any episode starts.
+3. **Before 1.0, the wire can change between minor versions.** A minor release may replace the protocol, as 0.2 replaced the 0.1 gRPC wire with real-time sessions, and may drop an older edition. Upgrading `rlmesh` never forces your simulator or model framework to move with it: they stay in their own images. Interoperation between 0.1 and 0.2 is not implemented.
 
-### How the session edition is chosen
-
-A served model publishes its declared and supported workflow editions on
-Attach and in the roster; the env publishes its offer in env info. The driver
-chooses the highest edition env, model and runtime can all run, bounded by their
-declarations, and pins the model's ModelResolve. The current 0.2 line offers
-only 2026.10, so no separate env pin is needed. See [workflow editions](editions/index.md).
-
-### What is part of the contract
-
-- **Sealed editions are retained within a release line.** Every later release of the line keeps offering a sealed edition; only a new line (each 0.x minor, before 1.0) may drop one, by name and with its reason in `[workflow.dropped_editions]`. `rlmesh.toml` lists the retained editions, the `rlmesh-proto` crate ships a copy of that list, and every build generates its offer from it at build time. `mise run policy:check` fails if the generated list and the manifest disagree, if a sealed edition leaves the list, or if the list lost an edition the last release tag's manifest had sealed.
+From 1.0, any 1.x runtime runs any image built on 1.0 or later, with every edition retained.
 
 ### Across 0.1 and 0.2
 
@@ -146,10 +134,6 @@ driver messages remain protobuf data types for now; they are not served remotely
 protocol for the 0.2 line: every 0.2.x release speaks it unchanged. A later
 minor may still change it before 1.0. The published 0.1 crates continue to
 support the 0.1 wire independently.
-
-Open: whether 0.2 keeps offering the `2026.06` edition, and how editions
-(lockable behaviour) and wire versions (rewrites) relate long term. 0.2 drops
-`2026.06` today; that decision is not final.
 Native Rust APIs remain Preview; C, C++ and C# remain Experimental. The fenced
 C ABI is not released in 0.2 and will ship as ABI 7 in a later release.
 

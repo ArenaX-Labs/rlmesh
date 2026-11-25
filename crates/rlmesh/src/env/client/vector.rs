@@ -11,7 +11,6 @@ use crate::{EnvContract, Error, InfoDict, Metadata, Result, Value, VectorSeed};
 pub struct RemoteVectorEnv {
     core: Option<Box<EnvClientCore>>,
     shared: Shared,
-    lent_edition: String,
     cancel: crate::ext::CancelToken,
 }
 
@@ -59,7 +58,6 @@ impl RemoteVectorEnv {
         core.set_name("RemoteVectorEnv");
         Ok(RemoteVectorEnv {
             shared: Shared::of(&core)?,
-            lent_edition: String::new(),
             core: Some(Box::new(core)),
             cancel: crate::ext::CancelToken::new(),
         })

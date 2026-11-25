@@ -17,11 +17,11 @@ support is claimed.
 
 ## Prepare
 
-Obtain the separately built `com.rlmesh.rlmesh` UPM package for the same revision
-and release cohort. Its D-40 layout must contain `Runtime/RLMesh.dll` and
+Obtain the separately built `com.rlmesh.rlmesh` UPM package for the same revision,
+built as a release build. Its D-40 layout must contain `Runtime/RLMesh.dll` and
 `Runtime/Plugins/x86_64/linux/librlmesh_capi.so`, with their importers. Do not use
-a NuGet package or a dev-cohort native library with a release-cohort Python
-wheel. Install the repo's pinned tools; preparation uses pinned Zig 0.13.0.
+a NuGet package, or a native library and a Python wheel on different session
+wire revisions. Install the repo's pinned tools; preparation uses pinned Zig 0.13.0.
 
 From the repository root:
 
@@ -113,7 +113,7 @@ IL2CPP, .NET Standard compatibility and high managed stripping, then builds
 `StandaloneLinux64`. Verify the build log says IL2CPP, and the output contains
 the core native plugin and the player's IL2CPP data, rather than a Mono build.
 
-Use the matching Python release wheel, or build a release-cohort non-editable
+Use the matching Python release wheel, or build a release non-editable
 test environment from this revision:
 
 ```sh

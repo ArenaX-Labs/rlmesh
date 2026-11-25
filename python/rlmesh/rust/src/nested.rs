@@ -47,7 +47,6 @@ impl Inner {
             let options = ResolveOptions {
                 execution_horizon: 1,
                 delivers_history: false,
-                workflow_edition: None,
             };
             setup.resolve_adapter(&env_id, contract, options).await?;
             self.resolved().insert(env_id);

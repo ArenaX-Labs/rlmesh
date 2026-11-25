@@ -21,7 +21,6 @@ def _capture_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         vectorization_mode: str | None = None,
         framework: object = None,
         device: object = None,
-        workflow_edition: str | None = None,
         **binding: object,
     ) -> None:
         captured["env"] = env
@@ -30,7 +29,6 @@ def _capture_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         captured["vectorization_mode"] = vectorization_mode
         captured["framework"] = framework
         captured["device"] = device
-        captured["workflow_edition"] = workflow_edition
         captured["binding"] = binding
 
     monkeypatch.setattr(serve, "serve_env", fake_serve_env)
@@ -84,11 +82,9 @@ def test_model_binding_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
         *,
         name: str,
         binding: object = None,
-        workflow_edition: str | None = None,
         batching: object = None,
     ) -> None:
         captured["binding"] = binding
-        captured["workflow_edition"] = workflow_edition
 
     monkeypatch.setattr(serve, "serve_model", fake_serve_model)
     code = serve.main(["pkg:Model", "--kwargs-json", '{"checkpoint": "x"}'])

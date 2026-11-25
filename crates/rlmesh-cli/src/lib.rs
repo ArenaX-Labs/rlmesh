@@ -309,12 +309,6 @@ fn version(stdout: &mut impl Write, style: Style) -> Result<()> {
     write_key_value(
         stdout,
         style,
-        "Editions",
-        &rlmesh_proto::supported_workflow_editions().join(", "),
-    )?;
-    write_key_value(
-        stdout,
-        style,
         "Session wire",
         &info.session_wire_revision.to_string(),
     )?;
@@ -398,7 +392,6 @@ mod tests {
         assert!(stderr.is_empty());
         assert!(stdout.contains(env!("CARGO_PKG_VERSION")));
         assert!(stdout.contains(rlmesh_proto::CURRENT_WORKFLOW_EDITION));
-        assert!(stdout.contains(&rlmesh_proto::supported_workflow_editions().join(", ")));
         assert!(stdout.contains("Distribution"));
         let info = rlmesh::build_info();
         assert!(

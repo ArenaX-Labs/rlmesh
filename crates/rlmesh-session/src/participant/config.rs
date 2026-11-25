@@ -44,8 +44,6 @@ pub struct ParticipantConfig {
     pub requires: Vec<String>,
     /// The workflow edition it declares (empty: none).
     pub workflow_edition: String,
-    /// Every workflow edition it runs.
-    pub workflow_editions: Vec<String>,
     /// An embodiment's e-stop latch carried from its previous session
     /// ([`Participant::local_estop`]): it attaches latched, and the session
     /// starts in ESTOP.
@@ -87,7 +85,6 @@ impl ParticipantConfig {
             supports,
             requires: Vec::new(),
             workflow_edition: String::new(),
-            workflow_editions: Vec::new(),
             estop: None,
             latch: None,
             credential: None,

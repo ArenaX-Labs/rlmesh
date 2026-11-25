@@ -148,7 +148,7 @@ impl<H: ModelHandler + 'static> Joins<H> {
                 vec![Role::Controller],
                 PriorityClass::Model,
                 self.timeout,
-                self.service.editions.clone(),
+                self.service.workflow_edition.clone(),
             )
             .await;
         let participant = match joined {

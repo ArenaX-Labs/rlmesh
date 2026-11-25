@@ -614,15 +614,26 @@ impl<const RETIRED: bool> EnvFactory for Declaring<RETIRED> {
     }
 }
 
-#[allow(unsafe_code)]
 fn undeclared_process(body: impl FnOnce()) {
+    edition_process(None, body);
+}
+
+#[allow(unsafe_code)]
+fn edition_process(edition: Option<&str>, body: impl FnOnce()) {
     let _lock = crate::warnings::tests::HANDLER_LOCK
         .lock()
         .unwrap_or_else(|err| err.into_inner());
     let previous = std::env::var(crate::editions::WORKFLOW_EDITION_ENV_VAR).ok();
     // SAFETY: serialized by HANDLER_LOCK; no other test thread reads it.
-    unsafe { std::env::remove_var(crate::editions::WORKFLOW_EDITION_ENV_VAR) };
+    unsafe {
+        match edition {
+            Some(edition) => std::env::set_var(crate::editions::WORKFLOW_EDITION_ENV_VAR, edition),
+            None => std::env::remove_var(crate::editions::WORKFLOW_EDITION_ENV_VAR),
+        }
+    };
     body();
+    // SAFETY: as above.
+    unsafe { std::env::remove_var(crate::editions::WORKFLOW_EDITION_ENV_VAR) };
     if let Some(previous) = previous {
         unsafe { std::env::set_var(crate::editions::WORKFLOW_EDITION_ENV_VAR, previous) };
     }
@@ -631,15 +642,15 @@ fn undeclared_process(body: impl FnOnce()) {
 fn assert_retired_refusal(error: &Error) {
     assert_eq!(error.class(), ErrorClass::ValueError, "{error}");
     assert!(
-        error.to_string().starts_with(
-            "runtime cannot drive workflow edition \"2026.06\"; this build implements"
-        ),
+        error
+            .to_string()
+            .starts_with("workflow edition \"2026.06\" is unknown to this rlmesh build"),
         "{error}"
     );
 }
 
 #[test]
-fn a_local_run_refuses_a_factory_declaring_an_edition_this_build_cannot_drive() {
+fn a_local_run_refuses_a_factory_declaring_an_edition_this_build_does_not_know() {
     undeclared_process(|| {
         let model = ones();
         let mut factory = Declaring::<true>::new();
@@ -691,17 +702,11 @@ fn a_local_run_drives_a_factory_declaring_this_builds_edition() {
 }
 
 #[test]
-fn the_call_edition_outranks_a_local_factory_declaration() {
-    undeclared_process(|| {
+fn the_environment_variable_outranks_a_local_factory_declaration() {
+    edition_process(Some(crate::current_workflow_edition()), || {
         let mut factory = Declaring::<true>::new();
         let result = ones()
-            .run(
-                EnvTarget::factory(&mut factory),
-                RunOptions {
-                    workflow_edition: Some(crate::current_workflow_edition().to_string()),
-                    ..Default::default()
-                },
-            )
+            .run(EnvTarget::factory(&mut factory), RunOptions::default())
             .unwrap();
         assert_eq!(result.num_episodes(), 1);
     });

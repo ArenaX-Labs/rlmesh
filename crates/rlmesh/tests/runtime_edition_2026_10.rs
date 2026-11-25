@@ -230,11 +230,11 @@ async fn refusal_prefix(spec: RuntimeSessionSpec) -> Value {
     )
 }
 
-fn unparsed_edition_refusal_prefix(edition: &str) -> Value {
-    let message = rlmesh_proto::parse_retained_edition(edition)
-        .expect_err("the runtime refuses an edition outside the retained list");
+fn unknown_edition_refusal_prefix(edition: &str) -> Value {
+    let unknown = rlmesh_proto::Edition::parse(edition)
+        .expect_err("the runtime refuses an edition this build does not know");
     json!(
-        RuntimeError::InvalidSpec(message)
+        unknown
             .to_string()
             .chars()
             .take(REFUSAL_PREFIX_CHARS)
@@ -812,7 +812,7 @@ async fn scenario_10_refusal_set() {
         "same_step_autoreset": refusal_prefix(same_step).await,
         "unknown_autoreset_mode": refusal_prefix(unknown_autoreset).await,
         "lockstep_vector_without_next_step": refusal_prefix(lockstep_vector).await,
-        "edition_outside_the_retained_list": unparsed_edition_refusal_prefix("2020.01"),
+        "unknown_edition": unknown_edition_refusal_prefix("2020.01"),
     });
     assert_frozen("10-refusal-set", &record);
 }

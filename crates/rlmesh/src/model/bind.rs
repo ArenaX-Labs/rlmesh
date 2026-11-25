@@ -54,6 +54,7 @@ pub struct Binding {
     env_id: String,
     history: bool,
     episode: Option<Episode>,
+    workflow_edition: rlmesh_proto::Edition,
 }
 
 impl Binding {
@@ -65,7 +66,6 @@ impl Binding {
         address: &str,
         invite_at: Option<&str>,
         execution_horizon: u32,
-        workflow_edition: Option<&str>,
     ) -> Result<Self> {
         let address = &crate::address::env_address(address);
         if let Some(why) = crate::address::bare_port(address) {
@@ -81,12 +81,8 @@ impl Binding {
                  env object itself"
             )));
         }
-        let connected = LockstepEnv::connect(
-            address,
-            crate::lockstep::ConnectOptions::default(),
-            workflow_edition,
-        )
-        .await?;
+        let connected =
+            LockstepEnv::connect(address, crate::lockstep::ConnectOptions::default()).await?;
         if connected.num_envs != 1 {
             return Err(Error::invalid_argument(format!(
                 "Model.bind drives one env lane and this env serves {}: run it with \
@@ -98,9 +94,7 @@ impl Binding {
         if let Some(session) = invite_at.or(connected.session.as_deref()) {
             handler.join(session).await?;
         }
-        let workflow_edition = connected
-            .workflow_edition(handler.as_mut(), workflow_edition)
-            .await?;
+        let workflow_edition = connected.workflow_edition(handler.as_mut()).await?;
         let env_id = crate::mint_id();
         let setup = handler.route_setup();
         let mut history = false;
@@ -112,7 +106,6 @@ impl Binding {
                     ResolveOptions {
                         execution_horizon,
                         delivers_history: true,
-                        workflow_edition: Some(workflow_edition),
                     },
                 )
                 .await?;
@@ -127,7 +120,13 @@ impl Binding {
             env_id,
             history,
             episode: None,
+            workflow_edition,
         })
+    }
+
+    /// The workflow edition the binding runs at: the env's declared edition.
+    pub fn workflow_edition(&self) -> rlmesh_proto::Edition {
+        self.workflow_edition
     }
 
     /// The env's contract.

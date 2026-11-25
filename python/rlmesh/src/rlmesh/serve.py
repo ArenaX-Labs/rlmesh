@@ -396,17 +396,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
-        "--workflow-edition",
-        default=None,
-        help=(
-            "Workflow edition this served peer declares -- the semantics it was "
-            "authored against, kept until you bump it. Defaults to "
-            "RLMESH_WORKFLOW_EDITION, then the entrypoint class's "
-            "workflow_edition, then [tool.rlmesh] workflow_edition. Paste what "
-            "rlmesh.current_workflow_edition() reports."
-        ),
-    )
-    parser.add_argument(
         "--kwargs-json",
         type=_json_object,
         help=(
@@ -467,13 +456,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "vectorization_mode",
                 "framework",
                 "device",
-                "workflow_edition",
             } & binding.keys()
             if control_collisions:
                 parser.error(
                     f"{', '.join(sorted(control_collisions))} control serving, not "
                     "env construction; set RLMESH_NUM_ENVS / RLMESH_VECTORIZATION_MODE "
-                    "/ --framework / --device / --workflow-edition instead of passing "
+                    "/ --framework / --device instead of passing "
                     "them in RLMESH_MAKE_KWARGS / --kwargs-json"
                 )
             env = resolve_entrypoint(args.env, label="env entrypoint")
@@ -486,7 +474,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 vectorization_mode=vectorization_mode,
                 framework=args.framework,
                 device=args.device,
-                workflow_edition=args.workflow_edition,
                 **binding,
             )
         else:
@@ -497,7 +484,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.address or _ADDRESS,
                 name=args.name or "model",
                 binding=binding,
-                workflow_edition=args.workflow_edition,
                 batching=batching,
             )
     except _NoHostIdentityError as exc:
@@ -535,7 +521,6 @@ def serve_model(
     *,
     name: str = "model",
     binding: dict[str, Any] | None = None,
-    workflow_edition: str | None = None,
     batching: BatchOptions | None = None,
 ) -> None:
     """Serve a model in the session at ``address`` as ``name`` (blocking).
@@ -559,9 +544,7 @@ def serve_model(
     _mark("model")
     _warn_without_spec(model)
     options = serve_options_declaring(
-        option=workflow_edition,
         declared=model._class_workflow_edition(),  # pyright: ignore[reportPrivateUsage]
-        origin=model._edition_origin(),  # pyright: ignore[reportPrivateUsage]
     )
     _stamp_startup("model", model, options=options)
     with _serving_line():
@@ -611,7 +594,6 @@ def serve_env(
     vectorization_mode: str | None = None,
     framework: str | None = None,
     device: object | None = None,
-    workflow_edition: str | None = None,
     **make_kwargs: object,
 ) -> None:
     """Serve an environment at the participant address ``address`` (blocking).
@@ -627,10 +609,10 @@ def serve_env(
     seam; for an :class:`EnvFactory` it defaults to the factory's pinned framework
     (``rlmesh.torch.EnvFactory`` etc.), so a classless make-callable / gym-id /
     hf source is the only case that needs it passed explicitly. ``device`` places
-    the incoming action (torch/jax only). ``workflow_edition`` declares the
-    semantics this endpoint was authored against, above the source's own
-    :attr:`EnvFactory.workflow_edition <rlmesh.EnvFactory.workflow_edition>` and
-    below ``RLMESH_WORKFLOW_EDITION``. Heavy imports stay inside this call so
+    the incoming action (torch/jax only). The endpoint runs at
+    ``RLMESH_WORKFLOW_EDITION``, else the source's
+    :attr:`EnvFactory.workflow_edition <rlmesh.EnvFactory.workflow_edition>`,
+    else the current edition. Heavy imports stay inside this call so
     importing the authoring base stays cheap. A one-line serving status is
     printed once the env answers, with the address a peer dials.
     """
@@ -685,10 +667,9 @@ def serve_env(
             env = make_env(**make_kwargs)
     from ._editions import serve_options_declaring
 
+    declared = getattr(env_source, "workflow_edition", None)
     options = serve_options_declaring(
-        option=workflow_edition,
-        declared=getattr(env_source, "workflow_edition", None),
-        origin=env_source,
+        declared=declared if isinstance(declared, str) else None
     )
     server = EnvServer(
         env,

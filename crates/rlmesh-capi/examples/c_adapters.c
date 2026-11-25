@@ -502,7 +502,6 @@ int main(void) {
         rlmesh_model_spec_equals(spec, attached.spec));
   RLMeshRunResult* result = NULL;
   RLMeshRunOptions run = RLMESH_RUN_OPTIONS_INIT;
-  run.workflow_edition = rlmesh_current_workflow_edition();
   run.close_env = false;
   CHECK(rlmesh_model_run(model, rlmesh_env_target(env), &run, &result) == RLMESH_OK);
   rlmesh_run_result_free(result);

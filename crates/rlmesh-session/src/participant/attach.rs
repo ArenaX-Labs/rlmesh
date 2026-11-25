@@ -465,7 +465,6 @@ impl Participant {
                 supports: config.supports.clone(),
                 requires: config.requires.clone(),
                 workflow_edition: config.workflow_edition.clone(),
-                workflow_editions: config.workflow_editions.clone(),
                 estop: config.estop.clone().or_else(|| shared.estop.reason()),
             })
             .await?;
