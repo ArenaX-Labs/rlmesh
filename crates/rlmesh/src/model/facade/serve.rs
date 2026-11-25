@@ -56,10 +56,8 @@ pub(super) fn serve_blocking(
                  rlmesh 0.2 for a session address)",
             ));
         }
-        let edition = crate::editions::resolve_served(
-            serve.workflow_edition.as_deref(),
-            shared.decl.workflow_edition.as_deref(),
-        )?;
+        let edition =
+            crate::editions::resolve_workflow_edition(shared.decl.workflow_edition.as_deref())?;
         let join = serve.close_timeout.unwrap_or(SESSION_JOIN);
         let batching = batching.unwrap_or_default();
         serve_session(shared, address, edition, batching, join, foreground, tokens)
@@ -81,7 +79,6 @@ fn serve_session(
     let describe = crate::describe::describe_json(
         crate::describe::Describable::built(shared),
         crate::describe::DescribeJsonOptions {
-            workflow_edition: Some(edition.clone()),
             ..Default::default()
         },
     )?;

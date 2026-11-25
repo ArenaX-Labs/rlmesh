@@ -551,9 +551,9 @@ struct RLMeshBytes; /* defined below */
 RLMESH_API RLMeshStatus rlmesh_build_info_repr(struct RLMeshBytes* out);
 
 /* The bare YYYY.MM workflow edition this build runs at (static): the value to
- * declare. A served model or env runs at its declaration
- * (RLMeshServeOptions.workflow_edition, then the vtable's or factory attributes'
- * workflow_edition), else this edition. An edition this build does not know is
+ * declare. A served model or factory env runs at its declaration (the vtable's or
+ * factory attributes' workflow_edition), else this edition; a plain env declares
+ * nothing. An edition this build does not know is
  * ERR_VALUE. */
 RLMESH_API const char* rlmesh_current_workflow_edition(void);
 
@@ -2674,9 +2674,8 @@ typedef struct RLMeshServeOptions {
   bool has_close_timeout_seconds;
   uint8_t _reserved[7];
   double close_timeout_seconds;
-  const char* workflow_edition;
 } RLMeshServeOptions;
-#define RLMESH_SERVE_OPTIONS_INIT {sizeof(RLMeshServeOptions), false, {0}, 0.0, NULL}
+#define RLMESH_SERVE_OPTIONS_INIT {sizeof(RLMeshServeOptions), false, {0}, 0.0}
 #define RLMESH_SERVE_OPTIONS_MIN_SIZE sizeof(RLMeshServeOptions)
 
 typedef struct RLMeshExtEnvServerOptions {
@@ -3192,21 +3191,20 @@ typedef struct RLMeshDescribeJsonOptions {
   const RLMeshEnv* const* served_env;
   size_t served_env_len;
   const RLMeshVectorEnv* served_vector_env;
-  const char* workflow_edition;
   RLMeshDescribeKind kind;
   bool has_kind;
   uint8_t _reserved[3];
 } RLMeshDescribeJsonOptions;
 #define RLMESH_DESCRIBE_JSON_OPTIONS_MIN_SIZE sizeof(RLMeshDescribeJsonOptions)
-#define RLMESH_DESCRIBE_JSON_OPTIONS_INIT                             \
-  {sizeof(RLMeshDescribeJsonOptions), NULL,  NULL,     0, NULL, NULL, \
+#define RLMESH_DESCRIBE_JSON_OPTIONS_INIT                       \
+  {sizeof(RLMeshDescribeJsonOptions), NULL,  NULL,     0, NULL, \
    RLMESH_DESCRIBE_KIND_INVALID,      false, {0, 0, 0}}
 /* NULL options means INIT. Type forms call no vtable slot. Instance forms
  * use the facade's static declarations and model spec/representative factory
  * builds. The Value result is an owned Dict, JSON is owned RLMeshBytes.
  * served_env NULL/0 = None; non-NULL/0 is an invalid empty list. At most one
  * served form may be set. It replaces the default build and is never closed.
- * workflow_edition NULL or blank resolves the type's declaration. */
+ * The edition is the type's declaration, else the build's current one. */
 RLMESH_API RLMeshStatus rlmesh_model_vtable_describe(const RLMeshModelVtable* vtable,
                                                      const RLMeshDescribeOptions* options,
                                                      RLMeshValue** out);

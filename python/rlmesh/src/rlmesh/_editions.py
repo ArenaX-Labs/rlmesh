@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 from typing import TYPE_CHECKING
 
 from ._load_native import load_native
 
 if TYPE_CHECKING:
-    from rlmesh._rlmesh import ServeOptions
+    from collections.abc import Iterator
 
 __all__ = [
     "WorkflowEditionWarning",
@@ -55,22 +57,21 @@ def resolve_workflow_edition(declared: str | None = None) -> str:
     return str(load_native("resolve_workflow_edition")(declared))
 
 
-def serve_options_declaring(
-    options: ServeOptions | None = None, *, declared: str | None = None
-) -> ServeOptions:
-    """Return ``options`` carrying the edition the served participant runs at.
+_declared: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "rlmesh_declared_workflow_edition", default=None
+)
 
-    ``options``' own ``workflow_edition``, else ``declared``, else the current
-    edition.
-    """
-    own = options.workflow_edition if options is not None else None
-    resolved = resolve_workflow_edition(own or declared)
-    if options is not None and resolved == options.workflow_edition:
-        return options
-    native: type[ServeOptions] = load_native("ServeOptions")
-    if options is None:
-        return native(workflow_edition=resolved)
-    return native(
-        close_timeout_seconds=options.close_timeout_seconds,
-        workflow_edition=resolved,
-    )
+
+@contextlib.contextmanager
+def declaring(declared: object) -> Iterator[None]:
+    """Make ``declared`` the edition an :class:`~rlmesh.EnvServer` built inside declares."""
+    token = _declared.set(declared if isinstance(declared, str) else None)
+    try:
+        yield
+    finally:
+        _declared.reset(token)
+
+
+def declared_edition() -> str | None:
+    """The edition the innermost :func:`declaring` names, if any."""
+    return _declared.get()

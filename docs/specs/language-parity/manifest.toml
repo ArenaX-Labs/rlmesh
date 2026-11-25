@@ -5251,12 +5251,12 @@ params = {}
 ["rlmesh:ServeOptions"]
 area = "env"
 rule = ["R-4"]
-parameters = { "close_timeout_seconds" = { "default" = "None" }, "workflow_edition" = { "default" = "None" } }
+parameters = { "close_timeout_seconds" = { "default" = "None" } }
 
 ["rlmesh:ServeOptions".rust]
 status = "present"
 path = "rlmesh::serve_options::ServeOptions"
-params = { "close_timeout_seconds" = "rlmesh::serve_options::ServeOptions#close_timeout", "workflow_edition" = "rlmesh::serve_options::ServeOptions#workflow_edition" }
+params = { "close_timeout_seconds" = "rlmesh::serve_options::ServeOptions#close_timeout" }
 also = [
   "rlmesh::ServeOptions",
   "rlmesh::serve_options::ServeOptions::Clone",
@@ -5268,7 +5268,7 @@ rule = ["R-3"]
 ["rlmesh:ServeOptions".c]
 status = "present"
 path = "RLMeshServeOptions"
-params = { "close_timeout_seconds" = "RLMeshServeOptions#close_timeout_seconds", "workflow_edition" = "RLMeshServeOptions#workflow_edition" }
+params = { "close_timeout_seconds" = "RLMeshServeOptions#close_timeout_seconds" }
 also = [
   "RLMESH_SERVE_OPTIONS_INIT",
   "RLMESH_SERVE_OPTIONS_MIN_SIZE",
@@ -5281,13 +5281,8 @@ rule = ["R-3"]
 ["rlmesh:ServeOptions".cpp]
 status = "present"
 path = "rlmesh::ServeOptions"
-params = { "close_timeout_seconds" = "rlmesh::ServeOptions#close_timeout", "workflow_edition" = "rlmesh::ServeOptions#workflow_edition" }
-also = [
-  "rlmesh::Duration",
-  "rlmesh::ServeOptions::raw",
-  "rlmesh::ServeOptions::with_close_timeout",
-  "rlmesh::ServeOptions::with_workflow_edition",
-]
+params = { "close_timeout_seconds" = "rlmesh::ServeOptions#close_timeout" }
+also = ["rlmesh::Duration", "rlmesh::ServeOptions::raw", "rlmesh::ServeOptions::with_close_timeout"]
 rule = ["R-3"]
 
 also_rules = { "rlmesh::ServeOptions::raw" = ["R-11"] }
@@ -7231,12 +7226,12 @@ also_rules = { "rlmesh::DescribeOptions::raw" = ["R-11"] }
 ["rlmesh:describe_json"]
 area = "core"
 rule = ["R-4"]
-parameters = { "obj" = {}, "kind" = { "default" = "None" }, "generated_at" = { "default" = "None" }, "served_env" = { "default" = "None" }, "workflow_edition" = { "default" = "None" } }
+parameters = { "obj" = {}, "kind" = { "default" = "None" }, "generated_at" = { "default" = "None" }, "served_env" = { "default" = "None" } }
 
 ["rlmesh:describe_json".rust]
 status = "present"
 path = "rlmesh::describe_json"
-params = { "obj" = "rlmesh::describe_json#obj", "kind" = "rlmesh::DescribeJsonOptions#kind", "generated_at" = "rlmesh::DescribeJsonOptions#generated_at", "served_env" = "rlmesh::DescribeJsonOptions#served_env", "workflow_edition" = "rlmesh::DescribeJsonOptions#workflow_edition" }
+params = { "obj" = "rlmesh::describe_json#obj", "kind" = "rlmesh::DescribeJsonOptions#kind", "generated_at" = "rlmesh::DescribeJsonOptions#generated_at", "served_env" = "rlmesh::DescribeJsonOptions#served_env" }
 also = [
   "rlmesh::ServedEnv",
   "rlmesh::DescribeJsonOptions",
@@ -7245,7 +7240,6 @@ also = [
   "rlmesh::DescribeJsonOptions::generated_at",
   "rlmesh::DescribeJsonOptions::kind",
   "rlmesh::DescribeJsonOptions::served_env",
-  "rlmesh::DescribeJsonOptions::workflow_edition",
   "rlmesh::env::ServedEnv",
   "rlmesh::env::ServedEnv::Debug",
   "rlmesh::env::ServedEnv::From<&'a MadeEnv>",
@@ -7260,7 +7254,7 @@ rule = ["R-3"]
 ["rlmesh:describe_json".c]
 status = "present"
 path = "rlmesh_model_describe_json"
-params = { "obj" = "rlmesh_model_describe_json#model", "kind" = "RLMeshDescribeJsonOptions#kind", "generated_at" = "RLMeshDescribeJsonOptions#generated_at", "served_env" = "RLMeshDescribeJsonOptions#served_env", "workflow_edition" = "RLMeshDescribeJsonOptions#workflow_edition" }
+params = { "obj" = "rlmesh_model_describe_json#model", "kind" = "RLMeshDescribeJsonOptions#kind", "generated_at" = "RLMeshDescribeJsonOptions#generated_at", "served_env" = "RLMeshDescribeJsonOptions#served_env" }
 rule = ["COR-10", "R-3"]
 translations = { "obj" = ["COR-10"] }
 also = [
@@ -7275,7 +7269,6 @@ also = [
   "RLMeshDescribeJsonOptions::served_env_len",
   "RLMeshDescribeJsonOptions::served_vector_env",
   "RLMeshDescribeJsonOptions::struct_size",
-  "RLMeshDescribeJsonOptions::workflow_edition",
 ]
 
 also_rules = { "RLMeshDescribeJsonOptions::served_vector_env" = ["R-3"] }
@@ -7283,7 +7276,7 @@ also_rules = { "RLMeshDescribeJsonOptions::served_vector_env" = ["R-3"] }
 ["rlmesh:describe_json".cpp]
 status = "present"
 path = "rlmesh::describe_json"
-params = { "obj" = "rlmesh::describe_json#obj", "kind" = "rlmesh::DescribeJsonOptions#kind", "generated_at" = "rlmesh::DescribeJsonOptions#generated_at", "served_env" = "rlmesh::DescribeJsonOptions#served_env", "workflow_edition" = "rlmesh::DescribeJsonOptions#workflow_edition" }
+params = { "obj" = "rlmesh::describe_json#obj", "kind" = "rlmesh::DescribeJsonOptions#kind", "generated_at" = "rlmesh::DescribeJsonOptions#generated_at", "served_env" = "rlmesh::DescribeJsonOptions#served_env" }
 also = [
   "rlmesh::DescribeJsonOptions",
   "rlmesh::DescribeJsonOptions::generated_at",
@@ -7293,8 +7286,6 @@ also = [
   "rlmesh::DescribeJsonOptions::with_generated_at",
   "rlmesh::DescribeJsonOptions::with_kind",
   "rlmesh::DescribeJsonOptions::with_served_env",
-  "rlmesh::DescribeJsonOptions::with_workflow_edition",
-  "rlmesh::DescribeJsonOptions::workflow_edition",
   "rlmesh::ServedEnv",
   "rlmesh::ServedEnv::ServedEnv",
   "rlmesh::ServedEnv::lanes",

@@ -1516,7 +1516,7 @@ impl PyModel {
 
     /// Serves the model as the participant `name` in the session at
     /// `address`, until a signal or [`stop_serving`](Self::stop_serving).
-    #[pyo3(signature = (address, name, options=None, envelope=None, max_batch_size=None, batch_window_ms=None, batch_byte_budget=None, max_in_flight_batches=None, batch_records=None))]
+    #[pyo3(signature = (address, name, options=None, envelope=None, max_batch_size=None, batch_window_ms=None, batch_byte_budget=None, max_in_flight_batches=None, batch_records=None, workflow_edition=None))]
     #[allow(clippy::too_many_arguments)]
     fn serve(
         &self,
@@ -1530,7 +1530,11 @@ impl PyModel {
         batch_byte_budget: Option<usize>,
         max_in_flight_batches: Option<usize>,
         batch_records: Option<std::path::PathBuf>,
+        workflow_edition: Option<String>,
     ) -> PyResult<()> {
+        let workflow_edition =
+            rlmesh::binding::resolve_workflow_edition(workflow_edition.as_deref())
+                .map_err(to_py_err)?;
         let defaults = rlmesh::BatchOptions::default();
         let batching = rlmesh::BatchOptions {
             max_batch_size: max_batch_size.unwrap_or(defaults.max_batch_size),
@@ -1551,7 +1555,7 @@ impl PyModel {
             py,
             address,
             name,
-            options.workflow_edition.as_deref(),
+            Some(&workflow_edition),
             batching,
             close,
             envelope,
@@ -1584,7 +1588,7 @@ class PyModel:
     def stop_serving(self) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1, prefetch_lead: int = 0) -> dict[str, typing.Any]: ...
     def run_local_for_episodes(self, env_address: str, episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False, trial_index_base: int | None = None, prefetch_lead: int = 0, hooks: object | None = None, invite_at: str | None = None) -> dict[str, typing.Any]: ...
-    def serve(self, address: str, name: str, options: ServeOptions | None = None, envelope: str | None = None, max_batch_size: int | None = None, batch_window_ms: int | None = None, batch_byte_budget: int | None = None, max_in_flight_batches: int | None = None, batch_records: str | os.PathLike[str] | None = None) -> None: ...
+    def serve(self, address: str, name: str, options: ServeOptions | None = None, envelope: str | None = None, max_batch_size: int | None = None, batch_window_ms: int | None = None, batch_byte_budget: int | None = None, max_in_flight_batches: int | None = None, batch_records: str | os.PathLike[str] | None = None, workflow_edition: str | None = None) -> None: ...
 "#
     }
 }

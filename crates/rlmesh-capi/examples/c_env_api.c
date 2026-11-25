@@ -61,7 +61,6 @@ static void wait_error_outputs(const RLMeshEnvVtable* vtable, const RLMeshEnvAtt
   RLMeshEnv* env = NULL;
   CHECK(rlmesh_env_new(&vt, &state, attrs, &env) == RLMESH_OK);
   RLMeshServeOptions serve = RLMESH_SERVE_OPTIONS_INIT;
-  serve.workflow_edition = rlmesh_current_workflow_edition();
   RLMeshEnvServerOptions options = RLMESH_ENV_SERVER_OPTIONS_INIT;
   options.address = ":0/env";
   options.options = &serve;
@@ -118,7 +117,6 @@ int main(void) {
   vt.struct_size = saved;
   CHECK(rlmesh_env_new(&vt, &state, &attrs, &env) == RLMESH_OK);
   RLMeshServeOptions serve = RLMESH_SERVE_OPTIONS_INIT;
-  serve.workflow_edition = rlmesh_current_workflow_edition();
   RLMeshEnvServerOptions opts = RLMESH_ENV_SERVER_OPTIONS_INIT;
   opts.options = &serve;
   RLMeshEnvServer* server = NULL;

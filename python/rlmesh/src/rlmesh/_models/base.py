@@ -1604,6 +1604,7 @@ class ModelBase(Generic[ObsT, ActT]):
         (a vector env's local spaces are batched while tags describe one lane,
         so its check stays at the route resolve).
         """
+        from .._editions import declaring
         from .._load_native import load_native
         from .._server import EnvServer, VectorServerEnvLike, loopback
 
@@ -1623,15 +1624,13 @@ class ModelBase(Generic[ObsT, ActT]):
         token = loopback.set(True)
         try:
             address = f"{load_native('run_session')(self._served_address)}/env"
-            server = EnvServer(
-                cast("VectorServerEnvLike", env_obj),
-                address,
-                framework=getattr(env_obj, "_bridge", None),
-                options=load_native("ServeOptions")(workflow_edition=workflow_edition),
-                # The env is borrowed or built here; its close() is
-                # the caller's decision.
-                close_env_on_shutdown=False,
-            )
+            with declaring(workflow_edition):
+                server = EnvServer(
+                    cast("VectorServerEnvLike", env_obj),
+                    address,
+                    framework=getattr(env_obj, "_bridge", None),
+                    close_env_on_shutdown=False,
+                )
         finally:
             loopback.reset(token)
         server.start()
@@ -1717,16 +1716,11 @@ class ModelBase(Generic[ObsT, ActT]):
         private network.
 
         The model declares its workflow edition in the session's roster:
-        ``options``' ``workflow_edition``, else :attr:`workflow_edition`, else
-        the current edition.
+        :attr:`workflow_edition`, else the current edition.
         """
-        from .._editions import serve_options_declaring
-
         self._calls.check_open("serve()")
         self._require_device_support()
-        declared = serve_options_declaring(
-            options, declared=self._class_workflow_edition()
-        )
+        self._workflow_edition()
         if not name:
             from .._client._endpoint import redact_address
 
@@ -1747,20 +1741,19 @@ class ModelBase(Generic[ObsT, ActT]):
                 _handshake_describe,  # pyright: ignore[reportPrivateUsage]
             )
 
-            envelope = _handshake_describe(
-                self, "model", None, declared.workflow_edition or ""
-            )
+            envelope = _handshake_describe(self, "model", None)
             batch = batching if batching is not None else BatchOptions()
             worker.serve(
                 address,
                 name,
-                declared,
+                options,
                 envelope,
                 max_batch_size=batch.max_batch_size,
                 batch_window_ms=batch.batch_window_ms,
                 batch_byte_budget=batch.batch_byte_budget,
                 max_in_flight_batches=batch.max_in_flight_batches,
                 batch_records=batch.batch_records,
+                workflow_edition=self._class_workflow_edition(),
             )
         except BaseException:
             self._calls.deregister_serve(token)

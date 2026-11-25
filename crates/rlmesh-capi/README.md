@@ -427,7 +427,7 @@ static RLMeshStatus arm_step(void* self, const RLMeshValue* action, RLMeshValue*
 
 ## Workflow editions
 
-Every served env and model runs at a workflow edition, a row of behavioural defaults it keeps across upgrades and that nothing at deploy time changes: its declaration (the `workflow_edition` field of `RLMeshServeOptions`, the model vtable or the factory attributes), else the build's current edition. `rlmesh_current_workflow_edition()` returns the edition to declare. See the [documentation](https://rlmesh.dev/docs/).
+Every served env and model runs at a workflow edition, a row of behavioural defaults it keeps across upgrades and that nothing at deploy time changes: its declaration (the `workflow_edition` field of the model vtable or the factory attributes), else the build's current edition. `rlmesh_current_workflow_edition()` returns the edition to declare. See the [documentation](https://rlmesh.dev/docs/).
 
 ## C-only extras
 

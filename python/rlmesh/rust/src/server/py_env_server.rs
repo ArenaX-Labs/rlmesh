@@ -30,6 +30,7 @@ struct ServerResources {
     runtime: tokio::runtime::Runtime,
     listener: BoundListener,
     options: ServeOptions,
+    workflow_edition: String,
     close_env_on_shutdown: bool,
     announce: Option<rlmesh::binding::Announce>,
 }
@@ -62,7 +63,7 @@ impl PyVectorEnvServer {
     /// * `env` - Python gymnasium.vector.VectorEnv object
     /// * `address` - Optional bind address shortcut
     #[new]
-    #[pyo3(signature = (env, address=None, *, options=None, native_values=false, close_env_on_shutdown=true, announce=true))]
+    #[pyo3(signature = (env, address=None, *, options=None, native_values=false, close_env_on_shutdown=true, announce=true, workflow_edition=None))]
     fn new(
         env: Py<PyAny>,
         address: Option<&str>,
@@ -70,6 +71,7 @@ impl PyVectorEnvServer {
         native_values: bool,
         close_env_on_shutdown: bool,
         announce: bool,
+        workflow_edition: Option<String>,
     ) -> PyResult<Self> {
         Ok(Self {
             inner: construct_server(
@@ -78,6 +80,7 @@ impl PyVectorEnvServer {
                 options,
                 close_env_on_shutdown,
                 announce,
+                workflow_edition.as_deref(),
             )?,
         })
     }
@@ -130,9 +133,12 @@ fn construct_server(
     options: Option<PyServeOptions>,
     close_env_on_shutdown: bool,
     announce: bool,
+    declared: Option<&str>,
 ) -> PyResult<PyEnvServer> {
     crate::telemetry::init_tracing("env_server");
     let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
+    let workflow_edition =
+        rlmesh::binding::resolve_workflow_edition(declared).map_err(to_py_err)?;
     let shutdown = ShutdownTrigger::new();
     let id = NEXT_SERVER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     py_env.set_server_id(id);
@@ -171,6 +177,7 @@ fn construct_server(
             runtime,
             listener: BoundListener::Lockstep(Box::new(binding)),
             options,
+            workflow_edition,
             close_env_on_shutdown,
             announce: announce.then(|| rlmesh::binding::Announce::from_env(address)),
         }))),
@@ -188,7 +195,8 @@ impl PyEnvServer {
     ///   lanes of one endpoint (`num_envs = len(list)`)
     /// * `address` - Optional bind address shortcut
     #[new]
-    #[pyo3(signature = (env, address=None, *, options=None, native_values=false, close_env_on_shutdown=true, announce=true))]
+    #[pyo3(signature = (env, address=None, *, options=None, native_values=false, close_env_on_shutdown=true, announce=true, workflow_edition=None))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         env: Py<PyAny>,
@@ -197,6 +205,7 @@ impl PyEnvServer {
         native_values: bool,
         close_env_on_shutdown: bool,
         announce: bool,
+        workflow_edition: Option<String>,
     ) -> PyResult<Self> {
         let lanes: Vec<Py<PyAny>> = match env.bind(py).cast::<pyo3::types::PyList>() {
             Ok(list) => list.iter().map(|lane| lane.unbind()).collect(),
@@ -208,6 +217,7 @@ impl PyEnvServer {
             options,
             close_env_on_shutdown,
             announce,
+            workflow_edition.as_deref(),
         )
     }
 
@@ -486,6 +496,7 @@ fn run_server(
         runtime,
         listener,
         options,
+        workflow_edition,
         close_env_on_shutdown,
         announce,
     } = resources;
@@ -523,6 +534,7 @@ fn run_server(
                         lanes,
                         listener,
                         options,
+                        workflow_edition,
                         shutdown,
                         close_env_on_shutdown,
                         announce,
@@ -534,6 +546,7 @@ fn run_server(
                         WireEnvAdapter::new(*env),
                         listener,
                         options,
+                        workflow_edition,
                         shutdown,
                         close_env_on_shutdown,
                         announce,
@@ -567,6 +580,7 @@ async fn run_env_server<E>(
     env: E,
     listener: BoundListener,
     options: ServeOptions,
+    workflow_edition: String,
     shutdown: ShutdownTrigger,
     close_env_on_shutdown: bool,
     announce: Option<rlmesh::binding::Announce>,
@@ -576,7 +590,6 @@ where
 {
     let close_timeout = Some(options.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let env = Arc::new(env);
-    let workflow_edition = options.workflow_edition.clone();
     let serve_result = match listener {
         BoundListener::Lockstep(binding) => {
             let cancel = tokio_util::sync::CancellationToken::new();
@@ -591,7 +604,7 @@ where
                 .serve(
                     Arc::clone(&env) as _,
                     rlmesh::lockstep::ServeOptions {
-                        workflow_edition,
+                        workflow_edition: Some(workflow_edition),
                         record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),
                         announce,
                     },

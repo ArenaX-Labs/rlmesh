@@ -59,7 +59,6 @@ def describe_json(
     kind: str | None = None,
     generated_at: str | None = None,
     served_env: object | None = None,
-    workflow_edition: str | None = None,
 ) -> str:
     """Like :func:`describe`, but return the canonical JSON string verbatim.
 
@@ -67,10 +66,8 @@ def describe_json(
     ``json.loads`` round-trip) when baking into OCI metadata. ``served_env`` is
     an env already built from ``obj`` (the one a server hosts): its spaces are
     read directly instead of constructing a second representative env.
-    ``workflow_edition`` is the edition a server already resolved for the peer
-    it hosts, which the envelope's ``runtime.workflow_edition`` must match.
-    ``None`` or ``""`` (the default, for a class described on its own) resolves
-    the class's declaration, else the current edition; an edition this build does not know raises :class:`ValueError`.
+    ``runtime.workflow_edition`` is the class's declaration, else the current
+    edition; an edition this build does not know raises :class:`ValueError`.
     """
     entrypoint: str | None = None
     if isinstance(obj, str):
@@ -82,9 +79,7 @@ def describe_json(
     kind, _ = _kind_and_method(obj, kind)
     kind, _ = _kind_and_method(obj, kind)
     kind, method = _kind_and_method(declared, kind)
-    pieces = _gather(
-        declared, method, kind, entrypoint, served_env, workflow_edition, spec_of=obj
-    )
+    pieces = _gather(declared, method, kind, entrypoint, served_env, spec_of=obj)
     # default=repr keeps describe total; allow_nan=False matches the Rust codec's RFC 8259 strictness.
     return describe_envelope_normalize(
         kind, json.dumps(_finite(pieces), allow_nan=False, default=repr), generated_at
@@ -109,7 +104,6 @@ def _gather(
     kind: str,
     entrypoint: str | None,
     served_env: object | None = None,
-    workflow_edition: str | None = None,
     *,
     spec_of: object | None = None,
 ) -> dict[str, Any]:
@@ -117,7 +111,7 @@ def _gather(
     pieces: dict[str, Any] = {
         "target": _target(obj, entrypoint),
         "params": _describe_params(spec, target),
-        "runtime": {**_collect_peer_info(), **_wire_identity(obj, workflow_edition)},
+        "runtime": {**_collect_peer_info(), **_wire_identity(obj)},
     }
     variants = _variants(enumerate_fn, catalog_fn, spec, target)
     if variants:
@@ -448,20 +442,15 @@ def _collect_peer_info() -> Mapping[str, Any]:
     return collect_peer_info()
 
 
-def _wire_identity(obj: object, resolved: str | None = None) -> dict[str, Any]:
+def _wire_identity(obj: object) -> dict[str, Any]:
     """The wire generation, wire revision and workflow edition a peer serving ``obj`` runs at."""
-    from ._editions import resolve_workflow_edition, validate_workflow_edition
+    from ._editions import resolve_workflow_edition
     from ._load_native import load_native
 
     info = load_native("build_info")()
-    if resolved is not None and resolved.strip():
-        edition = validate_workflow_edition(resolved)
-    else:
-        source = obj if isinstance(obj, type) or inspect.isroutine(obj) else type(obj)
-        declared = getattr(source, "workflow_edition", None)
-        edition = resolve_workflow_edition(
-            declared if isinstance(declared, str) else None
-        )
+    source = obj if isinstance(obj, type) or inspect.isroutine(obj) else type(obj)
+    declared = getattr(source, "workflow_edition", None)
+    edition = resolve_workflow_edition(declared if isinstance(declared, str) else None)
     return {
         "protocol_generation": str(info.protocol_generation),
         "session_wire_revision": int(load_native("SESSION_WIRE_REVISION")),

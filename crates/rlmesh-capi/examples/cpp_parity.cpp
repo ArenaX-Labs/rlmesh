@@ -721,10 +721,7 @@ void factories_remote_describe() {
     return value;
   }();
   assert(to_string(v).find("Variant") != std::string::npos);
-  EnvServer server(
-      Counter{},
-      rlmesh::EnvServerOptions{}.with_address(":0/env").with_options(
-          ServeOptions{}.with_workflow_edition(std::string(current_workflow_edition()))));
+  EnvServer server(Counter{}, rlmesh::EnvServerOptions{}.with_address(":0/env"));
   server.start();
   {
     RemoteEnv remote(rlmesh::RemoteEnvOptions{}.with_address(server.address()));

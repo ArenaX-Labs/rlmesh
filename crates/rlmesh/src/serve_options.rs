@@ -7,9 +7,6 @@ use std::time::Duration;
 pub struct ServeOptions {
     /// Maximum time the env or model close hook may take (default 5 s).
     pub close_timeout: Option<Duration>,
-    /// The workflow edition this served env or model declares, in place of its
-    /// type's declaration.
-    pub workflow_edition: Option<String>,
 }
 impl ServeOptions {
     pub(crate) fn validate(&self) -> Result<()> {

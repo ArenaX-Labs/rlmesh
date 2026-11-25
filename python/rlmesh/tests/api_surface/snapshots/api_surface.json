@@ -1142,13 +1142,9 @@
           "close_timeout_seconds": {
             "kind": "property",
             "signature": "property close_timeout_seconds: Optional[float]"
-          },
-          "workflow_edition": {
-            "kind": "property",
-            "signature": "property workflow_edition: Optional[str]"
           }
         },
-        "signature": "ServeOptions(*, close_timeout_seconds: Optional[float] = None, workflow_edition: Optional[str] = None) -> ServeOptions",
+        "signature": "ServeOptions(*, close_timeout_seconds: Optional[float] = None) -> ServeOptions",
         "stability": "Stable"
       },
       "StepEvent": {
@@ -1411,7 +1407,7 @@
       },
       "describe_json": {
         "kind": "function",
-        "signature": "describe_json(obj: object, *, kind: str | None = None, generated_at: str | None = None, served_env: object | None = None, workflow_edition: str | None = None) -> str",
+        "signature": "describe_json(obj: object, *, kind: str | None = None, generated_at: str | None = None, served_env: object | None = None) -> str",
         "stability": "Stable"
       },
       "params": {

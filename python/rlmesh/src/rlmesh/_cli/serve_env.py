@@ -130,7 +130,7 @@ def serve_from_args(args: ServeArgs) -> int:
     """
     try:
         from rlmesh import EnvServer
-        from rlmesh._editions import serve_options_declaring
+        from rlmesh._editions import declaring
 
         if args.entrypoint is not None:
             if args.num_envs != 1 or args.vectorization_mode is not None:
@@ -149,11 +149,8 @@ def serve_from_args(args: ServeArgs) -> int:
             )
 
         served_num_envs = _served_num_envs(env, fallback=args.num_envs)
-        declared = getattr(type(env), "workflow_edition", None)
-        options = serve_options_declaring(
-            declared=declared if isinstance(declared, str) else None
-        )
-        server = EnvServer(env, args.address, options=options)
+        with declaring(getattr(type(env), "workflow_edition", None)):
+            server = EnvServer(env, args.address)
 
         if args.entrypoint is not None:
             print(f"✓ Environment entrypoint: {args.entrypoint}")

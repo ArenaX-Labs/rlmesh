@@ -24,7 +24,6 @@ pub struct RLMeshServeOptions {
     pub has_close_timeout_seconds: bool,
     pub _reserved: [u8; 7],
     pub close_timeout_seconds: f64,
-    pub workflow_edition: *const c_char,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -64,7 +63,6 @@ pub(crate) unsafe fn serve_options(
             o.close_timeout_seconds,
             "close_timeout_seconds",
         )?,
-        workflow_edition: unsafe { ffi::text(o.workflow_edition) }?,
     }))
 }
 unsafe fn options(

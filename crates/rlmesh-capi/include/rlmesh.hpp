@@ -4232,12 +4232,10 @@ class ServedEnv {
 };
 struct ServeOptions {
   std::optional<Duration> close_timeout{};
-  std::optional<std::string> workflow_edition{};
   RLMeshServeOptions raw() const {
     RLMeshServeOptions c = RLMESH_SERVE_OPTIONS_INIT;
     c.has_close_timeout_seconds = close_timeout.has_value();
     if (close_timeout) c.close_timeout_seconds = close_timeout->count();
-    c.workflow_edition = detail::ptr(workflow_edition);
     return c;
   }
   ServeOptions& with_close_timeout(std::optional<Duration> value) & {
@@ -4246,14 +4244,6 @@ struct ServeOptions {
   }
   ServeOptions with_close_timeout(std::optional<Duration> value) && {
     close_timeout = std::move(value);
-    return std::move(*this);
-  }
-  ServeOptions& with_workflow_edition(std::optional<std::string> value) & {
-    workflow_edition = std::move(value);
-    return *this;
-  }
-  ServeOptions with_workflow_edition(std::optional<std::string> value) && {
-    workflow_edition = std::move(value);
     return std::move(*this);
   }
 };
@@ -7204,13 +7194,11 @@ struct DescribeJsonOptions {
   std::optional<DescribeKind> kind{};
   std::optional<std::string> generated_at{};
   std::optional<ServedEnv> served_env{};
-  std::optional<std::string> workflow_edition{};
   RLMeshDescribeJsonOptions raw() const {
     RLMeshDescribeJsonOptions c = RLMESH_DESCRIBE_JSON_OPTIONS_INIT;
     c.has_kind = kind.has_value();
     if (kind) c.kind = static_cast<RLMeshDescribeKind>(*kind);
     c.generated_at = detail::ptr(generated_at);
-    c.workflow_edition = detail::ptr(workflow_edition);
     if (served_env) {
       c.served_env = served_env->lanes().data();
       c.served_env_len = served_env->lanes().size();
@@ -7240,14 +7228,6 @@ struct DescribeJsonOptions {
   }
   DescribeJsonOptions with_served_env(std::optional<ServedEnv> value) && {
     served_env = std::move(value);
-    return std::move(*this);
-  }
-  DescribeJsonOptions& with_workflow_edition(std::optional<std::string> value) & {
-    workflow_edition = std::move(value);
-    return *this;
-  }
-  DescribeJsonOptions with_workflow_edition(std::optional<std::string> value) && {
-    workflow_edition = std::move(value);
     return std::move(*this);
   }
 };

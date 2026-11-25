@@ -18,7 +18,6 @@ import rlmesh.numpy
 sys.path.insert(0, str(Path(__file__).parent))
 from test_gym_conformance import (
     ADDRESS,
-    EDITION,
     RESET_OPTIONS,
     SPACES,
     SpaceEnv,
@@ -197,7 +196,7 @@ CLIENT_SPACES = [
 def python_env(name: str) -> Iterator[tuple[Echoed, Any]]:
     space = SPACES[name]
     env = Echoed(SpaceEnv(space, space))
-    server = rlmesh.EnvServer(env, ADDRESS, options=EDITION)
+    server = rlmesh.EnvServer(env, ADDRESS)
     server.start()
     try:
         yield env, server

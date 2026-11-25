@@ -22,17 +22,11 @@ pub struct PyServeOptions {
 #[pymethods]
 impl PyServeOptions {
     #[new]
-    #[pyo3(signature = (*, close_timeout_seconds=None, workflow_edition=None))]
-    fn new(
-        close_timeout_seconds: Option<f64>,
-        workflow_edition: Option<String>,
-    ) -> PyResult<PyServeOptions> {
+    #[pyo3(signature = (*, close_timeout_seconds=None))]
+    fn new(close_timeout_seconds: Option<f64>) -> PyResult<PyServeOptions> {
         Ok(PyServeOptions {
             options: ServeOptions {
                 close_timeout: optional_duration("close_timeout_seconds", close_timeout_seconds)?,
-                workflow_edition: workflow_edition
-                    .map(|edition| edition.trim().to_owned())
-                    .filter(|edition| !edition.is_empty()),
             },
         })
     }
@@ -40,11 +34,6 @@ impl PyServeOptions {
     #[getter]
     fn close_timeout_seconds(&self) -> Option<f64> {
         self.options.close_timeout.map(|value| value.as_secs_f64())
-    }
-
-    #[getter]
-    fn workflow_edition(&self) -> Option<String> {
-        self.options.workflow_edition.clone()
     }
 }
 
