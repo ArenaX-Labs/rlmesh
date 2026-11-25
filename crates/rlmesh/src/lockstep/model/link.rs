@@ -32,14 +32,6 @@ pub struct ModelLink {
 }
 
 impl ModelLink {
-    /// A link to the model answering on `key`.
-    pub fn new(session: zenoh::Session, key: String) -> Self {
-        Self {
-            session: Transport::from_session(session),
-            key,
-        }
-    }
-
     /// Waits until the model answers, probing every 20 ms for up to
     /// `timeout`.
     pub async fn wait_ready(&self, timeout: Duration) -> Result<(), GymError> {
@@ -272,6 +264,24 @@ impl ModelConnection {
             )),
             other => other,
         })?;
+        let mut roster = participant.watch();
+        tokio::time::timeout(
+            timeout,
+            roster.wait_for(|snapshot| {
+                snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.roster.iter().any(|p| p.id == *model))
+            }),
+        )
+        .await
+        .map_err(|_| {
+            GymError::Session(SessionError::Timeout(
+                timeout,
+                format!("model {model} to appear in the roster at {session}"),
+            ))
+        })?
+        .map_err(|_| GymError::Closed("the session closed before the model appeared".into()))?;
+        drop(roster);
         let lockstep = crate::lockstep::session::owns_links(participant.transport())
             .then(|| link.session.clone());
         Ok(Self {

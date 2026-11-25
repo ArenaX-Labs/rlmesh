@@ -7,7 +7,7 @@
 //! | Protocol minor | [`PROTOCOL_MINOR`], announced in `Attach` and `AuthorityState` | Monotonic. Any minor talks to any other; new behaviour is a feature string. |
 //! | Features | `Attach.supports/requires`, `AuthorityState.supports`, `PartSpec.requires` | Attach fails with `CtlStatus::Incompatible` if the host lacks a feature the participant requires. |
 //! | Kind table | [`SPEC_VERSION`], in `DeclareParts` | Additive. A host accepts a robot on any table from 1 up to its own and refuses a newer one. |
-//! | Wire revision | [`WIRE_REVISION`], in `HandshakeRequest` and `HandshakeAccept` | Pre-release only. A participant refuses a host on another revision or none; a host refuses a participant on another revision and admits one that sends none. Both refuse with `CtlStatus::Incompatible`, naming both revisions. |
+//! | Wire revision | [`WIRE_REVISION`], in `HandshakeRequest` and `HandshakeAccept` | Pre-release only. Each side refuses a peer on another revision or none (0). Both refuse with `CtlStatus::Incompatible`, naming both revisions. |
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -56,11 +56,10 @@ pub fn host_revision_mismatch(host: &str, revision: u32) -> Option<String> {
     })
 }
 
-/// Why a host refuses `participant`'s hello carrying `revision`, or `None` when
-/// it is this build's or absent (0: a board flashed before revisions were sent,
-/// which still talks to this host).
+/// Why a host refuses `participant`'s hello carrying `revision` (0: none), or
+/// `None` when it is this build's.
 pub fn participant_revision_mismatch(participant: &str, revision: u32) -> Option<String> {
-    (revision != 0 && revision != WIRE_REVISION).then(|| {
+    (revision != WIRE_REVISION).then(|| {
         format!(
             "participant {participant} speaks session wire revision {revision} ({}); this host \
              speaks revision {WIRE_REVISION} ({}); rebuild both from the same release",
@@ -149,7 +148,7 @@ mod tests {
                  from the same release"
             )
         );
-        assert_eq!(participant_revision_mismatch("eye-3", 0), None);
+        assert!(participant_revision_mismatch("eye-3", 0).is_some());
         assert_eq!(participant_revision_mismatch("eye-3", WIRE_REVISION), None);
         assert_eq!(
             participant_revision_mismatch("eye-3", 3).as_deref(),

@@ -31,8 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf
  && unzip -q /tmp/protoc.zip -d /usr/local && rm /tmp/protoc.zip
 WORKDIR /src
 COPY . .
-# A release cohort, so the env negotiates with released rlmesh peers (a dev
-# build pins a per-commit edition only that same build speaks).
+# A release build; peers talk when their session wire revisions match.
 ENV RLMESH_RELEASE_BUILD=1
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target,sharing=locked \

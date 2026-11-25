@@ -30,7 +30,9 @@ impl PyServeOptions {
         Ok(PyServeOptions {
             options: ServeOptions {
                 close_timeout: optional_duration("close_timeout_seconds", close_timeout_seconds)?,
-                workflow_edition: checked_workflow_edition(workflow_edition)?,
+                workflow_edition: workflow_edition
+                    .map(|edition| edition.trim().to_owned())
+                    .filter(|edition| !edition.is_empty()),
             },
         })
     }
@@ -170,17 +172,6 @@ pub fn set_ready_hook(hook: Option<Py<PyAny>>) {
         }) as std::sync::Arc<dyn Fn(&rlmesh::binding::Ready) + Send + Sync>
     });
     rlmesh::binding::set_ready_hook(hook);
-}
-
-/// Normalize an optional declared edition: blank declares nothing, anything
-/// else must be an edition this build knows.
-pub(crate) fn checked_workflow_edition(edition: Option<String>) -> PyResult<Option<String>> {
-    match edition {
-        Some(edition) if !edition.trim().is_empty() => {
-            validate_workflow_edition(&edition).map(Some)
-        }
-        _ => Ok(None),
-    }
 }
 
 impl PyServeOptions {

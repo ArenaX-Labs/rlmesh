@@ -59,7 +59,7 @@ def test_an_unknown_edition_is_refused_naming_the_known_ones_and_the_remedy(
     with pytest.raises(ValueError, match=pattern):
         _ = resolve_workflow_edition(UNKNOWN_EDITION)
     with pytest.raises(ValueError, match=pattern):
-        _ = ServeOptions(workflow_edition=UNKNOWN_EDITION)
+        _ = serve_options_declaring(ServeOptions(workflow_edition=UNKNOWN_EDITION))
     monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, UNKNOWN_EDITION)
     with pytest.raises(ValueError, match=pattern):
         _ = resolve_workflow_edition(EDITION)
@@ -76,5 +76,14 @@ def test_serve_options_carry_the_resolved_edition(
     assert stamped.close_timeout_seconds == 2.0
     with pytest.raises(ValueError, match=UNKNOWN_EDITION):
         _ = serve_options_declaring(declared=UNKNOWN_EDITION)
+    assert ServeOptions(workflow_edition=" ").workflow_edition is None
+    assert (
+        serve_options_declaring(
+            ServeOptions(workflow_edition=EDITION), declared=UNKNOWN_EDITION
+        ).workflow_edition
+        == EDITION
+    )
     monkeypatch.setenv(WORKFLOW_EDITION_ENV_VAR, EDITION)
     assert serve_options_declaring(declared=UNKNOWN_EDITION).workflow_edition == EDITION
+    unknown = ServeOptions(workflow_edition=UNKNOWN_EDITION)
+    assert serve_options_declaring(unknown).workflow_edition == EDITION

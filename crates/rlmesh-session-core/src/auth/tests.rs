@@ -38,12 +38,17 @@ fn handshake(
 }
 
 #[test]
-fn a_host_admits_its_own_wire_revision_or_none_and_refuses_another_by_name() {
+fn a_host_admits_only_its_own_wire_revision_and_refuses_another_by_name() {
     use crate::wire::version::WIRE_REVISION;
     let (identity, mut auth) = host();
     let credential = identity.local_credential();
     let mut rng = TestRng::new(3);
-    for (revision, admitted) in [(WIRE_REVISION, true), (0, true), (WIRE_REVISION + 1, false)] {
+    for (revision, admitted) in [
+        (WIRE_REVISION, true),
+        (0, false),
+        (1, false),
+        (WIRE_REVISION + 1, false),
+    ] {
         let (initiator, mut request) = credential
             .start(&mut rng, "local", "demo", 7, &pid("eye-3"))
             .expect("start");

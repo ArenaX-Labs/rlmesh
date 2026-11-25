@@ -458,8 +458,8 @@ def _wire_identity(obj: object, resolved: str | None = None) -> dict[str, Any]:
     if resolved is not None and resolved.strip():
         edition = validate_workflow_edition(resolved)
     else:
-        cls = obj if isinstance(obj, type) else type(obj)
-        declared = getattr(cls, "workflow_edition", None)
+        source = obj if isinstance(obj, type) or inspect.isroutine(obj) else type(obj)
+        declared = getattr(source, "workflow_edition", None)
         edition = resolve_workflow_edition(
             declared if isinstance(declared, str) else None
         )
