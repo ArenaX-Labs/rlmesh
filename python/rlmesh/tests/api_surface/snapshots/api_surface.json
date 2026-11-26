@@ -1158,6 +1158,10 @@
             "kind": "attribute",
             "signature": "episode: int"
           },
+          "final_observation": {
+            "kind": "attribute",
+            "signature": "final_observation: Any"
+          },
           "info": {
             "kind": "attribute",
             "signature": "info: Mapping[str, Any]"
@@ -1199,7 +1203,7 @@
             "signature": "truncated: bool"
           }
         },
-        "signature": "StepEvent(episode: int, seed: int | None, step: int, observation: Any, action: Any, reward: float, terminated: bool, truncated: bool, info: Mapping[str, Any], predict_ms: float, step_ms: float, read: Callable[[object], object])",
+        "signature": "StepEvent(episode: int, seed: int | None, step: int, observation: Any, action: Any, reward: float, terminated: bool, truncated: bool, info: Mapping[str, Any], predict_ms: float, step_ms: float, read: Callable[[object], object], final_observation: Any = None)",
         "stability": "Stable"
       },
       "TelemetryRow": {

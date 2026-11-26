@@ -102,6 +102,7 @@ struct Hooks : RunHooks {
   void on_step(const StepEvent& e) override {
     ++steps;
     assert(e.reward == 1);
+    assert(e.final_observation.has_value() == (e.terminated || e.truncated));
   }
   void on_run_end(const RunResult& r) override {
     ++ends;

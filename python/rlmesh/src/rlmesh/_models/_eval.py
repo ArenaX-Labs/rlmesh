@@ -456,6 +456,11 @@ class StepEvent:
         read: Lazy role reader bound to ``observation`` -- ``event.read(item)``
             delegates to :meth:`Session.read`, so resolution is cached per item
             and never triggered unless called.
+        final_observation: The observation this step returned when the step
+            ended the episode (``terminated`` or ``truncated``): the episode's
+            final observation, which no predict sees -- a chat episode's closing
+            tool results, a robot episode's terminal frame. The env's own value,
+            before any ``transform_observation``. ``None`` on every other step.
     """
 
     episode: int
@@ -470,6 +475,7 @@ class StepEvent:
     predict_ms: float
     step_ms: float
     read: Callable[[object], object]
+    final_observation: Any = None
 
 
 class RunContext(Protocol):

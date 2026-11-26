@@ -286,6 +286,11 @@ impl RunHooks for PyFacadeHooks {
             data.set_item("info", value_to_py(py, &Value::Dict(e.info.clone()))?)?;
             data.set_item("predict_ms", e.predict_ms)?;
             data.set_item("step_ms", e.step_ms)?;
+            let final_observation = match &e.final_observation {
+                Some(observation) => value_to_py(py, observation)?,
+                None => py.None().into_bound(py),
+            };
+            data.set_item("final_observation", final_observation)?;
             relay.call_method1("step", (data,)).map(drop)
         })
     }

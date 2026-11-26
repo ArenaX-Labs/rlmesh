@@ -997,6 +997,7 @@ impl RuntimeHooks for HookRelay {
             .map(|infos| meta_codec::metadata_from_wire(meta_map_from_proto(infos)))
             .unwrap_or_default();
         let mut events = Vec::new();
+        let mut finals: Option<Vec<Value>> = None;
         {
             let mut state = lock(&self.state);
             let RelayState {
@@ -1005,6 +1006,24 @@ impl RuntimeHooks for HookRelay {
             let Some(group) = groups.get(&event.env_index) else {
                 return Ok(());
             };
+            let ended = |lane: usize| {
+                event.terminated.get(lane).copied().unwrap_or_default()
+                    || event.truncated.get(lane).copied().unwrap_or_default()
+            };
+            if let Some(leaves) = &event.observation
+                && (0..group.ids.len()).any(|lane| {
+                    ended(lane) && !event.autoreset_roll.get(lane).copied().unwrap_or(false)
+                })
+            {
+                match decode_lanes(leaves.clone(), &event.observation_space, group.ids.len()) {
+                    Ok(values) => finals = Some(values),
+                    Err(err) => {
+                        drop(state);
+                        self.fail(err);
+                        return Ok(());
+                    }
+                }
+            }
             for (lane, episode_id) in group.ids.iter().enumerate() {
                 let Some(episode) = episodes.get_mut(episode_id) else {
                     continue;
@@ -1038,6 +1057,9 @@ impl RuntimeHooks for HookRelay {
                     info: info.clone(),
                     predict_ms: event.predict_ms,
                     step_ms: event.step_ms,
+                    final_observation: ended(lane)
+                        .then(|| finals.as_ref().and_then(|values| values.get(lane).cloned()))
+                        .flatten(),
                 });
                 episode.steps += 1;
                 episode.reward += event.rewards.get(lane).copied().unwrap_or_default();

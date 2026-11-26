@@ -5347,24 +5347,25 @@ rule = ["D-4"]
 ["rlmesh:StepEvent"]
 area = "running"
 rule = ["R-4"]
-parameters = { "episode" = {}, "seed" = {}, "step" = {}, "observation" = {}, "action" = {}, "reward" = {}, "terminated" = {}, "truncated" = {}, "info" = {}, "predict_ms" = {}, "step_ms" = {}, "read" = {} }
+parameters = { "episode" = {}, "seed" = {}, "step" = {}, "observation" = {}, "action" = {}, "reward" = {}, "terminated" = {}, "truncated" = {}, "info" = {}, "predict_ms" = {}, "step_ms" = {}, "read" = {}, "final_observation" = { "default" = "None" } }
 
 ["rlmesh:StepEvent".rust]
 status = "present"
 path = "rlmesh::StepEvent"
-params = { "episode" = "rlmesh::StepEvent#episode", "seed" = "rlmesh::StepEvent#seed", "step" = "rlmesh::StepEvent#step", "observation" = "rlmesh::StepEvent#observation", "action" = "rlmesh::StepEvent#action", "reward" = "rlmesh::StepEvent#reward", "terminated" = "rlmesh::StepEvent#terminated", "truncated" = "rlmesh::StepEvent#truncated", "info" = "rlmesh::StepEvent#info", "predict_ms" = "rlmesh::StepEvent#predict_ms", "step_ms" = "rlmesh::StepEvent#step_ms", "read" = "rlmesh::StepEvent#read" }
+params = { "episode" = "rlmesh::StepEvent#episode", "seed" = "rlmesh::StepEvent#seed", "step" = "rlmesh::StepEvent#step", "observation" = "rlmesh::StepEvent#observation", "action" = "rlmesh::StepEvent#action", "reward" = "rlmesh::StepEvent#reward", "terminated" = "rlmesh::StepEvent#terminated", "truncated" = "rlmesh::StepEvent#truncated", "info" = "rlmesh::StepEvent#info", "predict_ms" = "rlmesh::StepEvent#predict_ms", "step_ms" = "rlmesh::StepEvent#step_ms", "read" = "rlmesh::StepEvent#read", "final_observation" = "rlmesh::StepEvent#final_observation" }
 also = [
   "rlmesh::StepEvent::Clone",
   "rlmesh::StepEvent::Debug",
   "rlmesh::StepEvent::Display",
   "rlmesh::StepEvent::PartialEq",
 ]
+default_skip = { "final_observation" = "The runtime builds every StepEvent and sets the field, None on all but an episode's last step; StepEvent has no Default, since its read callback has none." }
 rule = ["R-3"]
 
 ["rlmesh:StepEvent".c]
 status = "present"
 path = "RLMeshStepEvent"
-params = { "episode" = "RLMeshStepEvent#episode", "seed" = "RLMeshStepEvent#seed", "step" = "RLMeshStepEvent#step", "observation" = "RLMeshStepEvent#observation", "action" = "RLMeshStepEvent#action", "reward" = "RLMeshStepEvent#reward", "terminated" = "RLMeshStepEvent#terminated", "truncated" = "RLMeshStepEvent#truncated", "info" = "RLMeshStepEvent#info", "predict_ms" = "RLMeshStepEvent#predict_ms", "step_ms" = "RLMeshStepEvent#step_ms", "read" = "RLMeshStepEvent#context" }
+params = { "episode" = "RLMeshStepEvent#episode", "seed" = "RLMeshStepEvent#seed", "step" = "RLMeshStepEvent#step", "observation" = "RLMeshStepEvent#observation", "action" = "RLMeshStepEvent#action", "reward" = "RLMeshStepEvent#reward", "terminated" = "RLMeshStepEvent#terminated", "truncated" = "RLMeshStepEvent#truncated", "info" = "RLMeshStepEvent#info", "predict_ms" = "RLMeshStepEvent#predict_ms", "step_ms" = "RLMeshStepEvent#step_ms", "read" = "RLMeshStepEvent#context", "final_observation" = "RLMeshStepEvent#final_observation" }
 translations = { "read" = ["RUN-7"] }
 also = [
   "RLMESH_STEP_EVENT_INIT",
@@ -5382,7 +5383,7 @@ also_rules = { "rlmesh_step_event_equals" = ["R-10"], "rlmesh_step_event_repr" =
 ["rlmesh:StepEvent".cpp]
 status = "present"
 path = "rlmesh::StepEvent"
-params = { "episode" = "rlmesh::StepEvent#episode", "seed" = "rlmesh::StepEvent#seed", "step" = "rlmesh::StepEvent#step", "observation" = "rlmesh::StepEvent#observation", "action" = "rlmesh::StepEvent#action", "reward" = "rlmesh::StepEvent#reward", "terminated" = "rlmesh::StepEvent#terminated", "truncated" = "rlmesh::StepEvent#truncated", "info" = "rlmesh::StepEvent#info", "predict_ms" = "rlmesh::StepEvent#predict_ms", "step_ms" = "rlmesh::StepEvent#step_ms", "read" = "rlmesh::StepEvent#read" }
+params = { "episode" = "rlmesh::StepEvent#episode", "seed" = "rlmesh::StepEvent#seed", "step" = "rlmesh::StepEvent#step", "observation" = "rlmesh::StepEvent#observation", "action" = "rlmesh::StepEvent#action", "reward" = "rlmesh::StepEvent#reward", "terminated" = "rlmesh::StepEvent#terminated", "truncated" = "rlmesh::StepEvent#truncated", "info" = "rlmesh::StepEvent#info", "predict_ms" = "rlmesh::StepEvent#predict_ms", "step_ms" = "rlmesh::StepEvent#step_ms", "read" = "rlmesh::StepEvent#read", "final_observation" = "rlmesh::StepEvent#final_observation" }
 
 ["rlmesh:StepEvent.action"]
 area = "running"
@@ -5422,6 +5423,26 @@ params = {}
 ["rlmesh:StepEvent.episode".cpp]
 status = "present"
 path = "rlmesh::StepEvent::episode"
+params = {}
+
+["rlmesh:StepEvent.final_observation"]
+area = "running"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:StepEvent.final_observation".rust]
+status = "present"
+path = "rlmesh::StepEvent::final_observation"
+params = {}
+
+["rlmesh:StepEvent.final_observation".c]
+status = "present"
+path = "RLMeshStepEvent::final_observation"
+params = {}
+
+["rlmesh:StepEvent.final_observation".cpp]
+status = "present"
+path = "rlmesh::StepEvent::final_observation"
 params = {}
 
 ["rlmesh:StepEvent.info"]

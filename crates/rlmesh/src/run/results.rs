@@ -324,6 +324,10 @@ pub struct StepEvent {
     pub predict_ms: f64,
     /// Wall time of the env step round trip, in milliseconds.
     pub step_ms: f64,
+    /// The observation this step returned, when the step ended the episode
+    /// (`terminated` or `truncated`): the episode's final observation, which no
+    /// predict sees. `None` on every other step.
+    pub final_observation: Option<Value>,
     /// Read one role or input leaf from this event’s observation.
     pub read: super::ReadFn,
 }
@@ -339,7 +343,8 @@ impl fmt::Display for StepEvent {
         write!(
             f,
             "StepEvent(episode={}, seed={}, step={}, observation={}, action={}, reward={}, \
-             terminated={}, truncated={}, info={}, predict_ms={}, step_ms={}, read=<function>)",
+             terminated={}, truncated={}, info={}, predict_ms={}, step_ms={}, \
+             final_observation={}, read=<function>)",
             self.episode,
             py_opt_int(self.seed),
             self.step,
@@ -351,6 +356,9 @@ impl fmt::Display for StepEvent {
             py_repr(&Value::Dict(self.info.clone())),
             py_float(self.predict_ms),
             py_float(self.step_ms),
+            self.final_observation
+                .as_ref()
+                .map_or_else(|| "None".to_string(), py_repr),
         )
     }
 }
@@ -432,6 +440,7 @@ impl PartialEq for StepEvent {
             && self.info == other.info
             && self.predict_ms == other.predict_ms
             && self.step_ms == other.step_ms
+            && self.final_observation == other.final_observation
             && std::sync::Arc::ptr_eq(&self.read, &other.read)
     }
 }

@@ -255,6 +255,7 @@ pub struct RLMeshStepEvent {
     pub predict_ms: f64,
     pub step_ms: f64,
     pub context: *const RLMeshRunContext,
+    pub final_observation: *const RLMeshValue,
 }
 unsafe fn event(p: *const RLMeshStepEvent) -> Result<StepEvent, CapiError> {
     let e = unsafe { sizing::read(p, "RLMeshStepEvent") }?
@@ -284,6 +285,17 @@ unsafe fn event(p: *const RLMeshStepEvent) -> Result<StepEvent, CapiError> {
         .clone(),
         predict_ms: e.predict_ms,
         step_ms: e.step_ms,
+        final_observation: if e.final_observation.is_null() {
+            None
+        } else {
+            Some(
+                unsafe {
+                    // SAFETY: the FFI contract supplies live handles and writable output storage.
+                    value_ref(e.final_observation)
+                }?
+                .clone(),
+            )
+        },
         read: {
             let context = unsafe { e.context.as_ref() }.cloned();
             let observation = unsafe {
@@ -399,6 +411,7 @@ impl RunHooks for Hooks {
         let obs = RLMeshValue::new(e.observation.clone());
         let action = RLMeshValue::new(e.action.clone());
         let info = RLMeshValue::new(Value::Dict(e.info.clone()));
+        let final_observation = e.final_observation.clone().map(RLMeshValue::new);
         let lent = RLMeshStepEvent {
             struct_size: std::mem::size_of::<RLMeshStepEvent>(),
             episode: e.episode,
@@ -415,6 +428,9 @@ impl RunHooks for Hooks {
             step_ms: e.step_ms,
             context: self
                 .context
+                .as_ref()
+                .map_or(std::ptr::null(), std::ptr::from_ref),
+            final_observation: final_observation
                 .as_ref()
                 .map_or(std::ptr::null(), std::ptr::from_ref),
         };

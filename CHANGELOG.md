@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Added
 
+- `StepEvent.final_observation` carries the observation returned by the step that ended an episode, which no predict sees: a chat episode's closing tool results, a robot episode's terminal frame. It is the env's own value, and `None` on every other step. It is on every lane of a vector or lane-served env, whichever loop runs it, and in Rust (`Option<Value>`), C (`RLMeshStepEvent.final_observation`, appended, so a struct built against an older header still reads) and C++ (`std::optional<Value>`). Runners with their own runtime hooks get it on the step completion event.
+- The recorder keeps that final observation. Each image-role video gains the episode's last frame, and `trajectory.parquet` gains a `final_obs` column, filled on the row of the step that ended the episode.
 - The LLM agent example's harness answers a batch of sessions with one concurrent chat call per row.
 
 ## [0.2.0-alpha.2] - 2026-11-25

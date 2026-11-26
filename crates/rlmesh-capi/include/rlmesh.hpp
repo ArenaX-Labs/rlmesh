@@ -6105,18 +6105,22 @@ struct StepEvent {
   InfoDict info{};
   double predict_ms = 0, step_ms = 0;
   ReadFn read{};
+  /// The observation the step returned when it ended the episode (terminated or truncated):
+  /// the episode's final observation, which no predict sees. Empty on every other step.
+  std::optional<Value> final_observation{};
 
   friend bool operator==(const StepEvent& self, const StepEvent& other) noexcept(
       detail::nothrow_equal<decltype(episode), decltype(seed), decltype(step),
                             decltype(observation), decltype(action), decltype(reward),
                             decltype(terminated), decltype(truncated), decltype(info),
-                            decltype(predict_ms), decltype(step_ms), decltype(read)>) {
+                            decltype(predict_ms), decltype(step_ms), decltype(read),
+                            decltype(final_observation)>) {
     return self.episode == other.episode && self.seed == other.seed && self.step == other.step &&
            self.observation == other.observation && self.action == other.action &&
            self.reward == other.reward && self.terminated == other.terminated &&
            self.truncated == other.truncated && self.info == other.info &&
            self.predict_ms == other.predict_ms && self.step_ms == other.step_ms &&
-           self.read == other.read;
+           self.read == other.read && self.final_observation == other.final_observation;
   }
   friend bool operator!=(const StepEvent& self,
                          const StepEvent& other) noexcept(noexcept(self == other)) {
@@ -6152,20 +6156,22 @@ inline Owned<RLMeshRunHooks, rlmesh_run_hooks_free> hooks(RunHooks* user_hooks) 
     return callback([&] {
       auto context = std::make_shared<NativeRunContext>(rlmesh_run_context_clone(e->context));
       auto observation = Value::copy_of(e->observation);
-      StepEvent v{e->episode,
-                  e->has_seed ? std::optional(e->seed) : std::nullopt,
-                  e->step,
-                  observation,
-                  Value::copy_of(e->action),
-                  e->reward,
-                  e->terminated,
-                  e->truncated,
-                  info(e->info),
-                  e->predict_ms,
-                  e->step_ms,
-                  [context, observation](const ReadItem& item) {
-                    return context->read(observation, item);
-                  }};
+      StepEvent v{
+          e->episode,
+          e->has_seed ? std::optional(e->seed) : std::nullopt,
+          e->step,
+          observation,
+          Value::copy_of(e->action),
+          e->reward,
+          e->terminated,
+          e->truncated,
+          info(e->info),
+          e->predict_ms,
+          e->step_ms,
+          [context, observation](const ReadItem& item) { return context->read(observation, item); },
+          e->struct_size > offsetof(RLMeshStepEvent, final_observation) && e->final_observation
+              ? std::optional(Value::copy_of(e->final_observation))
+              : std::nullopt};
       static_cast<RunHooks*>(u)->on_step(v);
     });
   };
@@ -7061,6 +7067,7 @@ inline void NativeRunHooks::on_step(const StepEvent& e) {
   c.predict_ms = e.predict_ms;
   c.step_ms = e.step_ms;
   c.context = ctx.get();
+  c.final_observation = e.final_observation ? e.final_observation->raw() : nullptr;
   check_status(rlmesh_run_hooks_on_step(handle_.get(), &c));
 }
 }  // namespace detail
@@ -7312,6 +7319,7 @@ inline std::string to_string(const StepEvent& e) {
   c.info = info.raw();
   c.predict_ms = e.predict_ms;
   c.step_ms = e.step_ms;
+  c.final_observation = e.final_observation ? e.final_observation->raw() : nullptr;
   return detail::text(rlmesh_step_event_repr, &c);
 }
 inline std::ostream& operator<<(std::ostream& s, const StepEvent& e) { return s << to_string(e); }
