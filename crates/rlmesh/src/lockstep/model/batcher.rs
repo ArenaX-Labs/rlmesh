@@ -113,8 +113,8 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             let mut waiting: HashSet<String> =
                 first.groups.iter().map(|g| g.route.clone()).collect();
             let mut batch = vec![first];
-            let busy = in_flight.available_permits() < cap - 1;
-            let deadline = tokio::time::Instant::now() + window;
+            let mut busy = in_flight.available_permits() < cap - 1;
+            let mut deadline = tokio::time::Instant::now() + window;
             while size < options.max_batch_size && bytes < options.batch_byte_budget {
                 // Registered before the check, so a release in between still wakes this batch.
                 let released = self.released.notified();
@@ -127,8 +127,11 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                     tokio::select! {
                         queued = rx.recv() => queued,
                         freed = Arc::clone(&in_flight).acquire_owned() => {
+                            // The routes the ended forward answered are about to ask again.
                             drop(freed);
-                            break;
+                            busy = false;
+                            deadline = tokio::time::Instant::now() + window;
+                            continue;
                         }
                         () = &mut released => continue,
                     }

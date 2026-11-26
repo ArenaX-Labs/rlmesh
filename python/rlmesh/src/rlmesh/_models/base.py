@@ -475,7 +475,8 @@ class BatchOptions:
     ``batch_byte_budget`` observation bytes, or as soon as every route the
     model has resolved has a request in it; while the model is idle it also
     closes at the latest ``batch_window_ms`` after its first request, and while
-    a forward runs it stays open until that forward ends. A model that cannot
+    a forward runs it stays open until that forward ends and then up to
+    ``batch_window_ms`` more, for the routes it answered. A model that cannot
     fuse (``allow_fusion = False``, or no batched corner) is never batched.
 
     ``max_batch_size=1`` turns batching off. ``max_in_flight_batches=2`` lets
