@@ -6,6 +6,7 @@ import json
 import pathlib
 import shutil
 import tarfile
+import uuid
 
 import tomllib
 
@@ -52,8 +53,16 @@ def package() -> pathlib.Path:
         else:
             shutil.copyfile(source, destination)
 
-    shutil.copyfile(ROOT / "LICENSE-MIT", stage / "LICENSE-MIT")
-    shutil.copyfile(ROOT / "LICENSE-APACHE", stage / "LICENSE-APACHE")
+    for name in ("LICENSE-MIT", "LICENSE-APACHE"):
+        shutil.copyfile(ROOT / name, stage / name)
+        guid = uuid.uuid5(
+            uuid.NAMESPACE_URL, "https://rlmesh.dev/upm/com.rlmesh.unity/" + name
+        ).hex
+        (stage / f"{name}.meta").write_text(
+            f"fileFormatVersion: 2\nguid: {guid}\nDefaultImporter:\n  externalObjects: {{}}\n"
+            "  userData:\n  assetBundleName:\n  assetBundleVariant:\n",
+            encoding="utf-8",
+        )
 
     manifest = json.loads((stage / "package.json").read_text(encoding="utf-8"))
     manifest["version"] = ver

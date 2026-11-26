@@ -17,7 +17,7 @@ This integration does not build or distribute that package.
 Install the matching **core** UPM artifact first: in Package Manager choose
 **Install package from tarball** and select `com.rlmesh.rlmesh` from the same
 RLMesh release (local build: `target/csharp-pkg/com.rlmesh.rlmesh-*.tgz`, or
-**Install package from disk** on `target/csharp-pkg/com.rlmesh.rlmesh`). A
+**Install package from disk** on `target/csharp-pkg/com.rlmesh.rlmesh/package.json`). A
 directory install needs `package.json` at the package root, beside
 `Runtime/RLMesh.dll` and `Runtime/Plugins/`.
 
