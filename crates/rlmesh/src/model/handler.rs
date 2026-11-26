@@ -92,6 +92,36 @@ pub struct PredictFrames {
     pub replay: Vec<Vec<spaces::SpaceValue>>,
 }
 
+impl PredictFrames {
+    /// Assemble a predict's frames from each lane's executed frames (frame 0 first).
+    /// Lanes may differ in length; the replay runs only as far as the shortest lane.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a lane has no frame.
+    pub fn from_lane_frames(lanes: Vec<Vec<spaces::SpaceValue>>) -> crate::Result<Self> {
+        let replay_len = lanes
+            .iter()
+            .map(|frames| frames.len().saturating_sub(1))
+            .min()
+            .unwrap_or(0);
+        let mut actions = Vec::with_capacity(lanes.len());
+        let mut replay: Vec<Vec<spaces::SpaceValue>> = (0..replay_len)
+            .map(|_| Vec::with_capacity(lanes.len()))
+            .collect();
+        for frames in lanes {
+            let mut frames = frames.into_iter();
+            actions.push(frames.next().ok_or_else(|| {
+                crate::Error::invalid_argument("a chunked model returned an empty action chunk")
+            })?);
+            for (step, frame) in frames.take(replay_len).enumerate() {
+                replay[step].push(frame);
+            }
+        }
+        Ok(Self { actions, replay })
+    }
+}
+
 /// Engine-held per-episode adapter state at a model endpoint, as stamped on
 /// predict responses: episodes with live frame-stack windows and the bytes
 /// those windows hold.

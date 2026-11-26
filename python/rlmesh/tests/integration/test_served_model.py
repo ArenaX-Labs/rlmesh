@@ -634,3 +634,75 @@ def test_a_served_models_failure_names_its_exception_and_where_it_raised(
 
     with pytest.raises(AssertionError):
         Asserting().run(ThreeStepEnv(), episodes=1)
+
+
+class EchoTextEnv:
+    def __init__(self) -> None:
+        from rlmesh import spaces
+
+        self.observation_space = spaces.Text(256, min_length=0)
+        self.action_space = spaces.Text(256, min_length=0)
+        self.seed = 0
+        self.steps = 0
+        self.actions: list[str] = []
+
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, object] | None = None
+    ) -> tuple[str, dict[str, object]]:
+        _ = options
+        self.seed, self.steps = seed or 0, 0
+        return f"{self.seed}:0", {}
+
+    def step(self, action: str) -> tuple[str, float, bool, bool, dict[str, object]]:
+        self.actions.append(action)
+        self.steps += 1
+        return f"{self.seed}:{self.steps}", 1.0, self.steps >= 3, False, {}
+
+    def close(self) -> None:
+        return None
+
+
+def test_a_spec_less_batched_model_answers_concurrent_sessions_in_one_call(
+    session_port: int,
+) -> None:
+    import time
+
+    import rlmesh
+
+    calls: list[list[tuple[str, str]]] = []
+
+    class Harness(rlmesh.Model):
+        def predict_batch(
+            self, observations: list[str], context: list[dict[str, Any]]
+        ) -> list[str]:
+            calls.append(
+                [
+                    (row["episode_id"], obs)
+                    for obs, row in zip(observations, context, strict=True)
+                ]
+            )
+            time.sleep(0.3)
+            return [f"re:{obs}" for obs in observations]
+
+    envs = [EchoTextEnv() for _ in range(3)]
+    with _served(Harness(), session_port) as address:
+        clients = [
+            threading.Thread(
+                target=lambda env=env, seed=seed: rlmesh.Model(address).run(
+                    env, seeds=[seed]
+                )
+            )
+            for seed, env in enumerate(envs)
+        ]
+        for client in clients:
+            client.start()
+        for client in clients:
+            client.join(60)
+
+    for seed, env in enumerate(envs):
+        assert env.actions == [f"re:{seed}:{step}" for step in range(3)]
+    assert sum(len(call) for call in calls) == 9
+    assert max(len(call) for call in calls) > 1, calls
+    for call in calls:
+        episodes = [episode for episode, _ in call]
+        assert len(set(episodes)) == len(episodes), call

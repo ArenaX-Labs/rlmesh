@@ -154,14 +154,18 @@ pub(super) fn predict_grouped_fused(
 
     let mut results: Vec<Option<Result<PredictFrames>>> = Vec::with_capacity(staged.len());
     let mut prepared: Vec<Prepared> = Vec::new();
+    let mut spec_less_indices: Vec<usize> = Vec::new();
+    let mut spec_less: Vec<(ModelObservation, u32)> = Vec::new();
     for (index, staged) in staged.into_iter().enumerate() {
         match staged {
             Staged::SpecLess {
                 observation,
                 horizon,
-            } => results.push(Some(
-                predict.predict_spec_less_chunked(observation, horizon),
-            )),
+            } => {
+                results.push(None);
+                spec_less_indices.push(index);
+                spec_less.push((observation, horizon));
+            }
             Staged::Routed {
                 assembled: Ok((inputs, config)),
                 episodes,
@@ -182,6 +186,24 @@ pub(super) fn predict_grouped_fused(
                 assembled: Err(error),
                 ..
             } => results.push(Some(Err(error))),
+        }
+    }
+
+    if !spec_less.is_empty() {
+        let served = predict.predict_spec_less_grouped(spec_less);
+        if served.len() == spec_less_indices.len() {
+            for (index, result) in spec_less_indices.into_iter().zip(served) {
+                results[index] = Some(result);
+            }
+        } else {
+            let error = Error::Internal(format!(
+                "spec-less grouped predict returned {} outcomes for {} groups",
+                served.len(),
+                spec_less_indices.len()
+            ));
+            for index in spec_less_indices {
+                results[index] = Some(Err(error.clone()));
+            }
         }
     }
 
