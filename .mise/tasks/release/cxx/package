@@ -16,8 +16,8 @@ fi
 crate="crates/rlmesh-capi"
 inc="$PWD/$crate/include"
 
-version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-abi_gen="$(sed -n 's/^#define RLMESH_ABI_VERSION \([0-9][0-9]*\)$/\1/p' "$inc/rlmesh.h")"
+version="$(tr -d '\r' <Cargo.toml | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)"
+abi_gen="$(tr -d '\r' <"$inc/rlmesh.h" | sed -n 's/^#define RLMESH_ABI_VERSION \([0-9][0-9]*\)$/\1/p')"
 : "${abi_gen:?could not parse RLMESH_ABI_VERSION from $inc/rlmesh.h}"
 if [ "$target" = windows ]; then
   triple=x86_64-pc-windows-msvc
