@@ -9,9 +9,14 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rlmesh_session::SessionAddress;
-use rlmesh_session::address::{AddressKey, DEFAULT_SESSION, TENANT, session_id};
+#[cfg(unix)]
+use rlmesh_session::address::AddressKey;
+use rlmesh_session::address::{DEFAULT_SESSION, TENANT, session_id};
+#[cfg(unix)]
 use rlmesh_session::auth::Credential;
+#[cfg(unix)]
 use rlmesh_session::auth::address::base32;
+#[cfg(unix)]
 use rlmesh_session::crypto::StaticKeypair;
 use rlmesh_session::media::synthetic_frame;
 use rlmesh_session::record::{Recorded, read};
@@ -598,11 +603,13 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
     );
 }
 
+#[cfg(unix)]
 struct Daemon {
     child: Child,
     base: std::net::SocketAddr,
 }
 
+#[cfg(unix)]
 impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -610,6 +617,7 @@ impl Drop for Daemon {
     }
 }
 
+#[cfg(unix)]
 impl Daemon {
     fn spawn(state: &std::path::Path, base: Option<std::net::SocketAddr>) -> Self {
         for _ in 0..16 {

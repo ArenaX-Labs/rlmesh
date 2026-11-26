@@ -33,11 +33,10 @@ _build/
 # Rust
 target/
 
-# Unreal plugin build outputs (Windows builds also leave *.obj)
+# Unreal plugin build outputs
 integrations/unreal/RLMesh/Binaries/
 integrations/unreal/RLMesh/Intermediate/
 integrations/unreal/RLMesh/Saved/
-*.obj
 
 # Browser binding (javascript/rlmesh): npm deps, wasm-bindgen output, test bundles
 javascript/rlmesh/node_modules/
