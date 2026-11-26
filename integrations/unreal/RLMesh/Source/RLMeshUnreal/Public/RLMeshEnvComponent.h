@@ -27,6 +27,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "RLMesh")
 	FString EnvId = TEXT("Unreal-v0");
 
+	/** Make the owner's root Movable at BeginPlay. Turn off for envs that only observe a static scene. */
+	UPROPERTY(EditAnywhere, Category = "RLMesh")
+	bool bMakeOwnerMovable = true;
+
 	/** The address the env is served on, or empty when it is not serving. */
 	UFUNCTION(BlueprintCallable, Category = "RLMesh")
 	FString GetServedAddress() const { return ServedAddress; }

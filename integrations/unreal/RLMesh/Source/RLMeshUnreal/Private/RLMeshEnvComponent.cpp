@@ -19,7 +19,7 @@ void URLMeshEnvComponent::BeginPlay()
 	Super::BeginPlay();
 
 	USceneComponent* Root = GetOwner()->GetRootComponent();
-	if (Root && Root->Mobility != EComponentMobility::Movable)
+	if (bMakeOwnerMovable && Root && Root->Mobility != EComponentMobility::Movable)
 	{
 		Root->SetMobility(EComponentMobility::Movable);
 		UE_LOG(LogRLMesh, Log, TEXT("Set %s to Movable so %s can move it"), *GetOwner()->GetName(), *EnvId);
