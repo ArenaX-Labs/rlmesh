@@ -233,10 +233,10 @@ if [ "$windows_host" = 1 ]; then
     -I crates/rlmesh-capi/examples integrations/unreal/RLMesh/Tests/game_thread_gate.cpp \
     "${link[@]}" -o "$tmp/unreal_gate"
   echo "==> C++ on sessions: the Gymnasium gate's rows against Python 0.2 ($CXX)"
-  RLMESH_NATIVE_GATE="$tmp/cpp_gate" uv run --no-sync pytest -q -p no:cacheprovider \
+  RLMESH_NATIVE_GATE="$(cygpath -am "$tmp/cpp_gate")" uv run --no-sync pytest -q -p no:cacheprovider \
     python/rlmesh/tests/conformance/native_gate.py
   echo "==> The Unreal plugin's game-thread env on sessions: the same rows ($CXX)"
-  RLMESH_NATIVE_GATE="$tmp/unreal_gate" uv run --no-sync pytest -q -p no:cacheprovider \
+  RLMESH_NATIVE_GATE="$(cygpath -am "$tmp/unreal_gate")" uv run --no-sync pytest -q -p no:cacheprovider \
     python/rlmesh/tests/conformance/native_gate.py
   echo "==> test:cxx OK (Windows Unreal subset)"
   exit 0
