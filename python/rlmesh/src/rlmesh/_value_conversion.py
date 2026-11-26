@@ -164,8 +164,15 @@ def tree_unstack(
     Containers recurse; each batched leaf is split on its leading axis by
     ``unstack_leaf``. A batched action ``array[N, ...]`` becomes N ``array[...]``;
     a batched chunk ``array[N, horizon, ...]`` splits the batch axis only, leaving
-    each lane's chunk (``horizon``) axis intact.
+    each lane's chunk (``horizon``) axis intact. A text leaf batches as the
+    per-lane ``list`` of strings ``tree_stack`` builds, so such a list is a leaf.
     """
+    if (
+        isinstance(value, list)
+        and value
+        and all(isinstance(item, (str, bytes)) for item in cast("list[object]", value))
+    ):
+        return list(unstack_leaf(value, n))
     if isinstance(value, dict):
         mapping = cast("Mapping[str, object]", value)
         cols = {

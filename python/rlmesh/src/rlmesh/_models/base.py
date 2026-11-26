@@ -996,7 +996,8 @@ class ModelBase(Generic[ObsT, ActT]):
         (a NumPy/Torch/JAX array per leaf, stacked for this model's framework), not a
         list of N dicts. Return the batched action the same way: one value whose
         leaves carry the leading batch axis (e.g. ``array[N, action_dim]``); the
-        runtime splits it back per lane. The engine prefers this corner for a
+        runtime splits it back per lane. Text cannot stack, so a text leaf arrives
+        as a ``list`` of N strings and is returned as one. The engine prefers this corner for a
         vectorized route; the default raises and the route is driven per-lane through
         :meth:`predict`.
 
