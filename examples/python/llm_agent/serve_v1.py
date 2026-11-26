@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import functools
 import os
+import threading
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -153,6 +154,7 @@ class _BridgeClient(vf.Client):
         return response
 
 
+_bridge_lock = threading.Lock()
 _bridged: V1EnvEnv | None = None
 
 
@@ -184,6 +186,7 @@ class V1EnvEnv(ChatTaskEnv):
         self.ctx = vf.ModelContext(model="rlmesh", client=vf.EvalClientConfig())
         self.episode: asyncio.Task[Any] | None = None
         self.reply: asyncio.Future[Message] | None = None
+        self.resolve_client: Any = None
 
     @functools.cached_property
     def loop(self) -> asyncio.AbstractEventLoop:
@@ -193,21 +196,36 @@ class V1EnvEnv(ChatTaskEnv):
         if not self.env_id:
             raise ValueError("no environment: pass env_id or set ENV_ID")
         global _bridged
-        if _bridged is not None and _bridged is not self:
-            raise RuntimeError(
-                "one V1EnvEnv per process (the interception server's client is "
-                "module-global); serve it with RLMESH_NUM_ENVS=1"
+        with _bridge_lock:
+            if _bridged is not None and _bridged is not self:
+                raise RuntimeError(
+                    "one V1EnvEnv per process (the interception server's client is "
+                    "module-global); serve it with RLMESH_NUM_ENVS=1"
+                )
+            _bridged = self
+            self.resolve_client = interception_server.resolve_client
+            # The interception server resolves only eval/train endpoints.
+            interception_server.resolve_client = lambda config: self.client
+        try:
+            taskset = vf.taskset_config_type(self.env_id)(
+                id=self.env_id, **({"domain": self.domain} if self.domain else {})
             )
-        taskset = vf.taskset_config_type(self.env_id)(
-            id=self.env_id, **({"domain": self.domain} if self.domain else {})
-        )
-        env = vf.load_environment(vf.env_config_type(self.env_id)(taskset=taskset))
-        tasks = list(env.taskset.load())
-        # The interception server only resolves eval/train endpoints; route it to RLMesh.
-        interception_server.resolve_client = lambda config: self.client
-        _bridged = self
-        self.loop.run_until_complete(self.serving.enter_async_context(env.serving()))
+            env = vf.load_environment(vf.env_config_type(self.env_id)(taskset=taskset))
+            tasks = list(env.taskset.load())
+            self.loop.run_until_complete(
+                self.serving.enter_async_context(env.serving())
+            )
+        except BaseException:
+            self._release()
+            raise
         self.env, self.tasks = env, tasks
+
+    def _release(self) -> None:
+        global _bridged
+        with _bridge_lock:
+            if _bridged is self:
+                interception_server.resolve_client = self.resolve_client
+                _bridged = None
 
     def start(self, index: int) -> Turn:
         self._abandon()
@@ -265,12 +283,12 @@ class V1EnvEnv(ChatTaskEnv):
         return Turn([], rewards=rewards, reward=reward, truncated=truncated, info=info)
 
     def close(self) -> None:
-        global _bridged
-        self._abandon()
-        self.loop.run_until_complete(self.serving.aclose())
-        self.loop.close()
-        if _bridged is self:
-            _bridged = None
+        try:
+            self._abandon()
+            self.loop.run_until_complete(self.serving.aclose())
+            self.loop.close()
+        finally:
+            self._release()
 
     def _advance(self, first: bool = False) -> Turn | None:
         """Run the episode until it asks the model again (a turn) or ends (None).
