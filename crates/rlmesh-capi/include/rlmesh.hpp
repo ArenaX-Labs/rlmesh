@@ -910,13 +910,19 @@ std::vector<T> to_vector(const Tensor& tensor) {
   if (tensor.dtype() != dtype_of<T>())
     throw TypeError("expected a " + std::string(to_string(dtype_of<T>())) + " tensor, got " +
                     std::string(to_string(tensor.dtype())));
-  std::vector<std::byte> bytes = tensor.tobytes();
-  std::vector<T> out(bytes.size() / sizeof(T));
+  std::vector<std::byte> strided;
+  Span<const std::byte> bytes = tensor.buffer();
+  if (!tensor.is_contiguous()) {
+    strided = tensor.tobytes();
+    bytes = strided;
+  }
+  std::vector<T> out(tensor.size());
   if constexpr (std::is_same_v<T, bool>)
-    std::transform(bytes.begin(), bytes.end(), out.begin(),
+    std::transform(bytes.begin(), bytes.begin() + out.size(), out.begin(),
                    [](std::byte b) { return b != std::byte{0}; });
   else
-    std::copy(bytes.begin(), bytes.end(), reinterpret_cast<std::byte*>(out.data()));
+    std::copy(bytes.begin(), bytes.begin() + out.size() * sizeof(T),
+              reinterpret_cast<std::byte*>(out.data()));
   return out;
 }
 }  // namespace ext
