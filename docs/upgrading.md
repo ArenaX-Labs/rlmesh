@@ -29,7 +29,7 @@ ENV RLMESH_ADDRESS=0.0.0.0:50051
 
 ```dockerfile
 # 0.2
-RUN pip install --no-cache-dir "rlmesh==0.2.0a1"
+RUN pip install --no-cache-dir "rlmesh==0.2.0a2"
 EXPOSE 7447
 ENV RLMESH_ADDRESS=0.0.0.0:7447
 ENV RLMESH_READY_FILE=/tmp/rlmesh-ready.json

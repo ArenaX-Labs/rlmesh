@@ -25,7 +25,7 @@ ollama serve
 The harness reads `OPENAI_BASE_URL` (default `http://localhost:11434/v1`) and `OPENAI_API_KEY` (default `ollama`), so any OpenAI-compatible server works. It needs `rlmesh` and `openai`:
 
 ```bash
-uv pip install --pre "rlmesh>=0.2.0a1" openai
+uv pip install --pre "rlmesh>=0.2.0a2" openai
 ```
 
 verifiers v1 and v0 can't share an interpreter, so each env server gets its own venv; RLMesh's process boundary keeps them apart from the harness. Hub packages come from Prime's index (`--extra-index-url` would resolve `wordle` to an unrelated PyPI package):
@@ -133,7 +133,7 @@ python run_docker.py --env-image llm-env-v0 -n 1
 python run_docker.py --env-image llm-env-humaneval -n 1 --output runs/humaneval
 ```
 
-The images install `rlmesh==0.2.0a1` from PyPI, and the host must run the same build: a repository checkout's dev build speaks only to itself, so run `run_docker.py` from a venv with `rlmesh==0.2.0a1` installed (`--build-arg RLMESH_VERSION=...` pins another release).
+The images install `rlmesh==0.2.0a2` from PyPI, and the host must run the same build: a repository checkout's dev build speaks only to itself, so run `run_docker.py` from a venv with `rlmesh==0.2.0a2` installed (`--build-arg RLMESH_VERSION=...` pins another release).
 
 A sandbox env joined by a sandbox model is reached on the Docker bridge network, which Docker Desktop (macOS, Windows) doesn't route to from the host, so there the run times out waiting for the session host. Either run the harness on the host against the env image (`--local-harness`, needs `openai`), or run `run_docker.py` itself in a Linux container on the Docker VM's network. That needs Docker Desktop 4.34 or later with host networking enabled (Settings → Resources → Network), and the mounted Docker socket gives the driver control of the daemon:
 
@@ -141,7 +141,7 @@ A sandbox env joined by a sandbox model is reached on the Docker bridge network,
 docker build -t llm-driver - <<'EOF'
 FROM python:3.11-slim
 COPY --from=docker:28.0.4-cli /usr/local/bin/docker /usr/local/bin/docker
-RUN pip install --no-cache-dir rlmesh==0.2.0a1
+RUN pip install --no-cache-dir rlmesh==0.2.0a2
 EOF
 docker run --rm --network host -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$PWD:$PWD" -w "$PWD" llm-driver python run_docker.py --env-image llm-env-v0
