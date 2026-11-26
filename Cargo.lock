@@ -5438,6 +5438,7 @@ dependencies = [
  "rlmesh-spaces 0.2.0-alpha.2",
  "rustls",
  "scoped-tls-hkt",
+ "security-framework",
  "serde",
  "serde_json",
  "tempfile",

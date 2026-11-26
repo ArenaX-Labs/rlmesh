@@ -21,7 +21,6 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 [dependencies]
 anyhow = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }
-keyring = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["form", "json", "query"], optional = true }
 rustls = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
@@ -62,6 +61,12 @@ uuid = { workspace = true, features = ["v4", "v7"] }
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { workspace = true, optional = true }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+keyring = { workspace = true, optional = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 re_mp4 = { workspace = true }
@@ -71,7 +76,15 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 
 [features]
 default = ["managed", "viewer"]
-managed = ["dep:anyhow", "dep:dirs", "dep:keyring", "dep:reqwest", "dep:rustls", "dep:toml"]
+managed = [
+  "dep:anyhow",
+  "dep:dirs",
+  "dep:keyring",
+  "dep:reqwest",
+  "dep:rustls",
+  "dep:security-framework",
+  "dep:toml",
+]
 viewer = ["dep:crossterm", "dep:tiny_http", "image/jpeg"]
 
 [lints]

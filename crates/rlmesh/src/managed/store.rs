@@ -14,6 +14,7 @@ use std::{
     fmt, fs,
     io::Write,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 const APP_NAME: &str = "rlmesh";
@@ -388,10 +389,76 @@ impl ProfileStore {
     }
 }
 
+/// One generic-password item per profile under the service `rlmesh`. Each
+/// method is a single keychain call: on macOS every call that reads the
+/// secret can raise an access prompt.
+trait Keychain: Send + Sync {
+    /// The stored payload; `None` when there is none or it cannot be read.
+    fn read(&self, profile: &str) -> Option<String>;
+    /// Creates or replaces the item; `false` when the keychain refused.
+    fn write(&self, profile: &str, payload: &str) -> bool;
+    /// Whether an item was removed.
+    fn delete(&self, profile: &str) -> Result<bool>;
+}
+
+struct SystemKeychain;
+
+#[cfg(target_os = "macos")]
+impl Keychain for SystemKeychain {
+    fn read(&self, profile: &str) -> Option<String> {
+        use security_framework::passwords::{PasswordOptions, generic_password};
+        let bytes =
+            generic_password(PasswordOptions::new_generic_password(APP_NAME, profile)).ok()?;
+        String::from_utf8(bytes).ok()
+    }
+
+    // SecItemAdd then SecItemUpdate never decrypts the existing item, unlike
+    // SecKeychainFindGenericPassword followed by a modify.
+    fn write(&self, profile: &str, payload: &str) -> bool {
+        security_framework::passwords::set_generic_password(APP_NAME, profile, payload.as_bytes())
+            .is_ok()
+    }
+
+    fn delete(&self, profile: &str) -> Result<bool> {
+        const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+        match security_framework::passwords::delete_generic_password(APP_NAME, profile) {
+            Ok(()) => Ok(true),
+            Err(err) if err.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(false),
+            Err(err) => Err(anyhow!(err)),
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl Keychain for SystemKeychain {
+    fn read(&self, profile: &str) -> Option<String> {
+        keyring::Entry::new(APP_NAME, profile)
+            .ok()?
+            .get_password()
+            .ok()
+    }
+
+    fn write(&self, profile: &str, payload: &str) -> bool {
+        keyring::Entry::new(APP_NAME, profile)
+            .is_ok_and(|entry| entry.set_password(payload).is_ok())
+    }
+
+    fn delete(&self, profile: &str) -> Result<bool> {
+        let Ok(entry) = keyring::Entry::new(APP_NAME, profile) else {
+            return Ok(false);
+        };
+        match entry.delete_credential() {
+            Ok(()) => Ok(true),
+            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(err) => Err(anyhow!(err)),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct CredentialsStore {
     file: PathBuf,
-    keychain: bool,
+    keychain: Option<Arc<dyn Keychain>>,
     cached_credentials: BTreeMap<String, Credentials>,
 }
 
@@ -399,28 +466,25 @@ impl CredentialsStore {
     fn load(settings: &Settings) -> Result<Self> {
         Ok(Self {
             file: credentials_path(settings)?,
-            keychain: settings.keychain,
+            keychain: settings
+                .keychain
+                .then(|| Arc::new(SystemKeychain) as Arc<dyn Keychain>),
             cached_credentials: BTreeMap::new(),
         })
     }
 
-    fn keychain_entry(&self, profile: &str) -> Option<keyring::Entry> {
-        self.keychain
-            .then(|| keyring::Entry::new(APP_NAME, profile).ok())
-            .flatten()
-    }
-
     fn save(&mut self, profile: &str, credentials: &Credentials) -> Result<CredentialStorage> {
-        if let Some(entry) = self.keychain_entry(profile) {
+        if let Some(keychain) = &self.keychain {
             let payload = serde_json::to_string(credentials).context("serializing credentials")?;
-            if entry.set_password(&payload).is_ok() {
+            if keychain.write(profile, &payload) {
                 self.remove_file_credentials(profile)?;
                 self.cached_credentials
                     .insert(profile.to_owned(), credentials.clone());
                 return Ok(CredentialStorage::Keychain);
             }
 
-            let _ = entry.delete_credential();
+            // A stale item left behind would win over the file on the next read.
+            let _ = keychain.delete(profile);
         }
 
         self.save_file_credentials(profile, credentials)?;
@@ -440,8 +504,10 @@ impl CredentialsStore {
         }
 
         // The keychain wins over the file fallback; an unparsable payload reads as signed out.
-        if let Some(entry) = self.keychain_entry(profile)
-            && let Ok(payload) = entry.get_password()
+        if let Some(payload) = self
+            .keychain
+            .as_ref()
+            .and_then(|keychain| keychain.read(profile))
         {
             let credentials = serde_json::from_str::<Credentials>(&payload).ok();
             if let Some(credentials) = &credentials {
@@ -464,11 +530,10 @@ impl CredentialsStore {
     fn delete(&mut self, profile: &str) -> Result<bool> {
         self.cached_credentials.remove(profile);
 
-        let (keychain_removed, keychain_error) = match self.keychain_entry(profile) {
-            Some(entry) => match entry.delete_credential() {
-                Ok(()) => (true, None),
-                Err(keyring::Error::NoEntry) => (false, None),
-                Err(err) => (false, Some(anyhow!(err))),
+        let (keychain_removed, keychain_error) = match &self.keychain {
+            Some(keychain) => match keychain.delete(profile) {
+                Ok(removed) => (removed, None),
+                Err(err) => (false, Some(err)),
             },
             None => (false, None),
         };
@@ -614,7 +679,7 @@ mod tests {
             config_path: PathBuf::new(),
             credentials: CredentialsStore {
                 file: PathBuf::new(),
-                keychain: false,
+                keychain: None,
                 cached_credentials: BTreeMap::new(),
             },
             api_key: None,
@@ -703,7 +768,7 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         let store = CredentialsStore {
             file: directory.join("credentials.json"),
-            keychain: false,
+            keychain: None,
             cached_credentials: BTreeMap::new(),
         };
 
@@ -735,6 +800,121 @@ mod tests {
         assert_eq!(credentials.refresh_token, "refresh_new");
 
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[derive(Default)]
+    struct RecordingKeychain {
+        items: std::sync::Mutex<BTreeMap<String, String>>,
+        calls: std::sync::Mutex<Vec<&'static str>>,
+        refuse_writes: bool,
+    }
+
+    impl RecordingKeychain {
+        fn take_calls(&self) -> Vec<&'static str> {
+            std::mem::take(&mut *self.calls.lock().unwrap())
+        }
+    }
+
+    impl Keychain for RecordingKeychain {
+        fn read(&self, profile: &str) -> Option<String> {
+            self.calls.lock().unwrap().push("read");
+            self.items.lock().unwrap().get(profile).cloned()
+        }
+
+        fn write(&self, profile: &str, payload: &str) -> bool {
+            self.calls.lock().unwrap().push("write");
+            if !self.refuse_writes {
+                self.items
+                    .lock()
+                    .unwrap()
+                    .insert(profile.to_owned(), payload.to_owned());
+            }
+            !self.refuse_writes
+        }
+
+        fn delete(&self, profile: &str) -> Result<bool> {
+            self.calls.lock().unwrap().push("delete");
+            Ok(self.items.lock().unwrap().remove(profile).is_some())
+        }
+    }
+
+    fn keychain_store(directory: &Path, keychain: &Arc<RecordingKeychain>) -> CredentialsStore {
+        CredentialsStore {
+            file: directory.join("credentials.json"),
+            keychain: Some(keychain.clone()),
+            cached_credentials: BTreeMap::new(),
+        }
+    }
+
+    fn tokens(access: &str, refresh: &str) -> Credentials {
+        Credentials {
+            access_token: access.to_owned(),
+            refresh_token: refresh.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_session_refresh_is_two_keychain_reads_and_one_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let keychain = Arc::new(RecordingKeychain::default());
+        let mut store = keychain_store(directory.path(), &keychain);
+        store
+            .save("default", &tokens("access_old", "refresh_old"))
+            .unwrap();
+        assert_eq!(keychain.take_calls(), ["write"]);
+
+        let mut store = keychain_store(directory.path(), &keychain);
+        assert_eq!(
+            store.get("default").unwrap().unwrap().refresh_token,
+            "refresh_old"
+        );
+        store.get("default").unwrap();
+        assert_eq!(
+            store.reload("default").unwrap().unwrap().refresh_token,
+            "refresh_old"
+        );
+        assert_eq!(
+            store
+                .save("default", &tokens("access_new", "refresh_new"))
+                .unwrap(),
+            CredentialStorage::Keychain
+        );
+        assert_eq!(
+            store.get("default").unwrap().unwrap().access_token,
+            "access_new"
+        );
+        assert_eq!(keychain.take_calls(), ["read", "read", "write"]);
+
+        assert!(store.delete("default").unwrap());
+        assert!(!store.delete("default").unwrap());
+        assert_eq!(keychain.take_calls(), ["delete", "delete"]);
+        assert!(!store.file.exists());
+    }
+
+    #[test]
+    fn a_refused_keychain_write_falls_back_to_the_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let keychain = Arc::new(RecordingKeychain {
+            refuse_writes: true,
+            ..RecordingKeychain::default()
+        });
+        keychain
+            .items
+            .lock()
+            .unwrap()
+            .insert("default".to_owned(), "stale".to_owned());
+        let mut store = keychain_store(directory.path(), &keychain);
+
+        assert_eq!(
+            store.save("default", &tokens("access", "refresh")).unwrap(),
+            CredentialStorage::File(store.file.clone())
+        );
+        assert_eq!(keychain.take_calls(), ["write", "delete"]);
+        let mut fresh = keychain_store(directory.path(), &keychain);
+        assert_eq!(
+            fresh.get("default").unwrap().unwrap().refresh_token,
+            "refresh"
+        );
     }
 
     #[test]
