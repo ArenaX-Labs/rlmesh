@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A served model without a `spec` (a text or LLM harness) that defines `predict_batch` or `predict_chunk_batch` now gets every coalesced session's rows in one call, each row with its own context, instead of one call per session. Each session keeps its own outcome: an action that does not fit fails only that session. This holds in Python and in Rust, and so in C, C++ and C#. A vector env served to such a model at `execution_horizon > 1` uses `predict_chunk_batch` too.
+- A served model's batches no longer alternate between sessions that fell out of step. After a forward ends, the next batch stays open up to `batch_window_ms` for the sessions that forward answered.
+- A NumPy, PyTorch or JAX model's `predict_batch` can return a text action as a list of one string per row, the shape its text observations arrive in.
+
+### Added
+
+- The LLM agent example's harness answers a batch of sessions with one concurrent chat call per row.
+
 ## [0.2.0-alpha.2] - 2026-11-25
 
 Workflow editions become a local declaration, and the session wire revision is the one compatibility gate inside 0.2. This release is wire revision 2: it does not talk to 0.2.0-alpha.1, so rebuild images on it.

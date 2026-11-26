@@ -11,6 +11,7 @@ import os
 import re
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import rlmesh
@@ -156,6 +157,17 @@ class LLMHarness(rlmesh.Model):
         reply.pop("reasoning", None)
         messages.append(reply)
         return json.dumps(reply)
+
+    def predict_batch(
+        self, observations: list[str], context: list[PredictContext]
+    ) -> list[str]:
+        """Answer every session's step in the batch at once, one chat call per row.
+
+        A served harness answers many episodes; their steps arrive together and
+        each row's call runs on its own thread, so a batch takes about one call.
+        """
+        with ThreadPoolExecutor(max_workers=len(observations)) as pool:
+            return list(pool.map(self.predict, observations, context))
 
     def on_episode_end(self, episode_id: str = "") -> None:
         episode = episode_id or "episode"

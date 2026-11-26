@@ -40,6 +40,34 @@ def test_harness_solves_served_addition_task(
     assert json.loads(env_log.read_text())["rewards"] == {"correct": 1.0}
 
 
+def test_harness_batch_calls_the_llm_for_every_row_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    monkeypatch.setenv("RLMESH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.syspath_prepend(str(EXAMPLES / "llm_agent"))
+    from harness import LLMHarness
+
+    together = threading.Barrier(3, timeout=10)
+
+    def chat(messages: list[Any], tools: list[Any]) -> tuple[Any, Any]:
+        together.wait()
+        return {"role": "assistant", "content": messages[-1]["content"]}, {}
+
+    harness = LLMHarness(model="fake", chat=chat, retries=0)
+    observations = [
+        json.dumps({"messages": [{"role": "user", "content": f"q{i}"}], "tools": []})
+        for i in range(3)
+    ]
+    contexts: list[Any] = [
+        {"episode_id": f"e{i}", "predict_index": 0, "state": {}} for i in range(3)
+    ]
+    replies = harness.predict_batch(observations, contexts)
+    assert [json.loads(reply)["content"] for reply in replies] == ["q0", "q1", "q2"]
+    assert [len(c["state"]["messages"]) for c in contexts] == [2, 2, 2]
+
+
 class _Msg(SimpleNamespace):
     def model_dump(self, **_: Any) -> dict[str, Any]:
         return dict(vars(self))
