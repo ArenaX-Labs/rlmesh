@@ -143,7 +143,8 @@ impl PyPredict {
     /// the horizon for the batched chunk corner, `None` when it has no batched corner.
     fn spec_less_bucket(&self, horizon: u32) -> Option<u32> {
         let horizon = horizon.max(1);
-        if horizon > 1 && self.predict_chunk_fn.is_some() {
+        if horizon > 1 && (self.predict_chunk_fn.is_some() || self.predict_chunk_batch_fn.is_some())
+        {
             self.predict_chunk_batch_fn.is_some().then_some(horizon)
         } else {
             self.predict_batch_fn.is_some().then_some(1)
@@ -583,25 +584,29 @@ impl PredictFn for PyPredict {
     ) -> Vec<rlmesh::Result<PredictFrames>> {
         let mut outcomes: Vec<Option<rlmesh::Result<PredictFrames>>> =
             (0..groups.len()).map(|_| None).collect();
-        let mut buckets: std::collections::BTreeMap<u32, Vec<(usize, ModelObservation)>> =
+        let mut buckets: std::collections::BTreeMap<u32, Vec<(usize, ModelObservation, u32)>> =
             std::collections::BTreeMap::new();
         let mut single: Vec<(usize, ModelObservation, u32)> = Vec::new();
         for (index, (observation, horizon)) in groups.into_iter().enumerate() {
             match self.spec_less_bucket(horizon) {
                 Some(key) if observation.observation.is_some() => {
-                    buckets.entry(key).or_default().push((index, observation));
+                    buckets
+                        .entry(key)
+                        .or_default()
+                        .push((index, observation, horizon));
                 }
                 _ => single.push((index, observation, horizon)),
             }
         }
         for (key, members) in buckets {
             if members.len() == 1 {
-                let (index, observation) = members.into_iter().next().expect("one member");
-                single.push((index, observation, key));
+                single.extend(members);
                 continue;
             }
-            let (indices, observations): (Vec<usize>, Vec<ModelObservation>) =
-                members.into_iter().unzip();
+            let (indices, observations): (Vec<usize>, Vec<ModelObservation>) = members
+                .into_iter()
+                .map(|(index, observation, _)| (index, observation))
+                .unzip();
             let horizon = (key > 1).then_some(key);
             for (index, outcome) in indices
                 .into_iter()

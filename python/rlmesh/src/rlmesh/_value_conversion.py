@@ -156,6 +156,24 @@ def tree_stack(
     return stack_leaf(list(trees))
 
 
+def _is_text(item: object) -> bool:
+    return isinstance(item, (str, bytes))
+
+
+def _text_rows(rows: list[object]) -> bool:
+    """Whether ``rows`` is a text leaf's per-lane list: strings, or string chunks."""
+    if not rows:
+        return False
+    if all(_is_text(row) for row in rows):
+        return True
+    return all(
+        isinstance(row, list)
+        and bool(cast("list[object]", row))
+        and all(_is_text(item) for item in cast("list[object]", row))
+        for row in rows
+    )
+
+
 def tree_unstack(
     value: object, n: int, unstack_leaf: Callable[[object, int], list[object]]
 ) -> list[object]:
@@ -165,14 +183,13 @@ def tree_unstack(
     ``unstack_leaf``. A batched action ``array[N, ...]`` becomes N ``array[...]``;
     a batched chunk ``array[N, horizon, ...]`` splits the batch axis only, leaving
     each lane's chunk (``horizon``) axis intact. A text leaf batches as the
-    per-lane ``list`` of strings ``tree_stack`` builds, so such a list is a leaf.
+    per-lane ``list`` of strings ``tree_stack`` builds, so such a list (or a
+    list of per-lane string chunks) is a leaf.
     """
-    if (
-        isinstance(value, list)
-        and value
-        and all(isinstance(item, (str, bytes)) for item in cast("list[object]", value))
-    ):
-        return list(unstack_leaf(value, n))
+    if isinstance(value, list):
+        rows = cast("list[object]", value)
+        if _text_rows(rows):
+            return list(unstack_leaf(rows, n))
     if isinstance(value, dict):
         mapping = cast("Mapping[str, object]", value)
         cols = {

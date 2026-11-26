@@ -690,7 +690,10 @@ impl PredictFn for ModelPredict {
                 replay: Vec::new(),
             });
         }
-        if let Some(key) = self.spec_less_bucket(horizon) {
+        let bucket = self
+            .spec_less_bucket(horizon)
+            .or_else(|| self.corners().contains(Corners::PREDICT_BATCH).then_some(1));
+        if let Some(key) = bucket {
             let horizon = (key > 1).then_some(key);
             return self
                 .predict_spec_less_fused(vec![staged], horizon)
@@ -727,25 +730,27 @@ impl PredictFn for ModelPredict {
     ) -> Vec<Result<PredictFrames>> {
         let mut outcomes: Vec<Option<Result<PredictFrames>>> =
             (0..groups.len()).map(|_| None).collect();
-        let mut buckets: BTreeMap<u32, Vec<(usize, ModelObservation)>> = BTreeMap::new();
+        let mut buckets: BTreeMap<u32, Vec<(usize, ModelObservation, u32)>> = BTreeMap::new();
         let mut single: Vec<(usize, ModelObservation, u32)> = Vec::new();
         for (index, (observation, horizon)) in groups.into_iter().enumerate() {
             match self.spec_less_bucket(horizon) {
                 Some(key) if observation.observation.is_some() => {
-                    buckets.entry(key).or_default().push((index, observation));
+                    buckets
+                        .entry(key)
+                        .or_default()
+                        .push((index, observation, horizon));
                 }
                 _ => single.push((index, observation, horizon)),
             }
         }
         for (key, members) in buckets {
             if members.len() == 1 {
-                let (index, observation) = members.into_iter().next().expect("one member");
-                single.push((index, observation, key));
+                single.extend(members);
                 continue;
             }
             let mut indices = Vec::with_capacity(members.len());
             let mut staged = Vec::with_capacity(members.len());
-            for (index, observation) in members {
+            for (index, observation, _) in members {
                 match self.stage_spec_less(observation) {
                     Ok(lanes) => {
                         indices.push(index);

@@ -61,6 +61,8 @@ def test_a_text_leaf_returns_as_its_per_lane_list() -> None:
     assert parts[1]["move"].tolist() == [0, 1]
     with pytest.raises(ValueError, match="into 3 lanes"):
         bridge.tree_unstack(["a", "b"], 3)
+    chunks = [["a0", "a1"], ["b0", "b1"]]
+    assert bridge.tree_unstack(chunks, 2) == chunks
 
 
 def test_unstack_rejects_wrong_leading_axis() -> None:

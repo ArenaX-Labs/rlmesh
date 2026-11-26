@@ -278,3 +278,62 @@ async fn a_spec_less_chunk_batch_model_fuses_groups_and_vector_lanes() {
     assert_eq!(texts(&frames), vec!["b0'@0", "b1'@0"]);
     assert_eq!(frames.replay.len(), 1, "a lone vector group chunks too");
 }
+
+struct ChunkOrBatch(Calls);
+
+impl rlmesh::Policy for ChunkOrBatch {
+    const CORNERS: Corners = Corners::PREDICT
+        .union(Corners::PREDICT_CHUNK)
+        .union(Corners::PREDICT_BATCH);
+    const CONTEXT: Corners = Corners::PREDICT_BATCH;
+
+    fn predict(&mut self, observation: Value) -> rlmesh::Result<Value> {
+        Ok(observation)
+    }
+
+    fn predict_chunk(&mut self, observation: Value, _horizon: u32) -> rlmesh::Result<Value> {
+        Ok(Value::List(vec![observation]))
+    }
+
+    fn predict_batch_with_context(
+        &mut self,
+        observations: Vec<Value>,
+        context: &mut BatchPredictContext<'_>,
+    ) -> rlmesh::Result<Vec<Value>> {
+        Harness(Arc::clone(&self.0)).predict_batch_with_context(observations, context)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_vector_group_without_a_chunk_batch_corner_takes_the_batched_corner() {
+    let calls = Calls::default();
+    let model = Model::new(ChunkOrBatch(Arc::clone(&calls)), ModelOptions::default()).unwrap();
+    let mut handler = model_handler(&model);
+    handler
+        .route_setup()
+        .unwrap()
+        .resolve_adapter(
+            "v",
+            &contract(common::text(), 2),
+            ResolveOptions {
+                execution_horizon: 2,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let frames = handler
+        .predict_chunked(group("v", &["v0", "v1"], common::text()))
+        .await
+        .unwrap();
+    assert_eq!(texts(&frames), vec!["re:v0", "re:v1"]);
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0]
+            .iter()
+            .map(|row| row.0.as_str())
+            .collect::<Vec<_>>(),
+        vec!["v-0", "v-1"]
+    );
+}
