@@ -4,6 +4,7 @@
 
 #include "Components/ActorComponent.h"
 #include "CoreMinimal.h"
+#include "Math/RandomStream.h"
 #include "RLMeshGameThreadEnv.h"
 
 #include "RLMeshEnvComponent.generated.h"
@@ -45,6 +46,9 @@ protected:
 		PURE_VIRTUAL(URLMeshEnvComponent::ResetEnv, return rlmesh::ResetResult(););
 	virtual rlmesh::StepResult StepEnv(const std::optional<rlmesh::Value>& Action)
 		PURE_VIRTUAL(URLMeshEnvComponent::StepEnv, return rlmesh::StepResult(););
+
+	/** Reseeded from each seeded reset before ResetEnv runs; an unseeded reset continues it. */
+	FRandomStream Random;
 
 private:
 	std::shared_ptr<FRLMeshGameThread> GameThread;

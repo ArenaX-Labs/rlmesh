@@ -1,5 +1,8 @@
 #include "RLMeshEnvComponent.h"
 
+#include "Components/SceneComponent.h"
+#include "GameFramework/Actor.h"
+
 #include <exception>
 #include <string>
 #include <utility>
@@ -15,6 +18,14 @@ void URLMeshEnvComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
+	USceneComponent* Root = GetOwner()->GetRootComponent();
+	if (Root && Root->Mobility != EComponentMobility::Movable)
+	{
+		Root->SetMobility(EComponentMobility::Movable);
+		UE_LOG(LogRLMesh, Log, TEXT("Set %s to Movable so %s can move it"), *GetOwner()->GetName(), *EnvId);
+	}
+	Random.GenerateNewSeed();
+
 	GameThread = std::make_shared<FRLMeshGameThread>();
 	try
 	{
@@ -22,6 +33,12 @@ void URLMeshEnvComponent::BeginPlay()
 			GameThread, ObservationSpace(), ActionSpace(), std::string(TCHAR_TO_UTF8(*EnvId)),
 			[this](std::optional<int64_t> Seed, const std::optional<rlmesh::InfoDict>& Options)
 			{
+				if (Seed)
+				{
+					// FRandomStream takes an int32: fold in the high half so seeds differing only there differ.
+					const uint64 Bits = static_cast<uint64>(*Seed);
+					Random.Initialize(static_cast<int32>(Bits ^ (Bits >> 32)));
+				}
 				return ResetEnv(Seed, Options);
 			},
 			[this](std::optional<rlmesh::Value> Action)

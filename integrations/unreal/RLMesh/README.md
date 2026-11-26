@@ -62,7 +62,7 @@ protected:
 };
 ```
 
-`ResetEnv` and `StepEnv` run on the game thread, from the component's tick, so they may read and change actors freely. A step takes at least one frame; for faster episodes, lower the frame time or run with a fixed time step. Set **Address** on the component to serve elsewhere (port 0 picks a free port, which `GetServedAddress` returns) and **Env Id** to name the env.
+`ResetEnv` and `StepEnv` run on the game thread, from the component's tick, so they may read and change actors freely. At BeginPlay the component makes its actor's root Movable, so steps can move it. Draw randomness from the component's `Random` stream: each reset with a seed reseeds it before `ResetEnv` runs, so a seed replays the same episode. An action that does not fit `ActionSpace()` (wrong dtype or shape, a `Discrete` value out of range) is refused before `StepEnv` runs. A step takes at least one frame; for faster episodes, lower the frame time or run with a fixed time step. Set **Address** on the component to serve elsewhere (port 0 picks a free port, which `GetServedAddress` returns) and **Env Id** to name the env.
 
 Throw `rlmesh::RecoverableEnvironmentException` from `ResetEnv` or `StepEnv` to fail one request while the client keeps its session; any other exception ends the session. The component catches every RLMesh exception at the Unreal boundary and logs it under `LogRLMesh`.
 
