@@ -858,6 +858,66 @@ class Tensor {
 };
 inline std::string to_string(const Tensor& v) { return v.to_string(); }
 inline std::ostream& operator<<(std::ostream& s, const Tensor& v) { return s << v.to_string(); }
+namespace ext {
+/// The dtype whose elements are `T`: `bool`, a fixed-width integer, `float` or `double`.
+template <class T>
+constexpr DType dtype_of() {
+  if constexpr (std::is_same_v<T, bool>)
+    return DType::Bool;
+  else if constexpr (std::is_same_v<T, uint8_t>)
+    return DType::Uint8;
+  else if constexpr (std::is_same_v<T, uint16_t>)
+    return DType::Uint16;
+  else if constexpr (std::is_same_v<T, uint32_t>)
+    return DType::Uint32;
+  else if constexpr (std::is_same_v<T, uint64_t>)
+    return DType::Uint64;
+  else if constexpr (std::is_same_v<T, int8_t>)
+    return DType::Int8;
+  else if constexpr (std::is_same_v<T, int16_t>)
+    return DType::Int16;
+  else if constexpr (std::is_same_v<T, int32_t>)
+    return DType::Int32;
+  else if constexpr (std::is_same_v<T, int64_t>)
+    return DType::Int64;
+  else if constexpr (std::is_same_v<T, float>)
+    return DType::Float32;
+  else {
+    static_assert(std::is_same_v<T, double>,
+                  "rlmesh::ext::dtype_of: no dtype has this element type");
+    return DType::Float64;
+  }
+}
+
+/// A tensor copied from `data`, row-major in `shape`, of dtype `dtype_of<T>()`.
+/// Throws `ValueError` when `data` does not fill `shape`.
+template <class T>
+Tensor from_vector(const std::vector<T>& data, std::vector<size_t> shape) {
+  if constexpr (std::is_same_v<T, bool>) {
+    std::vector<uint8_t> bytes(data.begin(), data.end());
+    return Tensor(bytes.data(), bytes.size(), std::move(shape), DType::Bool);
+  } else {
+    return Tensor(data.data(), data.size() * sizeof(T), std::move(shape), dtype_of<T>());
+  }
+}
+
+/// A copy of the tensor's elements in row-major order. Throws `TypeError`
+/// unless the tensor's dtype is `dtype_of<T>()`.
+template <class T>
+std::vector<T> to_vector(const Tensor& tensor) {
+  if (tensor.dtype() != dtype_of<T>())
+    throw TypeError("expected a " + std::string(to_string(dtype_of<T>())) + " tensor, got " +
+                    std::string(to_string(tensor.dtype())));
+  std::vector<std::byte> bytes = tensor.tobytes();
+  std::vector<T> out(bytes.size() / sizeof(T));
+  if constexpr (std::is_same_v<T, bool>)
+    std::transform(bytes.begin(), bytes.end(), out.begin(),
+                   [](std::byte b) { return b != std::byte{0}; });
+  else
+    std::copy(bytes.begin(), bytes.end(), reinterpret_cast<std::byte*>(out.data()));
+  return out;
+}
+}  // namespace ext
 class Metadata;
 enum class ValueKind { None = 1, Bool, Int, Float, Text, Bytes, Tensor, List, Tuple, Dict };
 class Value {

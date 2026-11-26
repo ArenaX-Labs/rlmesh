@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+### Added
+
+- C++: `rlmesh::ext::from_vector` and `to_vector` copy between a `std::vector<T>` and a tensor whose dtype follows `T` (`ext::dtype_of<T>()`), so an env builds an observation or reads an action without byte sizes, dtype checks or casts.
+
 ## [0.2.0-alpha.2] - 2026-11-25
 
 Workflow editions become a local declaration, and the session wire revision is the one compatibility gate inside 0.2. This release is wire revision 2: it does not talk to 0.2.0-alpha.1, so rebuild images on it.
