@@ -25,6 +25,11 @@ elif [ "$target" = macos ]; then
   triple=universal-apple-darwin
 else
   triple="$(rustc -vV | sed -n 's/host: //p')"
+  case "$triple" in *-windows-gnu*)
+    echo "release:cxx:package on Windows needs the MSVC Rust host (x86_64-pc-windows-msvc), not $triple" >&2
+    exit 1
+    ;;
+  esac
 fi
 
 name="rlmesh-${version}-${triple}"

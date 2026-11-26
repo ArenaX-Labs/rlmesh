@@ -10,7 +10,14 @@ inc="$repo_root/crates/rlmesh-capi/include"
 target="target/debug"
 
 windows_host=0
-case "$(rustc -vV | sed -n 's/host: //p')" in *-windows-*) windows_host=1 ;; esac
+host_triple="$(rustc -vV | sed -n 's/host: //p')"
+case "$host_triple" in
+  *-windows-msvc) windows_host=1 ;;
+  *-windows-*)
+    echo "test:cxx on Windows needs the MSVC Rust host (x86_64-pc-windows-msvc), not $host_triple" >&2
+    exit 1
+    ;;
+esac
 
 c_compilers=("${CC:-zig cc}")
 if [ -z "${CC:-}" ] && [ "$windows_host" != 1 ] && command -v gcc >/dev/null; then
