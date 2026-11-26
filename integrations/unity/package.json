@@ -6,12 +6,5 @@
   "dependencies": {
     "com.rlmesh.rlmesh": "0.2.0-alpha.1"
   },
-  "samples": [
-    {
-      "displayName": "Reach Target",
-      "description": "Agent moves along world X toward a scene target Transform.",
-      "path": "Samples~/ReachTarget"
-    }
-  ],
   "unity": "6000.0"
 }

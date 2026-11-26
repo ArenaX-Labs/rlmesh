@@ -55,11 +55,6 @@ def main() -> None:
         )
     for name in ("package.json", "package.json.meta", "README.md", "README.md.meta"):
         shutil.copyfile(PACKAGE / name, integration / name)
-    sample = PROJECT / "Assets/rlmesh/Demo/ReachTarget"
-    if sample.exists():
-        shutil.rmtree(sample)
-    sample.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(PACKAGE / "Samples~/ReachTarget", sample)
     settings = PROJECT / "ProjectSettings"
     settings.mkdir(exist_ok=True)
     shutil.copyfile(PACKAGE / "ProjectVersion.txt", settings / "ProjectVersion.txt")

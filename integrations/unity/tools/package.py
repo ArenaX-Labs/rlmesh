@@ -24,8 +24,6 @@ INCLUDE = (
     "Runtime.meta",
     "Editor",
     "Editor.meta",
-    "Samples~",
-    "Samples~.meta",
 )
 
 

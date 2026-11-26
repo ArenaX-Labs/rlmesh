@@ -31,25 +31,6 @@ Only desktop 64-bit targets are in scope: Linux x64, Windows x64 and macOS
 (universal). Mobile and WebGL are unsupported. A platform's release gate must
 pass before support for it is claimed; the supplied player gate targets Linux.
 
-## Try Reach Target
-
-Installing the Unity package copies the Reach Target demo into
-`Assets/rlmesh/Demo/ReachTarget` when that folder is missing. Open
-`ReachTarget.unity`, confirm the Agent's `target` Transform points at the Target
-object, then press Play. The log shows `Serving Unity-ReachTarget-v0` on
-`127.0.0.1:7447/env`.
-
-The observation is a float32 tensor of shape `[1]`: the offset along world X to
-the assigned target. `Discrete(3)` actions move backward, stay, or move forward.
-Reward is minus the remaining distance; reaching within half a step terminates,
-and `maxSteps` truncates.
-
-```python
-import rlmesh
-
-print(rlmesh.run(rlmesh.RANDOM_SAMPLE, "127.0.0.1:7447", episodes=3))
-```
-
 ## Serve your own environment
 
 Subclass `RLMeshEnvBehaviour` and override the four environment members:
