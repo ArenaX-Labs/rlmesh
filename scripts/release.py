@@ -175,8 +175,9 @@ def publish_crates(version: str) -> None:
 
 
 def distribution_assets(version: str, root: Path = ROOT) -> list[Path]:
-    """0.2 publishes wheels to PyPI and crates to crates.io, without native assets."""
-    return []
+    """The notarized macOS CLI archive, when the macOS job built one; 0.2 attaches no other native assets."""
+    cli = root / "target/cli-pkg" / f"rlmesh-cli-{version}-universal-apple-darwin.tar.gz"
+    return [cli] if cli.is_file() else []
 
 
 def fenced_distribution_assets(version: str, root: Path = ROOT) -> list[Path]:
@@ -387,6 +388,11 @@ def selfcheck() -> None:
         assert distribution_assets("0.2.0", root) == [], (
             "0.2 must not attach native assets"
         )
+        cli = root / "target/cli-pkg/rlmesh-cli-0.2.0-universal-apple-darwin.tar.gz"
+        cli.parent.mkdir(parents=True)
+        cli.write_bytes(b"release fixture")
+        assert distribution_assets("0.2.0", root) == [cli]
+        run(sys.executable, "scripts/homebrew_cask.py", "0.2.0", str(cli))
         assets = fenced_distribution_assets("1.0.0", root)
         assert len(assets) == 6
         for asset in assets:

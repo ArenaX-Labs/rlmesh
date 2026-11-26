@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Build rlmesh wheels (cp310 + cp311-abi3) for one target alias"
+#MISE description="Build rlmesh wheels (cp310 + cp311-abi3) for one target alias; with RLMESH_MACOS_CLI set to a signed universal rlmesh, macOS wheels ship its slice as rlmesh/_bin/rlmesh"
 #MISE dir="{{ config_root }}"
 #USAGE flag "--skip-existing" help="Skip when both wheels for this target+version already exist in dist/"
 #USAGE arg "<target>" help="Target alias" {
@@ -55,6 +55,19 @@ if [ "$target" = windows ]; then
     export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
   fi
   . scripts/xwin-env.sh
+fi
+
+bundled="$repo_root/python/rlmesh/src/rlmesh/_bin"
+rm -rf "$bundled"
+if [ "$require_darwin" = 1 ] && [ -n "${RLMESH_MACOS_CLI:-}" ]; then
+  trap 'rm -rf "$bundled"' EXIT
+  mkdir -p "$bundled"
+  arch=arm64
+  [ "$target" = macos-x86 ] && arch=x86_64
+  # A universal binary signs each slice separately, so a thinned slice keeps its signature.
+  lipo -thin "$arch" "$RLMESH_MACOS_CLI" -output "$bundled/rlmesh"
+  chmod 755 "$bundled/rlmesh"
+  codesign --verify --strict "$bundled/rlmesh"
 fi
 
 cd python/rlmesh

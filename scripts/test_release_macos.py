@@ -48,9 +48,9 @@ esac
 """)
             path.chmod(0o700)
 
-    def invoke(self, mode="sign"):
+    def invoke(self, mode="sign", *paths):
         return subprocess.run(
-            ["bash", str(ROOT / "scripts/release-macos-sign.sh"), mode],
+            ["bash", str(ROOT / "scripts/release-macos-sign.sh"), mode, *paths],
             cwd=self.root,
             env=self.env,
             text=True,
@@ -99,6 +99,27 @@ esac
         )
         self.assertEqual(self.invoke("cleanup").returncode, 0)
         self.assertFalse((self.root / "rlmesh-notary.p8").exists())
+
+    def test_named_binaries_sign_with_the_identifier_and_keep_their_evidence(self):
+        self.credentials()
+        (self.root / "target/macos-cli").mkdir(parents=True)
+        self.env["RLMESH_CODESIGN_IDENTIFIER"] = "dev.rlmesh.cli"
+        result = self.invoke("sign", "target/macos-cli/rlmesh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (self.root / "commands").read_text()
+        self.assertIn(
+            "--options runtime --timestamp --identifier dev.rlmesh.cli target/macos-cli/rlmesh",
+            calls,
+        )
+        self.assertNotEqual(self.invoke("notarize").returncode, 0)
+        self.assertNotEqual(self.invoke("notarize", "a", "b").returncode, 0)
+        result = self.invoke("notarize", "target/macos-cli/rlmesh")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "ditto -c -k --keepParent target/macos-cli/rlmesh",
+            (self.root / "commands").read_text(),
+        )
+        self.assertTrue((self.root / "target/macos-cli/notarization-log.json").exists())
 
 
 if __name__ == "__main__":

@@ -251,6 +251,19 @@ fn eval_report(args: &cli::EvalReportArgs, stdout: &mut impl Write) -> Result<()
     Ok(())
 }
 
+/// The arguments the binary stands for when started under another name
+/// (a `docker-credential-rlmesh` or `rlmeshd` link to `rlmesh`).
+pub fn invoked_as(argv0: &OsStr) -> &'static [&'static str] {
+    match std::path::Path::new(argv0)
+        .file_stem()
+        .and_then(OsStr::to_str)
+    {
+        Some("docker-credential-rlmesh") => &["registry", "credential-helper"],
+        Some("rlmeshd") => &["host"],
+        _ => &[],
+    }
+}
+
 /// Terminal entrypoint shared by the `rlmesh` and `docker-credential-rlmesh`
 /// binaries; `prefix` routes the latter to its subcommand.
 pub async fn run_terminal(prefix: &[&str]) -> i32 {
@@ -351,6 +364,17 @@ mod tests {
             String::from_utf8(stdout).unwrap(),
             String::from_utf8(stderr).unwrap(),
         )
+    }
+
+    #[test]
+    fn links_to_the_binary_stand_for_their_commands() {
+        assert_eq!(
+            invoked_as(OsStr::new("/opt/homebrew/bin/docker-credential-rlmesh")),
+            ["registry", "credential-helper"]
+        );
+        assert_eq!(invoked_as(OsStr::new("rlmeshd")), ["host"]);
+        assert!(invoked_as(OsStr::new("rlmesh")).is_empty());
+        assert!(invoked_as(OsStr::new("/usr/local/bin/rlmesh")).is_empty());
     }
 
     #[tokio::test]

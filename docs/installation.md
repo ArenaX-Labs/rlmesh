@@ -10,6 +10,16 @@ To pin the alpha exactly (in a Dockerfile, say), name its version: `pip install 
 
 RLMesh supports Python 3.10 and newer. Start with Gymnasium for environments and the NumPy backend for examples and notebooks, then follow the [quickstart](https://rlmesh.dev/docs/start/quickstart/).
 
+## The CLI on macOS
+
+The `rlmesh` command comes with the Python package. On macOS you can also install it on its own, as a signed and notarized binary, with Homebrew:
+
+```bash
+brew install arenax-labs/tap/rlmesh
+```
+
+That installs `rlmesh`, `rlmeshd` and the `docker-credential-rlmesh` helper. Both routes run the same signed binary, so macOS asks once for Keychain access and remembers the answer across upgrades. If both are installed, the one first on `PATH` wins.
+
 ## Optional Extras
 
 Install only the extras you need:

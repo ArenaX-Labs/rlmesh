@@ -32,6 +32,54 @@ def test_python_entrypoint_marks_wheel_distribution_and_forwards(
     assert os.environ["RLMESH_PYTHON"] == sys.executable
 
 
+def test_wheel_entrypoint_execs_the_bundled_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def execv(path: str, args: list[str]) -> None:
+        captured["exec"] = (path, args)
+        captured["python"] = os.environ["RLMESH_PYTHON"]
+        raise SystemExit(0)
+
+    monkeypatch.delenv("RLMESH_PYTHON", raising=False)
+    monkeypatch.setattr(cli_main, "find_repo_root", lambda: None)
+    monkeypatch.setattr(cli_main, "_bundled_cli", lambda: "/site/rlmesh/_bin/rlmesh")
+    monkeypatch.setattr(cli_main.os, "execv", execv)
+
+    with pytest.raises(SystemExit):
+        cli_main.credential_helper_main(["get"])
+    assert captured == {
+        "exec": (
+            "/site/rlmesh/_bin/rlmesh",
+            [
+                "/site/rlmesh/_bin/rlmesh",
+                "registry",
+                "credential-helper",
+                "get",
+            ],
+        ),
+        "python": sys.executable,
+    }
+
+
+def test_checkout_entrypoint_never_execs_a_bundled_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(cli_main, "find_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(cli_main, "_bundled_cli", lambda: "/site/rlmesh/_bin/rlmesh")
+    monkeypatch.setattr(cli_main.os, "execv", pytest.fail)
+    monkeypatch.setattr(cli_main, "_load_extension_cli", lambda: (lambda argv: 5))
+
+    assert cli_main.main(["version"]) == 5
+
+
+def test_bundled_cli_is_macos_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    assert cli_main._bundled_cli() is None
+
+
 def test_python_entrypoint_preserves_existing_distribution_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

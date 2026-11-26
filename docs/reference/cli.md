@@ -1,6 +1,6 @@
 # CLI Reference
 
-The `rlmesh` binary hosts real-time sessions on a machine (`rlmesh host`) and manages the devices that join them, watches a session in the cockpit, checks and probes env and model images, and signs in to a managed RLMesh platform to submit and watch evaluations. It ships inside the Python package as `python -m rlmesh` and the `rlmesh`, `rlmeshd` (`rlmesh host`) and `docker-credential-rlmesh` console scripts, and standalone (`cargo install rlmesh-cli`, which leaves the cockpit out unless built with `--features cockpit`).
+The `rlmesh` binary hosts real-time sessions on a machine (`rlmesh host`) and manages the devices that join them, watches a session in the cockpit, checks and probes env and model images, and signs in to a managed RLMesh platform to submit and watch evaluations. It ships inside the Python package as `python -m rlmesh` and the `rlmesh`, `rlmeshd` (`rlmesh host`) and `docker-credential-rlmesh` console scripts, and standalone: signed and notarized for macOS through Homebrew (`brew install arenax-labs/tap/rlmesh`), or `cargo install rlmesh-cli`, which leaves the cockpit out unless built with `--features cockpit`. On macOS the wheel's console scripts run the same signed binary it bundles, so Keychain access is approved once for that signature. Under the name `docker-credential-rlmesh` or `rlmeshd` (a link to it, say), `rlmesh` acts as that command.
 
 `rlmesh --help` and `rlmesh <command> --help` are the authoritative flag lists. This page describes the behavior around them.
 

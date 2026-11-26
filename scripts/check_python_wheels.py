@@ -53,6 +53,7 @@ FORBIDDEN_WHEEL_SEGMENTS = (
     "rust",
     "tests",
 )
+BUNDLED_CLI = "rlmesh/_bin/rlmesh"
 NATIVE_EXTENSION_PREFIX = "rlmesh/_rlmesh."
 NATIVE_EXTENSION_SUFFIXES = (".pyd", ".so")
 
@@ -80,6 +81,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=sorted(PLATFORM_SETS),
         default=[],
         help="require all platform tags for a named release platform set",
+    )
+    parser.add_argument(
+        "--require-bundled-cli",
+        action="store_true",
+        help=f"require an executable {BUNDLED_CLI} in every macOS wheel",
     )
     args = parser.parse_args(argv)
 
@@ -123,8 +129,12 @@ def main(argv: list[str] | None = None) -> int:
                 f"{EXPECTED_REQUIRES_PYTHON}, got {requires_python or '<missing>'}"
             )
 
+        errors.extend(f"{wheel.name}: {error}" for error in wheel_payload_errors(wheel))
         errors.extend(
-            f"{wheel.name}: {error}" for error in wheel_payload_errors(wheel)
+            f"{wheel.name}: {error}"
+            for error in bundled_cli_errors(
+                wheel, platform_tag, required=args.require_bundled_cli
+            )
         )
 
         platforms[platform_tag].add(tag)
@@ -210,17 +220,33 @@ def wheel_payload_errors(wheel: Path) -> list[str]:
         forbidden = sorted(set(segments) & set(FORBIDDEN_WHEEL_SEGMENTS))
         if forbidden:
             errors.append(
-                f"forbidden wheel payload path {name} "
-                f"(contains {', '.join(forbidden)})"
+                f"forbidden wheel payload path {name} (contains {', '.join(forbidden)})"
             )
     return errors
+
+
+def bundled_cli_errors(wheel: Path, platform_tag: str, *, required: bool) -> list[str]:
+    """Only macOS wheels ship the standalone CLI, and it must be executable."""
+    with zipfile.ZipFile(wheel) as archive:
+        bundled = [
+            info
+            for info in archive.infolist()
+            if info.filename.startswith("rlmesh/_bin/")
+        ]
+    if not platform_tag.startswith("macosx_"):
+        return [f"unexpected bundled CLI {info.filename}" for info in bundled]
+    cli = next((info for info in bundled if info.filename == BUNDLED_CLI), None)
+    if cli is None:
+        return [f"missing bundled CLI {BUNDLED_CLI}"] if required else []
+    if not (cli.external_attr >> 16) & 0o111:
+        return [f"bundled CLI {BUNDLED_CLI} is not executable"]
+    return []
 
 
 def is_local_only_platform(platform_tag: str) -> bool:
     """Return true when a wheel platform tag is only valid for local installs."""
     return any(
-        tag.startswith(LOCAL_ONLY_PLATFORM_PREFIXES)
-        for tag in platform_tag.split(".")
+        tag.startswith(LOCAL_ONLY_PLATFORM_PREFIXES) for tag in platform_tag.split(".")
     )
 
 

@@ -10,6 +10,7 @@ writeable = "writeable"
 termnal = "termnal"
 PARM = "PARM"
 UE = "UE"
+sur = "sur"
 
 [type.cpp]
 extend-glob = ["*.h"]

@@ -17,7 +17,7 @@ The gate is `mise run release:check`. Among its steps, `test:sandbox:docker --re
 
 `release.py` refuses to proceed if the working tree is dirty, the `vX.Y.Z` tag already exists, the changelog still has `<!-- DRAFT -->` markers, or there is no `## [X.Y.Z]` changelog section.
 
-The tag push triggers the release workflow: Linux/Windows wheels build on a Linux runner and macOS wheels on a macOS runner (each system-tested against the built artifacts), then a publish job validates the assembled 14-wheel matrix and publishes to crates.io and PyPI through trusted publishing, then creates the GitHub Release with the curated release notes. When npm is switched on, its own jobs build, pack and smoke-test the npm packages beside the wheels and publish them after that (see [npm](#npm)). Retry failed jobs only, preserving successful builder artifacts (see GitHub Releases below). Registry pushes skip existing package versions. In 0.2 the GitHub Release has no native distribution assets.
+The tag push triggers the release workflow: Linux/Windows wheels build on a Linux runner and macOS wheels on a macOS runner (each system-tested against the built artifacts), then a publish job validates the assembled 14-wheel matrix and publishes to crates.io and PyPI through trusted publishing, then creates the GitHub Release with the curated release notes. When npm is switched on, its own jobs build, pack and smoke-test the npm packages beside the wheels and publish them after that (see [npm](#npm)). Retry failed jobs only, preserving successful builder artifacts (see GitHub Releases below). Registry pushes skip existing package versions. In 0.2 the GitHub Release's only native distribution asset is the notarized macOS CLI archive (see [macOS CLI and Homebrew](#macos-cli-and-homebrew)).
 
 ## Prerequisites
 
@@ -185,6 +185,16 @@ See [NuGet's trusted-publishing setup](https://learn.microsoft.com/en-us/nuget/n
 The action returns a temporary key used only by the push step; do not print it,
 turn on shell tracing, or store it as a repository secret. Reruns skip existing
 package and symbol versions. Until configured, use GitHub's nupkg as a local feed.
+
+### macOS CLI and Homebrew
+
+On a tag, `wheels-macos` builds a universal `rlmesh` (`mise run release:cli:macos build`, with the cockpit), signs it as `dev.rlmesh.cli` with the Developer ID identity and hardened runtime, and notarizes it, using the same script and secrets as the C library below. Keychain approvals attach to that signature's designated requirement (identifier plus team), so they survive upgrades. The macOS wheels then carry its thinned slice as `rlmesh/_bin/rlmesh`, and the wheel's console scripts exec it, so the process that touches the Keychain is the signed binary rather than the Python interpreter. After the wheels, `release:cli:macos package` tars it as `rlmesh-cli-VERSION-universal-apple-darwin.tar.gz` (the binary, licenses and notices) and smoke-tests the extracted copy; `publish` attaches it and its `.sha256` to the GitHub Release.
+
+`docker-credential-rlmesh` and `rlmeshd` are the same binary under another name: `rlmesh` dispatches on `argv[0]`, so one signature and one Keychain approval cover all three.
+
+When the repository variable `RLMESH_HOMEBREW_TAP` names a tap (`owner/homebrew-tap`), `publish` writes `Casks/rlmesh.rb` there through the GitHub API with the `HOMEBREW_TAP_TOKEN` secret (a fine-grained token with contents read and write on that repository only). Pre-releases leave the tap alone. `python scripts/homebrew_cask.py VERSION ARCHIVE` prints the cask for a local `brew install --cask ./rlmesh.rb` check.
+
+With `RLMESH_ALLOW_UNSIGNED_MACOS=true` and no Apple secrets, none of this ships: the wheels carry no binary, the release has no CLI archive and the tap is not touched.
 
 ### macOS signing and notarization
 

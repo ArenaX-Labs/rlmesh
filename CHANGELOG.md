@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+### Added
+
+- A signed, notarized universal macOS `rlmesh` CLI on each GitHub Release, installable with `brew install arenax-labs/tap/rlmesh`. The macOS wheels' `rlmesh`, `rlmeshd` and `docker-credential-rlmesh` run that binary, so macOS remembers Keychain access across upgrades instead of asking every Python interpreter. `rlmesh` started as `docker-credential-rlmesh` or `rlmeshd` acts as that command.
+
+### Fixed
+
+- On macOS, saving or deleting stored credentials no longer reads the Keychain secret first, so signing in, signing out and each token refresh read it once fewer.
+
 ## [0.2.0-alpha.2] - 2026-11-25
 
 Workflow editions become a local declaration, and the session wire revision is the one compatibility gate inside 0.2. This release is wire revision 2: it does not talk to 0.2.0-alpha.1, so rebuild images on it.
