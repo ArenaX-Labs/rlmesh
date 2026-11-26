@@ -859,7 +859,9 @@ class Tensor {
 inline std::string to_string(const Tensor& v) { return v.to_string(); }
 inline std::ostream& operator<<(std::ostream& s, const Tensor& v) { return s << v.to_string(); }
 namespace ext {
-/// The dtype whose elements are `T`: `bool`, a fixed-width integer, `float` or `double`.
+/// The dtype whose elements are exactly `T`: `bool`, `intN_t`/`uintN_t`, `float` or `double`.
+/// Other types fail to compile, even same-width ones: plain `char`, and `long long` where
+/// `int64_t` is `long` (glibc x86-64, so Unreal's `int64`). There is no float16 type.
 template <class T>
 constexpr DType dtype_of() {
   if constexpr (std::is_same_v<T, bool>)

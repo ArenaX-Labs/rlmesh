@@ -301,7 +301,8 @@ are typedefs of `RLMeshSpace`. Options structs follow SPC-20 (`_INIT`,
 from_vector(const std::vector<T>& data, std::vector<size_t> shape)` (copies,
   dtype from `T`, as C#'s `FromSpan<T>`) and `std::vector<T> to_vector(const
 Tensor&)` (a row-major copy of any tensor, the TypeError class unless its
-  dtype is `dtype_of<T>()`, as C#'s `ToArray<T>`), `using DlpackPtr = std::unique_ptr<DLManagedTensorVersioned,
+  dtype is `dtype_of<T>()`, as C#'s `ToArray<T>`; `T` matches exactly, so plain
+  `char` and a `long long` that is not `int64_t` fail to compile, and no type maps to float16), `using DlpackPtr = std::unique_ptr<DLManagedTensorVersioned,
 DlpackDeleter>` (`DlpackDeleter` calls `p->deleter(p)` when both are
   non-null; `Tensor::from_dlpack` calls `release()` only on success), and
   `spaces::Box box_elementwise(std::vector<Bound> low, std::vector<Bound> high,
