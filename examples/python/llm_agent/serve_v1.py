@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import functools
 import os
 import time
 from collections.abc import Mapping
@@ -158,6 +159,8 @@ _bridged: V1EnvEnv | None = None
 class V1EnvEnv(ChatTaskEnv):
     """One episode of a v1 environment (its own harness and scoring) per episode."""
 
+    request: asyncio.Future[Request]
+
     def __init__(
         self,
         env_id: str | None = None,
@@ -176,13 +179,15 @@ class V1EnvEnv(ChatTaskEnv):
         self.steps = 0
         self.env: Any = None
         self.tasks: list[Any] = []
-        self.loop = asyncio.new_event_loop()
         self.client = _BridgeClient(self)
         self.serving = contextlib.AsyncExitStack()
         self.ctx = vf.ModelContext(model="rlmesh", client=vf.EvalClientConfig())
         self.episode: asyncio.Task[Any] | None = None
-        self.request: asyncio.Future[Request] = self.loop.create_future()
         self.reply: asyncio.Future[Message] | None = None
+
+    @functools.cached_property
+    def loop(self) -> asyncio.AbstractEventLoop:
+        return asyncio.new_event_loop()
 
     def _load(self) -> None:
         if not self.env_id:

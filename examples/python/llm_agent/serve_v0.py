@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import os
 import time
 from typing import Any
@@ -70,6 +71,8 @@ class _BridgeClient(vf.Client):
 class EnvironmentEnv(ChatTaskEnv):
     """One rollout of a v0 environment per episode."""
 
+    request: asyncio.Future[Request]
+
     def __init__(self, env_id: str | None = None, max_turns: int | None = None) -> None:
         super().__init__()
         self.env_id = env_id or os.environ.get("ENV_ID") or "wordle"
@@ -79,11 +82,13 @@ class EnvironmentEnv(ChatTaskEnv):
         )
         self.env: Any = None
         self.dataset: Any = None
-        self.loop = asyncio.new_event_loop()
         self.client = _BridgeClient(self)
         self.rollout: asyncio.Task[Any] | None = None
-        self.request: asyncio.Future[Request] = self.loop.create_future()
         self.reply: asyncio.Future[Message] | None = None
+
+    @functools.cached_property
+    def loop(self) -> asyncio.AbstractEventLoop:
+        return asyncio.new_event_loop()
 
     def start(self, index: int) -> Turn:
         self._abandon()
