@@ -1,4 +1,4 @@
-"""Record the env tags the repo's example envs publish, for the 0.1 reader check.
+"""Record the env tags of the repo's example envs and ``example_tags.py``, for the 0.1 reader check.
 
 ``python crates/rlmesh-adapters-compat/write_example_tags.py`` rewrites
 ``tests/fixtures/example_env_tags.json`` (then ``mise run fmt:config`` formats
@@ -19,9 +19,9 @@ FIXTURE = (
 )
 EXAMPLES = (
     ("examples/python/adapters/serve_and_run.py", "ENV_TAGS"),
-    ("examples/python/vla_adapters/envs/libero.py", "TAGS"),
-    ("examples/python/vla_adapters/envs/metaworld.py", "TAGS"),
-    ("examples/python/vla_adapters/envs/simpler_bridge.py", "TAGS"),
+    ("crates/rlmesh-adapters-compat/example_tags.py", "LIBERO"),
+    ("crates/rlmesh-adapters-compat/example_tags.py", "METAWORLD"),
+    ("crates/rlmesh-adapters-compat/example_tags.py", "SIMPLER_BRIDGE"),
 )
 
 

@@ -211,7 +211,7 @@ for compiler in "${compilers[@]}"; do
       -c crates/rlmesh-capi/examples/cpp_review.cpp -o "$tmp/cpp_review.o"
     bg $compiler "${flags[@]}" -c crates/rlmesh-capi/examples/cpp_surface.cpp -o "$tmp/cpp_surface.o"
     bg $compiler "${flags[@]}" -c crates/rlmesh-capi/examples/cpp_options.cpp -o "$tmp/cpp_options.o"
-    bg $compiler "${flags[@]}" -c examples/chrono/src/scripted_model.cpp -o "$tmp/chrono_scripted_model.o"
+    bg $compiler "${flags[@]}" -c crates/rlmesh-capi/examples/cpp_dict_model.cpp -o "$tmp/cpp_dict_model.o"
     examples=(cpp_core cpp_errors cpp_cancel cpp_runtime cpp_spaces cpp_parity cpp_box_cleanup cpp_output_cleanup cpp_constants cpp_span cpp_review)
     for example in "${examples[@]}" cpp_model cpp_env; do
       bg $compiler "${flags[@]}" "crates/rlmesh-capi/examples/$example.cpp" "${link[@]}" -o "$tmp/$example"

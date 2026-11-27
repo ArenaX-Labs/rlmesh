@@ -16,4 +16,4 @@ It runs one process:
 
 The script first prints `resolve_from_contract(...).explain()`, the exact transformations chosen: the image is resized, `quat_xyzw -> rot6d` is applied to the rotation, the instruction key is remapped (`goal -> task`), and on the way back the 10-dim `rot6d` action is converted `rot6d -> axis_angle`, sliced, and clipped into the env's 7-dim action.
 
-See [`../vla_adapters`](../vla_adapters) for the multi-model, multi-env project layout, the custom-adapter escape hatches, and offline dry runs.
+See [`vla-adapters`](https://github.com/ArenaX-Labs/rlmesh-examples/tree/main/python/vla-adapters) in rlmesh-examples for the multi-model, multi-env project layout, the custom-adapter escape hatches, and offline dry runs.

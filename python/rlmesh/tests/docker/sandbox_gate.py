@@ -116,9 +116,8 @@ def build_images(run: str) -> GateImages:
     with tempfile.TemporaryDirectory(prefix="rlmesh-docker-gate-") as context:
         ctx = Path(context)
         shutil.copy2(wheel, ctx / wheel.name)
-        examples = ROOT / "examples/python/byo_container"
-        shutil.copy2(examples / "env/entrypoint.py", ctx / "env_entrypoint.py")
-        shutil.copy2(examples / "model/entrypoint.py", ctx / "model_entrypoint.py")
+        shutil.copy2(IMAGES / "env_entrypoint.py", ctx / "env_entrypoint.py")
+        shutil.copy2(IMAGES / "model_entrypoint.py", ctx / "model_entrypoint.py")
         shutil.copy2(IMAGES / "exits.py", ctx / "exits.py")
         shutil.copy2(IMAGES / "raises.py", ctx / "raises.py")
         base = os.environ.get("RLMESH_DOCKER_GATE_BASE", "python:3.12-slim")
