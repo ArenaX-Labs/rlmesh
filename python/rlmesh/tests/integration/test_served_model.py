@@ -9,10 +9,10 @@ import pytest
 
 
 @contextmanager
-def _served(model: Any, port: int) -> Iterator[str]:
+def _served(model: Any, port: int, **options: Any) -> Iterator[str]:
     session = f"127.0.0.1:{port}"
     thread = threading.Thread(
-        target=model.serve, args=(session,), kwargs={"name": "policy"}
+        target=model.serve, args=(session,), kwargs={"name": "policy", **options}
     )
     thread.start()
     try:
@@ -706,3 +706,69 @@ def test_a_spec_less_batched_model_answers_concurrent_sessions_in_one_call(
     for call in calls:
         episodes = [episode for episode, _ in call]
         assert len(set(episodes)) == len(episodes), call
+
+
+def test_a_fused_spec_less_batch_gives_each_row_its_own_route_context(
+    session_port: int,
+) -> None:
+    import rlmesh
+
+    ready = threading.Barrier(2)
+
+    class TextEnv:
+        observation_space = rlmesh.spaces.Text(8)
+
+        def __init__(self, text: str, action_limit: int) -> None:
+            self.text = text
+            self.action_space = rlmesh.spaces.Text(action_limit)
+            self.actions: list[str] = []
+
+        def reset(
+            self, *, seed: int | None = None, options: dict[str, Any] | None = None
+        ) -> tuple[str, dict[str, Any]]:
+            ready.wait(timeout=10)
+            return self.text, {}
+
+        def step(self, action: str) -> tuple[str, float, bool, bool, dict[str, Any]]:
+            self.actions.append(action)
+            return self.text, 1.0, True, False, {}
+
+        def close(self) -> None:
+            return None
+
+    batches: list[list[tuple[str, str, int | None, int]]] = []
+    ended: list[str] = []
+
+    class Policy(rlmesh.Model):
+        def predict_batch(
+            self, observations: list[str], context: list[dict[str, Any]]
+        ) -> list[str]:
+            batches.append(
+                [
+                    (
+                        obs,
+                        row["episode_id"],
+                        row["episode_seed"],
+                        row["action_space"].max_length,
+                    )
+                    for obs, row in zip(observations, context, strict=True)
+                ]
+            )
+            return [f"reply {obs}" for obs in observations]
+
+        def on_episode_end(self, episode_id: str = "") -> None:
+            ended.append(episode_id)
+
+    left, right = TextEnv("left", 16), TextEnv("right", 32)
+    batching = rlmesh.BatchOptions(max_batch_size=2, batch_window_ms=1000)
+    with _served(Policy(), session_port, batching=batching) as address:
+        results = rlmesh.Model(address).run_routes([left, right], seeds=[11, 22])
+
+    assert all(isinstance(result, rlmesh.RunResult) for result in results), results
+    assert (left.actions, right.actions) == (["reply left"], ["reply right"])
+    (batch,) = batches
+    assert sorted((obs, seed, limit) for obs, _, seed, limit in batch) == [
+        ("left", 11, 16),
+        ("right", 22, 32),
+    ]
+    assert sorted(ended) == sorted(episode for _, episode, _, _ in batch)

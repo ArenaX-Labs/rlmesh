@@ -468,6 +468,16 @@ impl PredictFn for PyPredict {
     }
 
     fn predict_spec_less(&self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
+        if observation.num_envs > 1
+            && observation.observation.is_some()
+            && self.predict_batch_fn.is_some()
+        {
+            return self
+                .predict_spec_less_fused(vec![observation], None)
+                .pop()
+                .expect("one outcome per group")
+                .map(|frames| frames.actions);
+        }
         rlmesh::binding::check_model_call()?;
         let lanes = if observation.observation.is_some() {
             observation
@@ -486,39 +496,6 @@ impl PredictFn for PyPredict {
                 .env_contract
                 .as_ref()
                 .and_then(|contract| contract.observation_space.as_ref());
-            if lanes.len() > 1
-                && let (Some(batch_fn), Some(space)) =
-                    (self.predict_batch_fn.as_ref(), observation_space)
-            {
-                let action_space = observation
-                    .env_contract
-                    .as_ref()
-                    .and_then(|contract| contract.action_space.as_ref())
-                    .ok_or_else(|| {
-                        pyo3::exceptions::PyRuntimeError::new_err(
-                            "model worker requires action space metadata",
-                        )
-                    })?;
-                let inputs = pyo3::types::PyList::empty(py);
-                let contexts = pyo3::types::PyList::empty(py);
-                for (index, lane) in lanes.iter().enumerate() {
-                    inputs.append(space_value_to_py_neutral(py, lane, space)?)?;
-                    contexts.append(episode_context_dict(
-                        py,
-                        observation.route.episodes.get(index),
-                        &self.envs,
-                    )?)?;
-                }
-                let result = batch_fn.call1(py, (inputs, contexts))?;
-                let mut actions = Vec::with_capacity(lanes.len());
-                for item in result.bind(py).try_iter()? {
-                    match self.encode_action(py, &item?, action_space) {
-                        Ok(action) => actions.push(action),
-                        Err(misfit) => return Ok(Err(misfit)),
-                    }
-                }
-                return Ok(Ok(actions));
-            }
             let obs = match (observation_space, lanes.len()) {
                 (_, 0) => py.None().bind(py).clone(),
                 (Some(space), 1) => space_value_to_py_neutral(py, &lanes[0], space)?,
@@ -589,7 +566,7 @@ impl PredictFn for PyPredict {
         let mut single: Vec<(usize, ModelObservation, u32)> = Vec::new();
         for (index, (observation, horizon)) in groups.into_iter().enumerate() {
             match self.spec_less_bucket(horizon) {
-                Some(key) if observation.observation.is_some() => {
+                Some(key) => {
                     buckets
                         .entry(key)
                         .or_default()

@@ -442,16 +442,12 @@ impl ModelPredict {
         let mut inputs = Vec::new();
         let mut rows = Vec::new();
         let mut split = Vec::with_capacity(groups.len());
-        for group in groups {
-            if group.rows.len() != group.lanes.len() {
-                split.push(Err(Error::model(format!(
-                    "predict carries {} episode rows for {} lanes; episode identity is \
-                     row-aligned with the observation",
-                    group.rows.len(),
-                    group.lanes.len()
-                ))));
-                continue;
-            }
+        for mut group in groups {
+            group.rows.resize_with(group.lanes.len(), || Row {
+                env_id: group.route.clone(),
+                env: self.envs.get(&group.route),
+                ..Row::default()
+            });
             let keys: Vec<String> = group
                 .rows
                 .iter()
@@ -459,7 +455,7 @@ impl ModelPredict {
                 .collect();
             inputs.extend(group.lanes);
             rows.extend(group.rows);
-            split.push(Ok((keys, group.action_space)));
+            split.push((keys, group.action_space));
         }
         let total = inputs.len();
         let (corner, called) = match horizon {
@@ -487,16 +483,12 @@ impl ModelPredict {
         let mut items = match called {
             Ok(items) => items.into_iter(),
             Err(error) => {
-                return split
-                    .into_iter()
-                    .map(|group| group.and(Err(error.clone())))
-                    .collect();
+                return split.iter().map(|_| Err(error.clone())).collect();
             }
         };
         split
             .into_iter()
-            .map(|group| {
-                let (keys, action_space) = group?;
+            .map(|(keys, action_space)| {
                 let lane_items: Vec<Value> = items.by_ref().take(keys.len()).collect();
                 match horizon {
                     None => Ok(PredictFrames {
@@ -734,7 +726,7 @@ impl PredictFn for ModelPredict {
         let mut single: Vec<(usize, ModelObservation, u32)> = Vec::new();
         for (index, (observation, horizon)) in groups.into_iter().enumerate() {
             match self.spec_less_bucket(horizon) {
-                Some(key) if observation.observation.is_some() => {
+                Some(key) => {
                     buckets
                         .entry(key)
                         .or_default()

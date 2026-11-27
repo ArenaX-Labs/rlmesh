@@ -97,7 +97,7 @@ pub trait PredictFn: Send + Sync {
     }
 
     /// Several spec-less groups of one grouped predict, each with its pinned execution
-    /// horizon, returning one outcome per group in order. A binding with a batched corner
+    /// horizon and one episode per lane, returning one outcome per group in order. A binding with a batched corner
     /// overrides this to serve every group's lanes in one corner call, keeping each group's
     /// outcome (and failure) separate. The default serves each group through
     /// [`predict_spec_less_chunked`](Self::predict_spec_less_chunked).

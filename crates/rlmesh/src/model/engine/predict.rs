@@ -78,6 +78,13 @@ fn assembles_in_parallel(lanes: &[GroupLane]) -> bool {
     routed > 1
 }
 
+// A fused call's context rows line up with its inputs only when every lane has its episode.
+fn fuses_spec_less(observation: &ModelObservation) -> bool {
+    observation.observation.is_some()
+        && observation.num_envs > 0
+        && observation.route.episodes.len() == observation.num_envs
+}
+
 fn charge_wall<T>(adapter_ns: &AtomicU64, section: impl FnOnce(&AtomicU64) -> T) -> T {
     let scratch = AtomicU64::new(0);
     let started = Instant::now();
@@ -158,6 +165,12 @@ pub(super) fn predict_grouped_fused(
     let mut spec_less: Vec<(ModelObservation, u32)> = Vec::new();
     for (index, staged) in staged.into_iter().enumerate() {
         match staged {
+            Staged::SpecLess {
+                observation,
+                horizon,
+            } if !fuses_spec_less(&observation) => results.push(Some(
+                predict.predict_spec_less_chunked(observation, horizon),
+            )),
             Staged::SpecLess {
                 observation,
                 horizon,
