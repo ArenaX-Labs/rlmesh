@@ -865,3 +865,142 @@ def test_a_framework_model_batches_only_observations_of_one_shape(
     assert all(isinstance(result, rlmesh.RunResult) for result in results), results
     assert [env.actions for env in envs] == [[4.0], [6.0], [4.0]]
     assert sorted(shapes) == [(1, 6), (2, 4)], shapes
+
+
+class _Overlap:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.running = 0
+        self.most = 0
+
+    def __enter__(self) -> None:
+        with self.lock:
+            self.running += 1
+            self.most = max(self.most, self.running)
+
+    def __exit__(self, *_: object) -> None:
+        with self.lock:
+            self.running -= 1
+
+
+def _run_sessions(
+    address: str, seeds: list[int], lengths: list[int] | None = None
+) -> tuple[list[EchoTextEnv], dict[int, BaseException]]:
+    import rlmesh
+
+    envs = [EchoTextEnv() for _ in seeds]
+    for env, length in zip(envs, lengths or [], strict=False):
+        env.observation_space = rlmesh.spaces.Text(length, min_length=0)
+    failures: dict[int, BaseException] = {}
+
+    def client(env: EchoTextEnv, seed: int) -> None:
+        try:
+            rlmesh.Model(address).run(env, seeds=[seed])
+        except BaseException as error:
+            failures[seed] = error
+
+    threads = [
+        threading.Thread(target=client, args=(env, seed))
+        for env, seed in zip(envs, seeds, strict=True)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    return envs, failures
+
+
+def test_an_async_predict_overlaps_across_sessions(session_port: int) -> None:
+    import asyncio
+
+    import rlmesh
+
+    overlap = _Overlap()
+    indices: dict[str, list[int]] = {}
+
+    class Agent(rlmesh.Model):
+        async def predict(self, observation: str, context: Any) -> str:
+            indices.setdefault(context["episode_id"], []).append(
+                context["predict_index"]
+            )
+            with overlap:
+                await asyncio.sleep(0.2)
+            return f"re:{observation}"
+
+    with _served(Agent(), session_port) as address:
+        envs, failures = _run_sessions(address, [0, 1, 2, 3])
+
+    assert failures == {}
+    for seed, env in enumerate(envs):
+        assert env.actions == [f"re:{seed}:{step}" for step in range(3)]
+    assert overlap.most > 1
+    assert all(seen == [0, 1, 2] for seen in indices.values()), indices
+
+
+def test_a_sync_predict_overlaps_on_threads_when_it_opts_in(session_port: int) -> None:
+    import time
+
+    import rlmesh
+
+    overlap = _Overlap()
+
+    def predict(observation: str) -> str:
+        with overlap:
+            time.sleep(0.2)
+        return f"re:{observation}"
+
+    with _served(rlmesh.Model(predict, concurrency=4), session_port) as address:
+        envs, failures = _run_sessions(address, [0, 1, 2])
+
+    assert failures == {}
+    for seed, env in enumerate(envs):
+        assert env.actions == [f"re:{seed}:{step}" for step in range(3)]
+    assert overlap.most > 1
+
+
+def test_a_failing_concurrent_predict_fails_only_its_own_session(
+    session_port: int,
+) -> None:
+    import asyncio
+
+    import rlmesh
+
+    class Agent(rlmesh.Model):
+        async def predict(self, observation: str) -> str:
+            await asyncio.sleep(0.1)
+            if observation.startswith("1:"):
+                raise KeyError("the provider refused")
+            return f"re:{observation}"
+
+    with _served(Agent(), session_port) as address:
+        envs, failures = _run_sessions(address, [0, 1, 2])
+
+    assert sorted(failures) == [1]
+    assert isinstance(failures[1], rlmesh.ModelException)
+    assert "KeyError: 'the provider refused'" in str(failures[1])
+    assert envs[0].actions == [f"re:0:{step}" for step in range(3)]
+    assert envs[2].actions == [f"re:2:{step}" for step in range(3)]
+
+
+def test_predicts_overlap_across_sessions_whose_observation_spaces_differ(
+    session_port: int,
+) -> None:
+    import asyncio
+
+    import rlmesh
+
+    overlap = _Overlap()
+
+    class Agent(rlmesh.Model):
+        async def predict(self, observation: str) -> str:
+            with overlap:
+                await asyncio.sleep(0.2)
+            return f"re:{observation}"
+
+    with _served(Agent(), session_port) as address:
+        envs, failures = _run_sessions(address, [0, 1, 2, 3], [256, 300, 400, 512])
+
+    assert failures == {}
+    for seed, env in enumerate(envs):
+        assert env.actions == [f"re:{seed}:{step}" for step in range(3)]
+    assert overlap.most > 1

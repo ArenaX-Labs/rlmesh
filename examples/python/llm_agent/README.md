@@ -120,7 +120,7 @@ docker build -f docker/env-v1.Dockerfile -t llm-env-tau2 \
   --build-arg ENV_ID=primeintellect/tau2-bench .
 ```
 
-One served harness answers many episodes at once. Steps that arrive together reach `LLMHarness.predict_batch` as one batch, which runs each row's chat call on its own thread, so a batch takes about as long as one call. `rlmesh bench llm-harness --env llm-env-v0` sweeps how many concurrent sessions that sustains and recommends a `max_batch_size` (`RLMESH_MAX_BATCH_SIZE`).
+One served harness answers many episodes at once. `LLMHarness` sets `concurrency = 32`, so up to 32 sessions' chat calls run at the same time, each on its own thread, and a step costs about one call however many sessions wait on it. `rlmesh bench llm-harness --env llm-env-v0` sweeps how many concurrent sessions that sustains.
 
 The tau2 image's user simulator needs `OPENAI_BASE_URL` and `OPENAI_API_KEY` at run time (`docker run -e`), which a sandbox doesn't pass through.
 

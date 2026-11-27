@@ -43,6 +43,7 @@ struct PyPredict {
     predict_batch_fn: Option<Py<PyAny>>,
     predict_chunk_batch_fn: Option<Py<PyAny>>,
     allow_fusion: bool,
+    stacks_batches: bool,
     native_chunk: Option<u32>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
@@ -135,6 +136,9 @@ impl PyPredict {
         action: &Bound<'_, PyAny>,
         space: &rlmesh_spaces::SpaceSpec,
     ) -> rlmesh::Result<SpaceValue> {
+        if action.is_instance_of::<pyo3::exceptions::PyBaseException>() {
+            return Err(self.internal(PyErr::from_value(action.clone())));
+        }
         py_any_to_space_value_with_backend(py, action, space, ValueBackend::Native)
             .map_err(|err| self.misfit("an action", space, &err))
     }
@@ -569,7 +573,12 @@ impl PredictFn for PyPredict {
         let mut single: Vec<(usize, ModelObservation, u32)> = Vec::new();
         for (index, (observation, horizon)) in groups.into_iter().enumerate() {
             match self.spec_less_bucket(horizon) {
-                Some(key) => join_bucket(&mut buckets, key, (index, observation, horizon)),
+                Some(key) => join_bucket(
+                    &mut buckets,
+                    key,
+                    self.stacks_batches,
+                    (index, observation, horizon),
+                ),
                 None => single.push((index, observation, horizon)),
             }
         }
@@ -871,12 +880,18 @@ fn episode_context_dict<'py>(
 type SpecLessMember = (usize, ModelObservation, u32);
 type SpecLessBucket = ((u32, Option<rlmesh_spaces::SpaceSpec>), Vec<SpecLessMember>);
 
-/// Fused calls stack their inputs, so a bucket holds one horizon and one observation space.
-fn join_bucket(buckets: &mut Vec<SpecLessBucket>, horizon: u32, member: SpecLessMember) {
+/// A bucket holds one horizon, and one observation space when its fused call stacks the rows.
+fn join_bucket(
+    buckets: &mut Vec<SpecLessBucket>,
+    horizon: u32,
+    stacks: bool,
+    member: SpecLessMember,
+) {
     let space = member
         .1
         .env_contract
         .as_ref()
+        .filter(|_| stacks)
         .and_then(|contract| contract.observation_space.clone());
     let key = (horizon, space);
     match buckets.iter_mut().find(|(bucket, _)| *bucket == key) {
@@ -925,7 +940,11 @@ fn call_batched(
         };
         let mut out = Vec::with_capacity(inputs.len());
         for item in result.bind(py).try_iter()? {
-            out.push(decode_value(&item?)?);
+            let item = item?;
+            if item.is_instance_of::<pyo3::exceptions::PyBaseException>() {
+                return Err(PyErr::from_value(item));
+            }
+            out.push(decode_value(&item)?);
         }
         Ok(out)
     })
@@ -1018,6 +1037,7 @@ pub struct PyModel {
     predict_batch_fn: Option<Py<PyAny>>,
     predict_chunk_batch_fn: Option<Py<PyAny>>,
     allow_fusion: bool,
+    stacks_batches: bool,
     native_chunk: Option<u32>,
     configure_fn: Option<Py<PyAny>>,
     on_episode_end: Option<Py<PyAny>>,
@@ -1080,6 +1100,7 @@ impl PyModel {
                 .as_ref()
                 .map(|cb| cb.clone_ref(py)),
             allow_fusion: self.allow_fusion,
+            stacks_batches: self.stacks_batches,
             native_chunk: self.native_chunk,
             on_episode_end: self.on_episode_end.as_ref().map(|cb| cb.clone_ref(py)),
             on_close: self.on_close.as_ref().map(|cb| cb.clone_ref(py)),
@@ -1291,7 +1312,7 @@ pub fn resolve_execution_horizon(
 #[pymethods]
 impl PyModel {
     #[new]
-    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true, native_chunk=None, on_route_drop=None, reset_options_fn=None, name=None))]
+    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true, stacks_batches=true, native_chunk=None, on_route_drop=None, reset_options_fn=None, name=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         predict_fn: Py<PyAny>,
@@ -1302,6 +1323,7 @@ impl PyModel {
         predict_batch_fn: Option<Py<PyAny>>,
         predict_chunk_batch_fn: Option<Py<PyAny>>,
         allow_fusion: bool,
+        stacks_batches: bool,
         native_chunk: Option<u32>,
         on_route_drop: Option<Py<PyAny>>,
         reset_options_fn: Option<Py<PyAny>>,
@@ -1316,6 +1338,7 @@ impl PyModel {
             predict_batch_fn,
             predict_chunk_batch_fn,
             allow_fusion,
+            stacks_batches,
             native_chunk,
             configure_fn,
             on_episode_end,
@@ -1345,6 +1368,7 @@ impl PyModel {
             predict_batch_fn: None,
             predict_chunk_batch_fn: None,
             allow_fusion: true,
+            stacks_batches: true,
             native_chunk: None,
             configure_fn: None,
             on_episode_end: None,
@@ -1372,6 +1396,7 @@ impl PyModel {
             predict_batch_fn: None,
             predict_chunk_batch_fn: None,
             allow_fusion: true,
+            stacks_batches: true,
             native_chunk: None,
             configure_fn: None,
             on_episode_end: None,
@@ -1834,7 +1859,7 @@ import os
 import typing
 
 class PyModel:
-    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, native_chunk: int | None = None, on_route_drop: collections.abc.Callable[[str], None] | None = None, reset_options_fn: collections.abc.Callable[[dict[str, typing.Any]], typing.Any] | None = None) -> None: ...
+    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[str], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value], list[dict[str, typing.Any]]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int, list[dict[str, typing.Any]]], list[Value]] | None = None, allow_fusion: bool = True, stacks_batches: bool = True, native_chunk: int | None = None, on_route_drop: collections.abc.Callable[[str], None] | None = None, reset_options_fn: collections.abc.Callable[[dict[str, typing.Any]], typing.Any] | None = None) -> None: ...
     @staticmethod
     def served(address: str, timeout_s: float = 30.0) -> PyModel: ...
     def default_execution_horizon(self) -> int | None: ...
@@ -1880,6 +1905,7 @@ mod review_regressions {
                 predict_batch_fn: Some(fail.clone_ref(py)),
                 predict_chunk_batch_fn: Some(fail),
                 allow_fusion: true,
+                stacks_batches: true,
                 native_chunk: None,
                 on_episode_end: None,
                 on_close: None,

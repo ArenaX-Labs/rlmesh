@@ -13,6 +13,8 @@ ValueT = TypeVar("ValueT")
 
 class ValueBridge(Protocol):
     name: str
+    #: Whether ``tree_stack`` builds one array from the rows, so they must share a shape.
+    stacks: bool
 
     def ensure_available(self) -> None: ...
 
@@ -35,6 +37,7 @@ class ValueBridge(Protocol):
 
 class IdentityBridge:
     name: str = "rlmesh"
+    stacks: bool = False
 
     def ensure_available(self) -> None:
         return None
@@ -299,6 +302,8 @@ class FrameworkBridge:
     Availability is checked on first use and the success is cached, keeping
     repeated ``decode``/``encode``/``stack`` calls off the check.
     """
+
+    stacks: bool = True
 
     def __init__(
         self,
