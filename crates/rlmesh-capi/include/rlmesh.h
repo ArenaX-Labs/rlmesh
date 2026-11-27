@@ -3426,7 +3426,7 @@ typedef struct RLMeshStepEvent {
   double step_ms;
   const RLMeshRunContext* context;
   /* The observation the step returned when it ended the episode (terminated or truncated):
-   * the episode's final observation, which no predict sees. NULL on every other step. */
+   * the episode's final observation, which no action follows. NULL on every other step. */
   const RLMeshValue* final_observation;
 } RLMeshStepEvent;
 #define RLMESH_STEP_EVENT_MIN_SIZE offsetof(RLMeshStepEvent, final_observation)

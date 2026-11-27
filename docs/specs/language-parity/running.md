@@ -586,8 +586,8 @@ RLMeshStatus rlmesh_step_event_repr(const RLMeshStepEvent*, RLMeshBytes* out);
 
 `final_observation` is the observation the step returned when it ended the
 episode (`terminated` or `truncated`), the env's own value before any
-`transform_observation`: the episode's final observation, which no predict
-sees. It is `None` (C: NULL) on every other step, and on a lane-served or
+`transform_observation`: the episode's final observation, which no action
+follows. It is `None` (C: NULL) on every other step, and on a lane-served or
 vector env each lane's step event carries its own lane's.
 
 `rlmesh_step_event_equals` compares the values with `rlmesh_value_equals`

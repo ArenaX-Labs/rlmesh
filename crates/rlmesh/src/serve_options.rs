@@ -28,7 +28,7 @@ impl ServeOptions {
 /// bytes, or as soon as every route the model has resolved has a request in it.
 /// While the model is idle it also closes `batch_window_ms` after its first
 /// request; while a forward runs, it stays open until that forward ends and
-/// then up to `batch_window_ms` more, for the routes it answered. A model
+/// then up to `batch_window_ms` more, so the sessions it answered can rejoin. A model
 /// that cannot fuse (`allow_fusion = false`, or no batched corner) is not
 /// batched. Build one with `..Default::default()`.
 #[derive(Debug, Clone)]

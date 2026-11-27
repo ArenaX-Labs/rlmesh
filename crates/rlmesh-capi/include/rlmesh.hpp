@@ -6106,7 +6106,7 @@ struct StepEvent {
   double predict_ms = 0, step_ms = 0;
   ReadFn read{};
   /// The observation the step returned when it ended the episode (terminated or truncated):
-  /// the episode's final observation, which no predict sees. Empty on every other step.
+  /// the episode's final observation, which no action follows. Empty on every other step.
   std::optional<Value> final_observation{};
 
   friend bool operator==(const StepEvent& self, const StepEvent& other) noexcept(

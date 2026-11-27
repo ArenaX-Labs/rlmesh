@@ -458,7 +458,7 @@ class StepEvent:
             and never triggered unless called.
         final_observation: The observation this step returned when the step
             ended the episode (``terminated`` or ``truncated``): the episode's
-            final observation, which no predict sees -- a chat episode's closing
+            final observation, which no action follows -- a chat episode's closing
             tool results, a robot episode's terminal frame. The env's own value,
             before any ``transform_observation``. ``None`` on every other step.
     """

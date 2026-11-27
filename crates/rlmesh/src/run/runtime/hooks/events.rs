@@ -160,8 +160,8 @@ pub struct StepCompletedEvent {
     pub observation_space: Arc<SpaceSpec>,
     /// The observation this step returned, every lane's, as the env's own leaf
     /// slabs (no transform applied). For a lane this step ended (`terminated` or
-    /// `truncated`) it is the episode's final observation, which no predict
-    /// sees and no `ObservationEmittedEvent` carries when the runtime owns
+    /// `truncated`) it is the episode's final observation, which no action
+    /// follows and no `ObservationEmittedEvent` carries when the runtime owns
     /// resets; for an `autoreset_roll` lane it is the new episode's reset
     /// observation. `None` when the env returned none.
     pub observation: Option<Vec<Bytes>>,
