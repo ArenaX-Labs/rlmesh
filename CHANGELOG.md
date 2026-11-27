@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Removed
 
-- `examples/python/llm_agent`. The LLM agent example lives in [rlmesh-examples](https://github.com/ArenaX-Labs/rlmesh-examples/tree/main/python/llm-agent).
+- The `coding_agent`, `isaacsim`, `llm_agent` and `sandbox` Python examples. They live in [rlmesh-examples](https://github.com/ArenaX-Labs/rlmesh-examples/tree/main/python) as `coding-agent`, `isaacsim/franka-reach`, `llm-agent` and `sandbox`.
 
 ## [0.2.0-alpha.2] - 2026-11-25
 

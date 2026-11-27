@@ -16,7 +16,6 @@ updates:
     directories:
       - /examples/python/byo_container/env
       - /examples/python/byo_container/model
-      - /examples/python/isaacsim
     schedule:
       interval: weekly
     cooldown:

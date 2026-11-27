@@ -30,7 +30,7 @@ include = [
   "python/rlmesh/tests/type_contract/fixtures",
   "tools/rlmesh_api_surface/src/rlmesh_api_surface",
 ]
-exclude = ["examples/python/isaacsim", "examples/python/coding_agent", "**/.venv*"]
+exclude = ["**/.venv*"]
 typeCheckingMode = "basic"
 strict = ["python/rlmesh/src/rlmesh"]
 defineConstant = { DEBUG = true }
