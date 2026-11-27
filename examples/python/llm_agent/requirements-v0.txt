@@ -1,9 +1,0 @@
-# Install from the Prime hub index; see README.md.
-rlmesh>=0.2.0a1
-verifiers==0.1.14
-wordle
-mastermind
-alphabet-sort
-tool-test
-color-codeword
-pillow

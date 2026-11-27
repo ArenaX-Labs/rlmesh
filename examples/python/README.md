@@ -8,7 +8,6 @@ Most server/client examples default to `127.0.0.1:5555`; start the server in one
 - [`adapters/`](adapters): tag an env, then run a model against it through a resolved IO adapter.
 - [`coding_agent/`](coding_agent): Claude explores a LIBERO task and writes its policy as code (needs a LIBERO environment and a Claude API key).
 - [`byo_container/`](byo_container): hand-written Dockerfiles for an env and a model image (run the same image locally or on the hosted platform).
-- [`llm_agent/`](llm_agent): an LLM harness on Prime Environments Hub tasks (math500, humaneval, wordle, ...), locally or as Docker images (needs Ollama or another OpenAI-compatible server).
 - [`sandbox/`](sandbox): start an owned Docker-backed environment process (needs Docker).
 - [`vla_adapters/`](vla_adapters): tag-driven adapters across many model × env pairs.
 - [`v2/`](v2): real-time sessions (protocol v2): a Python robot and a Python policy on loopback (`loopback.py`), the Python-in-the-loop latency bench (`session_bench.py`), and the milestone demo, a MuJoCo UR10e with a policy, keyboard teleop pre-emption and an MCAP recording ([`ur10e_mujoco/`](v2/ur10e_mujoco), needs `uv sync --group mujoco`).
