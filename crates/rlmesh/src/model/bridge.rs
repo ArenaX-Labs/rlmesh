@@ -362,6 +362,26 @@ struct SpecLessLanes {
     route: String,
 }
 
+type SpecLessMember = (usize, ModelObservation, u32);
+type SpecLessBucket = (
+    (u32, Option<crate::binding::spaces::SpaceSpec>),
+    Vec<SpecLessMember>,
+);
+
+/// Fused calls stack their inputs, so a bucket holds one horizon and one observation space.
+fn join_bucket(buckets: &mut Vec<SpecLessBucket>, horizon: u32, member: SpecLessMember) {
+    let space = member
+        .1
+        .env_contract
+        .as_ref()
+        .and_then(|contract| contract.observation_space.clone());
+    let key = (horizon, space);
+    match buckets.iter_mut().find(|(bucket, _)| *bucket == key) {
+        Some((_, members)) => members.push(member),
+        None => buckets.push((key, vec![member])),
+    }
+}
+
 fn spec_less_warn_key(row: &Row, route: &str) -> String {
     if row.episode_id.is_empty() {
         format!("route:{route}")
@@ -722,20 +742,15 @@ impl PredictFn for ModelPredict {
     ) -> Vec<Result<PredictFrames>> {
         let mut outcomes: Vec<Option<Result<PredictFrames>>> =
             (0..groups.len()).map(|_| None).collect();
-        let mut buckets: BTreeMap<u32, Vec<(usize, ModelObservation, u32)>> = BTreeMap::new();
+        let mut buckets: Vec<SpecLessBucket> = Vec::new();
         let mut single: Vec<(usize, ModelObservation, u32)> = Vec::new();
         for (index, (observation, horizon)) in groups.into_iter().enumerate() {
             match self.spec_less_bucket(horizon) {
-                Some(key) => {
-                    buckets
-                        .entry(key)
-                        .or_default()
-                        .push((index, observation, horizon));
-                }
-                _ => single.push((index, observation, horizon)),
+                Some(key) => join_bucket(&mut buckets, key, (index, observation, horizon)),
+                None => single.push((index, observation, horizon)),
             }
         }
-        for (key, members) in buckets {
+        for ((key, _), members) in buckets {
             if members.len() == 1 {
                 single.extend(members);
                 continue;

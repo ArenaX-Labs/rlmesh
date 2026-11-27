@@ -140,8 +140,12 @@ impl PyPredict {
     }
 
     /// The fused bucket a spec-less group joins at `horizon`: `1` for the batched corner,
-    /// the horizon for the batched chunk corner, `None` when it has no batched corner.
+    /// the horizon for the batched chunk corner, `None` when it has no batched corner or
+    /// has inner models, whose predicts are scoped to one episode.
     fn spec_less_bucket(&self, horizon: u32) -> Option<u32> {
+        if self.nested.is_some() {
+            return None;
+        }
         let horizon = horizon.max(1);
         if horizon > 1 && (self.predict_chunk_fn.is_some() || self.predict_chunk_batch_fn.is_some())
         {
@@ -297,7 +301,7 @@ impl PyPredict {
             for (lane, value) in lanes.iter().enumerate() {
                 let episode = observation.route.episodes.get(lane);
                 let context = episode_context_dict(py, episode, &self.envs)?;
-                if episode.is_none() {
+                if episode.is_none_or(|episode| episode.env_id.is_empty()) {
                     let env_id = observation.route.env_id.as_str();
                     context.set_item("env_id", env_id)?;
                     context.set_item("env_contract", self.envs.get(py, env_id))?;
@@ -561,21 +565,15 @@ impl PredictFn for PyPredict {
     ) -> Vec<rlmesh::Result<PredictFrames>> {
         let mut outcomes: Vec<Option<rlmesh::Result<PredictFrames>>> =
             (0..groups.len()).map(|_| None).collect();
-        let mut buckets: std::collections::BTreeMap<u32, Vec<(usize, ModelObservation, u32)>> =
-            std::collections::BTreeMap::new();
+        let mut buckets: Vec<SpecLessBucket> = Vec::new();
         let mut single: Vec<(usize, ModelObservation, u32)> = Vec::new();
         for (index, (observation, horizon)) in groups.into_iter().enumerate() {
             match self.spec_less_bucket(horizon) {
-                Some(key) => {
-                    buckets
-                        .entry(key)
-                        .or_default()
-                        .push((index, observation, horizon));
-                }
-                _ => single.push((index, observation, horizon)),
+                Some(key) => join_bucket(&mut buckets, key, (index, observation, horizon)),
+                None => single.push((index, observation, horizon)),
             }
         }
-        for (key, members) in buckets {
+        for ((key, _), members) in buckets {
             if members.len() == 1 {
                 single.extend(members);
                 continue;
@@ -868,6 +866,23 @@ fn episode_context_dict<'py>(
     dict.set_item("env_id", env_id)?;
     dict.set_item("env_contract", envs.get(py, env_id))?;
     Ok(dict)
+}
+
+type SpecLessMember = (usize, ModelObservation, u32);
+type SpecLessBucket = ((u32, Option<rlmesh_spaces::SpaceSpec>), Vec<SpecLessMember>);
+
+/// Fused calls stack their inputs, so a bucket holds one horizon and one observation space.
+fn join_bucket(buckets: &mut Vec<SpecLessBucket>, horizon: u32, member: SpecLessMember) {
+    let space = member
+        .1
+        .env_contract
+        .as_ref()
+        .and_then(|contract| contract.observation_space.clone());
+    let key = (horizon, space);
+    match buckets.iter_mut().find(|(bucket, _)| *bucket == key) {
+        Some((_, members)) => members.push(member),
+        None => buckets.push((key, vec![member])),
+    }
 }
 
 fn required_space<'a>(

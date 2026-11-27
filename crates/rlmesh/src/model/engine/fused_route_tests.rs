@@ -1035,6 +1035,33 @@ mod mixed_spec_less {
     }
 
     #[tokio::test]
+    async fn only_observations_of_one_space_share_a_fused_call() {
+        let mut wide = text_observation("wide", &["beta"], text_space());
+        Arc::make_mut(wide.env_contract.as_mut().unwrap()).observation_space =
+            Some(spaces::spaces::TextBuilder::new(64).build().unwrap());
+        let group = vec![
+            text_observation("first", &["alpha"], text_space()),
+            wide,
+            text_observation("last", &["delta"], text_space()),
+        ];
+        let (results, calls) = grouped(group, BatchOutput::Actions).await;
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        assert_eq!(
+            calls,
+            [
+                Call::Batch(
+                    vec![text("alpha"), text("delta")],
+                    vec![
+                        ("first-alpha".into(), Some(SpaceKind::Text)),
+                        ("last-delta".into(), Some(SpaceKind::Text)),
+                    ],
+                ),
+                Call::Single(text("beta")),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn a_group_whose_episodes_miss_its_lanes_is_served_alone() {
         let mut short = text_observation("short", &["beta", "gamma"], text_space());
         short.route.episodes.pop();

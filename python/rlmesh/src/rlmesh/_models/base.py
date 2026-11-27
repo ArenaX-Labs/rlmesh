@@ -214,7 +214,7 @@ def _debatch(
             if takes_context and context is not None
             else (fused, horizon)
         )
-        return bridge.tree_unstack(batched_fn(*args), 1)[0]
+        return bridge.tree_unstack(batched_fn(*args), 1, chunks=True)[0]
 
     return derived_predict_chunk
 
@@ -1269,7 +1269,7 @@ class ModelBase(Generic[ObsT, ActT]):
                     if chunk_batch_fn_takes_context
                     else chunk_batch_fn(fused, horizon)
                 )
-                parts = bridge.tree_unstack(chunks, len(observations))
+                parts = bridge.tree_unstack(chunks, len(observations), chunks=True)
                 return [bridge.encode(c) for c in parts]
 
             predict_chunk_batch_neutral = _predict_chunk_batch_neutral
