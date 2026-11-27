@@ -27,7 +27,7 @@ from .._upgrade import model_session, removed
 from .._value_conversion import ValueBridge, identity_bridge, tree_map
 from ..types import EnvTarget, LocalEnvTarget, Value, ViewArg
 from ._calls import ModelCalls
-from ._concurrency import Concurrency, is_async, resolve_limit
+from ._concurrency import Concurrency, check_limit, is_async, resolve_limit
 from ._episodes import EpisodeStore
 from ._instruction import text_placements, tree_set
 
@@ -176,6 +176,23 @@ def _with_episode_state(
         return corner(observation, horizon, enrich(context))
 
     return with_state_chunk
+
+
+def _refusing_coroutines(predict: Corner, owner: str) -> Corner:
+    """``predict``, refusing the coroutine a sync wrapper around an async predict returns."""
+
+    @functools.wraps(predict)
+    def checked(*args: Any) -> Any:
+        action = predict(*args)
+        if inspect.iscoroutine(action):
+            action.close()
+            raise TypeError(
+                f"{owner}.predict returned a coroutine: define it as `async def predict`, "
+                "and drop any sync wrapper that hides it"
+            )
+        return action
+
+    return checked
 
 
 def _debatch(
@@ -565,7 +582,10 @@ class ModelBase(Generic[ObsT, ActT]):
     #: 32 by default; a plain ``predict`` runs one at a time unless this is set, and then
     #: runs on that many threads, so it must be safe to call from several at once. Calls
     #: for one episode never overlap, so its ``context.state`` needs no lock. A model with
-    #: ``predict_batch`` or ``predict_chunk_batch`` batches instead and cannot set it.
+    #: ``predict_batch`` or ``predict_chunk_batch`` batches instead and cannot set it, nor
+    #: can one that calls inner models. The instance (in ``__init__`` or ``load()``) or a
+    #: wrapped policy may set it too. An async model keeps its event-loop thread, and the
+    #: clients bound to that loop, until :meth:`close`.
     concurrency: int | None = None
 
     #: A checkpoint may set this in load(); Rust selects and validates it.
@@ -577,7 +597,7 @@ class ModelBase(Generic[ObsT, ActT]):
         predict_chunk: Corner | None,
         predict_batch: Corner | None,
         predict_chunk_batch: Corner | None,
-        declared: object,
+        explicit: object,
     ) -> Corner | None:
         """Set up overlapping predicts; returns ``predict`` as a blocking call."""
         owner = type(self).__name__ if type(self) is not ModelBase else "Model"
@@ -588,28 +608,75 @@ class ModelBase(Generic[ObsT, ActT]):
         ):
             if corner is not None and is_async(corner):
                 raise TypeError(f"{owner}.{name} cannot be async: only predict can")
-        asynchronous = predict is not None and is_async(predict)
-        limit = resolve_limit(declared, asynchronous=asynchronous, owner=owner)
+        #: ``concurrency=``, which wins over the instance, policy and class attributes.
+        self._explicit_concurrency = check_limit(explicit, owner=owner)
+        declared = (
+            self._explicit_concurrency
+            if self._explicit_concurrency is not None
+            else check_limit(type(self).concurrency, owner=owner)
+        )
+        self._batches = predict_batch is not None or predict_chunk_batch is not None
         #: Runs overlapping predicts; ``None`` for a model that predicts one at a time.
         self._concurrency: Concurrency | None = None
-        if limit == 1 and not asynchronous:
-            return predict
-        if predict is None:
-            raise TypeError(f"{owner}: concurrency overlaps predict(); define one")
-        if limit > 1 and (predict_batch is not None or predict_chunk_batch is not None):
-            raise TypeError(
-                f"{owner}: concurrency overlaps predict() calls, and a model with "
-                "predict_batch or predict_chunk_batch batches them instead; "
-                "define one or the other"
-            )
-        self._concurrency = Concurrency(limit, asynchronous=asynchronous, name=owner)
         #: The authored predict, before episode state and the call gate.
-        self._row_predict: Corner = predict
-        if not asynchronous:
-            return predict
+        self._row_predict: Corner | None = predict
+        if predict is None:
+            if declared is not None and declared > 1:
+                raise TypeError(f"{owner}: concurrency overlaps predict(); define one")
+            return None
+        if not is_async(predict):
+            self._check_overlap(owner, declared or 1, asynchronous=False)
+            return _refusing_coroutines(predict, owner)
+        self._check_overlap(owner, declared, asynchronous=True)
+        self._concurrency = Concurrency(
+            resolve_limit(declared, asynchronous=True, owner=owner),
+            asynchronous=True,
+            name=owner,
+        )
         return self._concurrency.sync(
             cast("Callable[..., Coroutine[Any, Any, Any]]", predict)
         )
+
+    def _check_overlap(
+        self, owner: str, limit: int | None, *, asynchronous: bool
+    ) -> None:
+        if not asynchronous and (limit is None or limit == 1):
+            return
+        if self._batches:
+            what = "an async predict" if asynchronous else "concurrency"
+            raise TypeError(
+                f"{owner}: {what} overlaps predict() calls, and a model with "
+                "predict_batch or predict_chunk_batch batches them instead; "
+                "define one or the other"
+            )
+
+    def _resolve_concurrency(self, *, inner_models: bool) -> Concurrency | None:
+        """The overlap a built model runs with, from every place it may be declared."""
+        owner = type(self).__name__ if type(self) is not ModelBase else "Model"
+        declared = self._explicit_concurrency
+        policy = getattr(self._policy, "concurrency", None)
+        for source in (vars(self).get("concurrency"), policy):
+            if declared is None:
+                declared = check_limit(source, owner=owner)
+        if declared is None:
+            declared = check_limit(type(self).concurrency, owner=owner)
+        concurrency = self._concurrency
+        asynchronous = concurrency is not None and concurrency.asynchronous
+        limit = resolve_limit(declared, asynchronous=asynchronous, owner=owner)
+        self._check_overlap(owner, limit, asynchronous=asynchronous)
+        if inner_models and (asynchronous or limit > 1):
+            raise TypeError(
+                f"{owner} calls inner models, which run inside one predict at a time: "
+                "use a plain predict without concurrency"
+            )
+        if concurrency is not None:
+            concurrency.limit = limit
+        elif limit > 1:
+            concurrency = Concurrency(limit, asynchronous=False, name=owner)
+            self._concurrency = concurrency
+        if concurrency is not None:
+            self._calls.also_inside(concurrency.owns_current_thread)
+        return concurrency
 
     def _served(self, address: str) -> Callable[[object], object]:
         """Take ``address`` as a served model's; the predict stand-in it returns refuses."""
@@ -797,7 +864,7 @@ class ModelBase(Generic[ObsT, ActT]):
             raw_predict_chunk,
             raw_predict_batch,
             raw_predict_chunk_batch,
-            concurrency if concurrency is not None else type(self).concurrency,
+            concurrency,
         )
         raw_predict_chunk = _normalize_chunk(raw_predict_chunk)
         raw_predict_chunk_batch = _normalize_chunk(raw_predict_chunk_batch)
@@ -981,7 +1048,9 @@ class ModelBase(Generic[ObsT, ActT]):
     def predict(self, observation: ObsT) -> ActT:
         """Map one observation to an action (or an action chunk per ``spec``).
 
-        Override when subclassing ``Model``. A model built by wrapping a predict
+        Override when subclassing ``Model``, as a plain method or as
+        ``async def predict``, which lets predicts overlap (see ``concurrency``).
+        A model built by wrapping a predict
         callable, or a served one (``Model("host:port/name")``), predicts here
         only as another model's part: held as an attribute of a model a run,
         bind or serve drives (``self.inner = inner``), ``self.inner.predict(obs)``
@@ -1173,10 +1242,11 @@ class ModelBase(Generic[ObsT, ActT]):
     ) -> Callable[[list[Value], list[Mapping[str, Any]]], list[Value]]:
         """A batched corner that runs one :meth:`predict` per row, overlapping.
 
-        A row whose predict raised returns its exception in its place, and the
-        native worker fails only that row's request.
+        A row whose predict raised returns its exception in its place. On a
+        spec-less model the native worker fails only that row's request; on a
+        spec'd model the first such row fails the whole call.
         """
-        predict = self._row_predict
+        predict = cast("Corner", self._row_predict)
         bridge = self._bridge
         episodes = self._episodes
         takes_context = accepts_context(predict, 1)
@@ -1357,10 +1427,16 @@ class ModelBase(Generic[ObsT, ActT]):
 
             predict_batch_neutral = _predict_batch_neutral
 
-        concurrency = self._concurrency
-        if concurrency is not None and concurrency.limit > 1:
+        parts: list[ModelBase[Any, Any]] = [
+            part
+            for part in vars(self).values()
+            if isinstance(part, ModelBase) and part is not self
+        ]
+        concurrency = self._resolve_concurrency(inner_models=bool(parts))
+        overlaps = concurrency is not None and concurrency.limit > 1
+        if overlaps:
             predict_batch_neutral = self._calls.gated(
-                self._overlapping_predicts(concurrency, observe)
+                self._overlapping_predicts(cast("Concurrency", concurrency), observe)
             )
 
         raw_predict_chunk_batch = self._raw_predict_chunk_batch
@@ -1404,15 +1480,11 @@ class ModelBase(Generic[ObsT, ActT]):
             predict_batch_fn=predict_batch_neutral,
             predict_chunk_batch_fn=predict_chunk_batch_neutral,
             allow_fusion=self._loaded_allow_fusion,
+            stacks_batches=not overlaps and bridge.stacks,
             native_chunk=self._native_chunk(),
             on_route_drop=self._drop_env_entries,
             name=self._error_name(),
         )
-        parts: list[ModelBase[Any, Any]] = [
-            part
-            for part in vars(self).values()
-            if isinstance(part, ModelBase) and part is not self
-        ]
         inners = [(id(part), part._install_worker()) for part in parts]
         if inners:
             worker.set_inner_models(inners)

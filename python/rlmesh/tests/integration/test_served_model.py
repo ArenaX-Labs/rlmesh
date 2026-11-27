@@ -884,11 +884,13 @@ class _Overlap:
 
 
 def _run_sessions(
-    address: str, seeds: list[int]
+    address: str, seeds: list[int], lengths: list[int] | None = None
 ) -> tuple[list[EchoTextEnv], dict[int, BaseException]]:
     import rlmesh
 
     envs = [EchoTextEnv() for _ in seeds]
+    for env, length in zip(envs, lengths or [], strict=False):
+        env.observation_space = rlmesh.spaces.Text(length, min_length=0)
     failures: dict[int, BaseException] = {}
 
     def client(env: EchoTextEnv, seed: int) -> None:
@@ -978,3 +980,27 @@ def test_a_failing_concurrent_predict_fails_only_its_own_session(
     assert "KeyError: 'the provider refused'" in str(failures[1])
     assert envs[0].actions == [f"re:0:{step}" for step in range(3)]
     assert envs[2].actions == [f"re:2:{step}" for step in range(3)]
+
+
+def test_predicts_overlap_across_sessions_whose_observation_spaces_differ(
+    session_port: int,
+) -> None:
+    import asyncio
+
+    import rlmesh
+
+    overlap = _Overlap()
+
+    class Agent(rlmesh.Model):
+        async def predict(self, observation: str) -> str:
+            with overlap:
+                await asyncio.sleep(0.2)
+            return f"re:{observation}"
+
+    with _served(Agent(), session_port) as address:
+        envs, failures = _run_sessions(address, [0, 1, 2, 3], [256, 300, 400, 512])
+
+    assert failures == {}
+    for seed, env in enumerate(envs):
+        assert env.actions == [f"re:{seed}:{step}" for step in range(3)]
+    assert overlap.most > 1
