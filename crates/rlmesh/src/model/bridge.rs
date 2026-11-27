@@ -507,7 +507,18 @@ impl PredictFn for ModelPredict {
         let mut results: Vec<Option<Result<PredictFrames>>> = Vec::new();
         let (mut inputs, mut rows, mut fused) = (Vec::new(), Vec::new(), Vec::new());
         for (index, observation) in observations.iter().enumerate() {
-            match self.spec_less_lanes(observation) {
+            let staged = self.spec_less_lanes(observation).and_then(|staged| {
+                if staged.0.len() == staged.1.len() {
+                    Ok(staged)
+                } else {
+                    Err(Error::invalid_argument(format!(
+                        "spec-less observation decoded {} lanes for {} episodes",
+                        staged.0.len(),
+                        staged.1.len()
+                    )))
+                }
+            });
+            match staged {
                 Ok((lanes, lane_rows, action_space)) => {
                     results.push(None);
                     fused.push((index, lanes.len(), action_space));
@@ -534,12 +545,12 @@ impl PredictFn for ModelPredict {
                 });
             match actions {
                 Ok(actions) => {
-                    let mut actions = actions.iter();
+                    let mut start = 0;
                     for (index, count, action_space) in fused {
+                        let own = &actions[start..start + count];
+                        start += count;
                         results[index] = Some(
-                            actions
-                                .by_ref()
-                                .take(count)
+                            own.iter()
                                 .map(|action| Self::encode_action(action, &action_space))
                                 .collect::<Result<_>>()
                                 .map(|actions| PredictFrames {

@@ -291,7 +291,18 @@ impl PredictFn for PyPredict {
             let mut results: Vec<Option<rlmesh::Result<PredictFrames>>> = Vec::new();
             let (mut inputs, mut contexts, mut fused) = (Vec::new(), Vec::new(), Vec::new());
             for (index, observation) in observations.iter().enumerate() {
-                match self.spec_less_lanes(py, observation) {
+                let staged = self.spec_less_lanes(py, observation).and_then(|staged| {
+                    if staged.0.len() == staged.1.len() {
+                        Ok(staged)
+                    } else {
+                        Err(pyo3::exceptions::PyValueError::new_err(format!(
+                            "spec-less observation decoded {} lanes for {} episodes",
+                            staged.0.len(),
+                            staged.1.len()
+                        )))
+                    }
+                });
+                match staged {
                     Ok((lane_inputs, lane_contexts, action_space)) => {
                         results.push(None);
                         fused.push((index, lane_inputs.len(), action_space));
@@ -321,12 +332,12 @@ impl PredictFn for PyPredict {
                 });
             match returned {
                 Ok(actions) => {
-                    let mut actions = actions.iter();
+                    let mut start = 0;
                     for (index, count, action_space) in fused {
+                        let own = &actions[start..start + count];
+                        start += count;
                         results[index] = Some(
-                            actions
-                                .by_ref()
-                                .take(count)
+                            own.iter()
                                 .map(|action| self.encode_action(py, action, action_space))
                                 .collect::<rlmesh::Result<_>>()
                                 .map(|actions| PredictFrames {

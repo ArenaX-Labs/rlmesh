@@ -1145,6 +1145,61 @@ mod spec_less_batching {
             assert_eq!(frames.replay, [vec![SpaceValue::Text("replay".into())]]);
         }
     }
+
+    #[tokio::test]
+    async fn spec_less_batch_confines_an_unencodable_action_to_its_own_observation() {
+        let discrete = spaces::spaces::DiscreteBuilder::new(8).build().unwrap();
+        let group = vec![
+            text_observation("discrete", &["alpha", "5"], discrete),
+            text_observation("text", &["beta"], text_space()),
+        ];
+        let (results, calls) = grouped::<true>(group, 1, true, BatchOutput::Actions).await;
+        let [discrete, text] = results.as_slice() else {
+            panic!("expected one result per observation: {results:?}")
+        };
+        assert!(discrete.is_err(), "{discrete:?}");
+        assert_actions(text, &[SpaceValue::Text("beta-action".into())]);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn spec_less_batch_excludes_an_observation_whose_lanes_miss_its_episodes() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let model = Model::new(
+            RecordingPolicy::<true> {
+                calls: Arc::clone(&calls),
+                allow_fusion: true,
+                batch_output: BatchOutput::Actions,
+            },
+            ModelOptions::default(),
+        )
+        .unwrap();
+        let handler = engine_handler(Arc::clone(model.shared()));
+        let mut short = text_observation("short", &["beta", "gamma"], text_space());
+        short.route.episodes.pop();
+        let results = handler.predict.predict_spec_less_batch(vec![
+            text_observation("first", &["alpha"], text_space()),
+            short,
+            text_observation("last", &["delta"], text_space()),
+        ]);
+        model.close_async().await.unwrap();
+        let [first, short, last] = results.as_slice() else {
+            panic!("expected one result per observation: {results:?}")
+        };
+        assert_actions(first, &[SpaceValue::Text("alpha-action".into())]);
+        assert!(short.is_err(), "{short:?}");
+        assert_actions(last, &[SpaceValue::Text("delta-action".into())]);
+        assert_eq!(
+            std::mem::take(&mut *calls.lock().unwrap()),
+            [Call::Batch(
+                vec![text("alpha"), text("delta")],
+                vec![
+                    ("first-alpha".into(), Some(SpaceKind::Text)),
+                    ("last-delta".into(), Some(SpaceKind::Text)),
+                ],
+            )]
+        );
+    }
 }
 
 async fn resolve_once(

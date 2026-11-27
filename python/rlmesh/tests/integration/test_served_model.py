@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -121,6 +121,78 @@ def test_a_served_spec_less_batch_spans_routes(session_port: int) -> None:
     ]
     assert all(ended) and len(set(ended)) == 2
     assert sorted(ended) == sorted(episode_id for _, episode_id, _, _ in batches[0])
+
+
+def test_a_served_spec_less_batch_confines_an_unencodable_action(
+    session_port: int,
+) -> None:
+    import time
+
+    import rlmesh
+
+    ready = threading.Barrier(2)
+
+    class PairEnv:
+        num_envs = 2
+        single_observation_space = rlmesh.spaces.Text(8)
+        single_action_space = rlmesh.spaces.Text(16)
+        metadata: ClassVar[dict[str, str]] = {"autoreset_mode": "NextStep"}
+
+        def reset(
+            self, *, seed: Any = None, options: dict[str, Any] | None = None
+        ) -> tuple[list[str], dict[str, Any]]:
+            ready.wait(timeout=10)
+            return ["bad", "pair"], {}
+
+        def step(self, actions: Any) -> tuple[Any, Any, Any, Any, dict[str, Any]]:
+            return ["bad", "pair"], [1.0, 1.0], [True, True], [False, False], {}
+
+        def close(self) -> None:
+            pass
+
+    class SoloEnv:
+        observation_space = rlmesh.spaces.Text(8)
+        action_space = rlmesh.spaces.Text(16)
+
+        def __init__(self) -> None:
+            self.actions: list[str] = []
+
+        def reset(
+            self, *, seed: int | None = None, options: dict[str, Any] | None = None
+        ) -> tuple[str, dict[str, Any]]:
+            ready.wait(timeout=10)
+            # Arrive after the pair so its failing lane precedes this route in the batch.
+            time.sleep(0.2)
+            return "solo", {}
+
+        def step(self, action: str) -> tuple[str, float, bool, bool, dict[str, Any]]:
+            self.actions.append(action)
+            return "solo", 1.0, True, False, {}
+
+        def close(self) -> None:
+            pass
+
+    batches: list[list[str]] = []
+
+    class Policy(rlmesh.Model):
+        def predict(self, observation: str) -> str:
+            return f"reply {observation}"
+
+        def predict_batch(
+            self, observations: list[str], context: list[dict[str, Any]]
+        ) -> list[Any]:
+            batches.append(list(observations))
+            return [7 if obs == "bad" else f"reply {obs}" for obs in observations]
+
+    solo = SoloEnv()
+    batching = rlmesh.BatchOptions(max_batch_size=2, batch_window_ms=1000)
+    with _served(Policy(), session_port, batching=batching) as address:
+        pair_result, solo_result = rlmesh.Model(address).run_routes([PairEnv(), solo])
+
+    assert batches == [["bad", "pair", "solo"]], (batches, pair_result, solo_result)
+    assert isinstance(pair_result, Exception), pair_result
+    assert isinstance(solo_result, rlmesh.RunResult), solo_result
+    assert solo.actions == ["reply solo"]
 
 
 def test_a_served_model_drives_a_local_env_with_numpy_values(session_port: int) -> None:
