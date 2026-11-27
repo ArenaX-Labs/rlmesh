@@ -54,6 +54,19 @@ def test_text_leaf_falls_back_to_per_lane_list() -> None:
     assert fused["instr"] == ["go", "stop"]
 
 
+def test_a_text_leaf_returns_as_its_per_lane_list() -> None:
+    assert bridge.tree_unstack(["re:go", "re:stop"], 2) == ["re:go", "re:stop"]
+    parts = cast(Any, bridge.tree_unstack({"say": ["a", "b"], "move": np.eye(2)}, 2))
+    assert parts[1]["say"] == "b"
+    assert parts[1]["move"].tolist() == [0, 1]
+    with pytest.raises(ValueError, match="into 3 lanes"):
+        bridge.tree_unstack(["a", "b"], 3)
+    chunks = [["a0", "a1"], ["b0", "b1"]]
+    assert bridge.tree_unstack(chunks, 2, chunks=True) == chunks
+    fields = cast(Any, bridge.tree_unstack(chunks, 2))
+    assert fields == [["a0", "b0"], ["a1", "b1"]]
+
+
 def test_unstack_rejects_wrong_leading_axis() -> None:
     with pytest.raises(ValueError, match="leading batch axis 3"):
         bridge.tree_unstack(np.zeros((2, 5)), 3)

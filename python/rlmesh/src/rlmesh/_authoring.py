@@ -64,8 +64,7 @@ class EnvFactory(ABC):
     #: ``max_episode_steps`` is refused before its first reset.
     requires_episode_cap: ClassVar[bool] = False
     #: Workflow edition this env was authored against (see :func:`rlmesh.current_workflow_edition`).
-    #: ``None`` floats to the newest edition. Overridden by ``RLMESH_WORKFLOW_EDITION``
-    #: and ``--workflow-edition`` / ``ServeOptions(workflow_edition=...)``.
+    #: ``None`` runs at the current edition; nothing at deploy time overrides it.
     workflow_edition: ClassVar[str | None] = None
     #: Framework bridge pinned by a framework-specific subclass; ``None`` is numpy.
     _bridge: ClassVar[ValueBridge | None] = None
@@ -174,7 +173,6 @@ class EnvFactory(ABC):
         vectorization_mode: str | None = None,
         framework: str | None = None,
         device: object | None = None,
-        workflow_edition: str | None = None,
         **make_kwargs: Any,
     ) -> None:
         """Serve this env at the participant address ``address`` (blocking): ``prepare()`` + ``make(**make_kwargs)``, publish ``tags``.
@@ -182,9 +180,7 @@ class EnvFactory(ABC):
         The named keywords are *serving* options, forwarded to
         :func:`rlmesh.serve.serve_env` (``num_envs > 1`` fans ``make`` out into a
         vector env; ``framework``/``device`` type and place the served obs/action
-        seam; ``workflow_edition`` overrides this class's
-        :attr:`workflow_edition` declaration for this endpoint); every other
-        keyword goes to ``make``. Naming them here keeps a make
+        seam); every other keyword goes to ``make``. Naming them here keeps a make
         kwarg from silently binding to a serving option -- a ``make`` parameter that
         shares a serving option's name cannot ride through ``serve``.
         """
@@ -197,7 +193,6 @@ class EnvFactory(ABC):
             vectorization_mode=vectorization_mode,
             framework=framework,
             device=device,
-            workflow_edition=workflow_edition,
             **make_kwargs,
         )
 

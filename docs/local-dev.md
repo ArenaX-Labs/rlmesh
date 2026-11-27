@@ -67,7 +67,7 @@ mise run test:python:unit
 mise run test:python:integration
 ```
 
-On `uv run` and `mise run setup:python`, uv rebuilds the native extension when Rust sources or the commit change (the commit is part of its stamp, see [dev builds](#dev-builds-and-the-dev-cohort)). `mise run test` syncs once before its Rust, Python and C/C++ suites start, so all three load one build, stamped like the C library they test against. The Python lint and format tasks run `uv run --no-sync`, so a commit's hooks never rebuild it with the tree half staged, and stop first with one line saying to run `mise run setup:python` when `.venv` lacks a locked dev dependency (a new worktree's is empty), rather than fall back to whatever ruff is on PATH; `test:affected`, which holds the heavy lock, syncs it instead; the git hooks installed by `setup:hooks` rebuild it on checkout and merge. Otherwise the editable install keeps loading the last in-tree build: when a source build was stamped from a commit other than the checkout's HEAD, rlmesh warns once, on first use of the native core, to run `mise run build:python:develop` (set `RLMESH_STALE_CHECK=0` to skip the check; installed wheels are never checked). See [testing](testing.md) for the full test layering.
+On `uv run` and `mise run setup:python`, uv rebuilds the native extension when Rust sources or the commit change (the commit is part of its stamp, see [dev builds](#dev-builds)). `mise run test` syncs once before its Rust, Python and C/C++ suites start, so all three load one build, stamped like the C library they test against. The Python lint and format tasks run `uv run --no-sync`, so a commit's hooks never rebuild it with the tree half staged, and stop first with one line saying to run `mise run setup:python` when `.venv` lacks a locked dev dependency (a new worktree's is empty), rather than fall back to whatever ruff is on PATH; `test:affected`, which holds the heavy lock, syncs it instead; the git hooks installed by `setup:hooks` rebuild it on checkout and merge. Otherwise the editable install keeps loading the last in-tree build: when a source build was stamped from a commit other than the checkout's HEAD, rlmesh warns once, on first use of the native core, to run `mise run build:python:develop` (set `RLMESH_STALE_CHECK=0` to skip the check; installed wheels are never checked). See [testing](testing.md) for the full test layering.
 
 ## Worktrees and Limited Compute
 
@@ -104,14 +104,9 @@ Build the linux-glibc wheel pair consumed by container images (skips when the wh
 mise run build:python:docker
 ```
 
-### Dev Builds and the Dev Cohort
+### Dev Builds
 
-A build from this checkout is a **dev build**: `crates/rlmesh-proto/build.rs` stamps its workflow edition with a dev cohort, `<base>-dev.<git>`, where `<git>` is the 12-character HEAD sha, suffixed `.dirty.<fingerprint>` (a hash of `git diff HEAD` plus untracked files) when the tree has uncommitted changes. `rlmesh.build_info()` reports it as `workflow_edition`, with `build_source == "git"`. `rlmesh --version` says which kind of build you have: `rlmesh 0.2.0-alpha.1 (dev build of 1a2b3c4d5e6f: talks only to the same commit) · edition 2026.10-dev.1a2b3c4d5e6f · session wire 1`, or `(release build)`. A dev build offers only that cohort: it drops the sealed current edition from its offer so a moving build never claims the release contract (see [workflow editions](editions/index.md#negotiation)).
-
-So two dev artifacts interoperate only when they were built from the identical tree state. This bites when the two sides of a session come from separate builds, for example a C or C++ env linked against `rlmesh-capi` and the editable Python extension, or an env server built before you edited a file and a runtime built after. The build script reruns only when HEAD, `rlmesh.toml`, the protos, or `RLMESH_RELEASE_BUILD` change, so even an artifact that cargo considers fresh can carry an older dirty fingerprint. The session then fails at the runtime's floor with `no mutual workflow edition`, and the message ends with a hint naming the remedy:
-
-- Rebuild both sides from the same tree state (commit or stash first, then rebuild each artifact).
-- Or build both with `RLMESH_RELEASE_BUILD=1`, which stamps the release cohort instead, so both sides use the same official cohort however dirty the checkout is (a prerelease cohort until the edition seals). Set it for every build that takes part, for example `RLMESH_RELEASE_BUILD=1 cargo build -p rlmesh-capi --release` and `RLMESH_RELEASE_BUILD=1 mise run build:python:develop`. `examples/chrono/demo.sh` does this.
+A build from this checkout is a **dev build**: `crates/rlmesh-proto/build.rs` stamps it with its 12-character HEAD commit, which `rlmesh.build_info()` reports as `git`, with `build_source == "git"`. `RLMESH_RELEASE_BUILD=1` makes a release build instead. `rlmesh --version` says which kind you have: `rlmesh 0.2.0-alpha.2 (dev build of 1a2b3c4d5e6f) · edition 2026.10 · session wire 2`. Every build reports the same bare workflow edition, and any two builds talk when their session wire revisions match, whatever their kind or commit.
 
 ## Docs
 

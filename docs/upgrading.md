@@ -29,7 +29,7 @@ ENV RLMESH_ADDRESS=0.0.0.0:50051
 
 ```dockerfile
 # 0.2
-RUN pip install --no-cache-dir "rlmesh==0.2.0a1"
+RUN pip install --no-cache-dir "rlmesh==0.2.0a2"
 EXPOSE 7447
 ENV RLMESH_ADDRESS=0.0.0.0:7447
 ENV RLMESH_READY_FILE=/tmp/rlmesh-ready.json
@@ -96,25 +96,18 @@ as an RLMesh 0.1 (gRPC) server does. RLMesh 0.2 can't connect to 0.1; serve it w
 0.2 runs workflow edition `2026.10`, provisional until 0.2.0 seals it, and refuses `2026.06` wherever it is declared. Serving refuses it, and so does a local run or binding: `model.run(MyEnvFactory())` or `model.bind(env)` with an env or factory that declares `2026.06` fails before the factory makes an env:
 
 ```text
-ValueError: runtime cannot drive workflow edition "2026.06"; this build implements [...]
+ValueError: workflow edition "2026.06" is unknown to this rlmesh build, which knows 2026.10; [...]
 ```
 
-Remove every declaration of `2026.06`:
+0.2 reads an edition from the source only: `workflow_edition` on the `EnvFactory` or `Model` class. Remove the rest:
 
-- `ServeOptions(workflow_edition="2026.06")`
-- `python -m rlmesh.serve --workflow-edition 2026.06`
-- `run(..., workflow_edition="2026.06")` and `bind(..., workflow_edition="2026.06")`
-- `RLMESH_WORKFLOW_EDITION=2026.06` in a Dockerfile or launch script
-- `workflow_edition = "2026.06"` on an `EnvFactory` or `Model` class
-- `[tool.rlmesh] workflow_edition = "2026.06"` in `pyproject.toml`
+- `workflow_edition = "2026.06"` on a class
+- `RLMESH_WORKFLOW_EDITION` in a Dockerfile or launch script (no longer read)
+- `python -m rlmesh.serve --workflow-edition ...` (the flag is gone)
+- `run(..., workflow_edition=...)`, `bind(..., workflow_edition=...)` and `RemoteEnv(..., workflow_edition=...)` (the keywords are gone)
+- `[tool.rlmesh] workflow_edition` in `pyproject.toml` (no longer read)
 
-`rlmesh check module:Class` fails on a class or project that still declares it.
-
-A local run reads the env's declaration the way serving does: the run's own `workflow_edition=` comes first, then `RLMESH_WORKFLOW_EDITION`, then `workflow_edition` on the `EnvFactory` (or on the env's class), then the `pyproject.toml` of the env's project. An env that declares nothing takes the model's declaration.
-
-Leaving a per-serve or per-call value out (`ServeOptions`, `--workflow-edition`, `run(workflow_edition=...)`) lets the participant's own declaration apply: the one on its class or in its `pyproject.toml`. If nothing declares one, the participant runs at the newest edition its build offers.
-
-Declare an edition when you need an evaluation to mean the same thing after you upgrade rlmesh. Declare it once, in source, with the value `rlmesh.current_workflow_edition()` prints (`2026.10` on every 0.2 build):
+A participant that declares nothing runs at its build's current edition. Declare one when you need an evaluation to mean the same thing after you upgrade rlmesh, with the value `rlmesh.current_workflow_edition()` prints (`2026.10` on every 0.2 build):
 
 ```python
 class MyEnv(rlmesh.EnvFactory):
@@ -123,7 +116,7 @@ class MyEnv(rlmesh.EnvFactory):
     def make(self): ...
 ```
 
-A declaration is a ceiling, not a demand: the session runs at the newest edition that every participant can run and that is no newer than any participant's declaration. [Workflow editions](editions/index.md) has the precedence rules and the [support window](editions/index.md#support-window).
+An edition is declared locally and never negotiated; see [workflow editions](editions/index.md).
 
 ## Removed and renamed Python APIs
 

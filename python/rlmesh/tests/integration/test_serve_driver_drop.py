@@ -163,7 +163,6 @@ class _Served:
             "PYTHONPATH": str(tmp),
             "MARKS": str(self.marks),
             "EPISODE": str(EPISODE),
-            "RLMESH_WORKFLOW_EDITION": "",
             "RLMESH_STATE_DIR": str(tmp / "state"),
         }
         target = ["--env", "served:Env"] if kind == "env" else ["served:Policy"]

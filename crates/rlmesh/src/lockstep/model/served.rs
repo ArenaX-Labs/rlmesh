@@ -62,14 +62,14 @@ impl Remote {
             .unwrap_or_else(|| unreachable!()))
     }
 
-    async fn workflow_editions(&self) -> Result<Option<rlmesh_proto::SessionOffer>, Error> {
+    async fn workflow_edition(&self) -> Result<Option<String>, Error> {
         self.link().await?;
         Ok(self
             .connection
             .lock()
             .await
             .as_ref()
-            .and_then(ModelConnection::workflow_editions))
+            .and_then(ModelConnection::workflow_edition))
     }
 
     async fn call(&self, request: ModelRequest) -> Result<ModelReply, Error> {
@@ -345,8 +345,8 @@ impl ModelHandler for ServedModel {
         Ok(())
     }
 
-    async fn workflow_editions(&mut self) -> crate::Result<Option<rlmesh_proto::SessionOffer>> {
-        self.remote.workflow_editions().await
+    async fn workflow_edition(&mut self) -> crate::Result<Option<String>> {
+        self.remote.workflow_edition().await
     }
 
     fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {
@@ -399,10 +399,6 @@ impl ModelRouteSetup for ServedRoutes {
                 contract_json: crate::lockstep::map::contract_to_json(env_contract).to_string(),
                 execution_horizon: options.execution_horizon,
                 delivers_history: options.delivers_history,
-                workflow_edition: options
-                    .workflow_edition
-                    .map(|edition| edition.to_string())
-                    .unwrap_or_default(),
                 reads_advisories: true,
             }))
             .await?;

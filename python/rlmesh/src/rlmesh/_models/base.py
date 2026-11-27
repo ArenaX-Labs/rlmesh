@@ -10,7 +10,7 @@ import functools
 import inspect
 import os
 import weakref
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -27,6 +27,7 @@ from .._upgrade import model_session, removed
 from .._value_conversion import ValueBridge, identity_bridge, tree_map
 from ..types import EnvTarget, LocalEnvTarget, Value, ViewArg
 from ._calls import ModelCalls
+from ._concurrency import Concurrency, check_limit, is_async, resolve_limit
 from ._episodes import EpisodeStore
 from ._instruction import text_placements, tree_set
 
@@ -177,6 +178,23 @@ def _with_episode_state(
     return with_state_chunk
 
 
+def _refusing_coroutines(predict: Corner, owner: str) -> Corner:
+    """``predict``, refusing the coroutine a sync wrapper around an async predict returns."""
+
+    @functools.wraps(predict)
+    def checked(*args: Any) -> Any:
+        action = predict(*args)
+        if inspect.iscoroutine(action):
+            action.close()
+            raise TypeError(
+                f"{owner}.predict returned a coroutine: define it as `async def predict`, "
+                "and drop any sync wrapper that hides it"
+            )
+        return action
+
+    return checked
+
+
 def _debatch(
     bridge: ValueBridge, batched_fn: Corner, *, arity: Literal[1, 2]
 ) -> Corner:
@@ -214,7 +232,7 @@ def _debatch(
             if takes_context and context is not None
             else (fused, horizon)
         )
-        return bridge.tree_unstack(batched_fn(*args), 1)[0]
+        return bridge.tree_unstack(batched_fn(*args), 1, chunks=True)[0]
 
     return derived_predict_chunk
 
@@ -475,7 +493,8 @@ class BatchOptions:
     ``batch_byte_budget`` observation bytes, or as soon as every route the
     model has resolved has a request in it; while the model is idle it also
     closes at the latest ``batch_window_ms`` after its first request, and while
-    a forward runs it stays open until that forward ends. A model that cannot
+    a forward runs it stays open until that forward ends and then up to
+    ``batch_window_ms`` more, for the routes it answered. A model that cannot
     fuse (``allow_fusion = False``, or no batched corner) is never batched.
 
     ``max_batch_size=1`` turns batching off. ``max_in_flight_batches=2`` lets
@@ -544,9 +563,8 @@ class ModelBase(Generic[ObsT, ActT]):
     #: Declared construction parameters for ``load``; keywords are validated against it
     #: before ``load(**config)`` runs. See :mod:`rlmesh.params`.
     params: ClassVar[ParamSpec | None] = None
-    #: The workflow edition this model was authored against; ``None`` floats to the newest.
-    #: Overridden by ``RLMESH_WORKFLOW_EDITION`` and an explicit ``run``/``session`` keyword;
-    #: see :doc:`the precedence table </editions/index>`.
+    #: The workflow edition this model was authored against; ``None`` runs at the current
+    #: edition; nothing at deploy time overrides it. See :doc:`/editions/index`.
     workflow_edition: ClassVar[str | None] = None
     #: Compute device for model inputs (torch/jax only). Set it in :meth:`load`; rlmesh moves
     #: every obs tensor leaf onto it before :meth:`predict`. ``None`` leaves obs as decoded.
@@ -559,9 +577,106 @@ class ModelBase(Generic[ObsT, ActT]):
     #: undeclared; declaring it makes the runtime refuse an ``execution_horizon`` above K and
     #: fail a predict whose chunk is not exactly K long.
     native_chunk: int | None = None
+    #: How many :meth:`predict` calls may run at once, for a model that waits on I/O (an
+    #: LLM or a remote API) rather than computing. An ``async def predict`` overlaps up to
+    #: 32 by default; a plain ``predict`` runs one at a time unless this is set, and then
+    #: runs on that many threads, so it must be safe to call from several at once. Calls
+    #: for one episode never overlap, so its ``context.state`` needs no lock. A model with
+    #: ``predict_batch`` or ``predict_chunk_batch`` batches instead and cannot set it, nor
+    #: can one that calls inner models. The instance (in ``__init__`` or ``load()``) or a
+    #: wrapped policy may set it too. An async model keeps its event-loop thread, and the
+    #: clients bound to that loop, until :meth:`close`.
+    concurrency: int | None = None
 
     #: A checkpoint may set this in load(); Rust selects and validates it.
     execution_horizon: int | None = None
+
+    def _overlap(
+        self,
+        predict: Corner | None,
+        predict_chunk: Corner | None,
+        predict_batch: Corner | None,
+        predict_chunk_batch: Corner | None,
+        explicit: object,
+    ) -> Corner | None:
+        """Set up overlapping predicts; returns ``predict`` as a blocking call."""
+        owner = type(self).__name__ if type(self) is not ModelBase else "Model"
+        for name, corner in (
+            ("predict_chunk", predict_chunk),
+            ("predict_batch", predict_batch),
+            ("predict_chunk_batch", predict_chunk_batch),
+        ):
+            if corner is not None and is_async(corner):
+                raise TypeError(f"{owner}.{name} cannot be async: only predict can")
+        #: ``concurrency=``, which wins over the instance, policy and class attributes.
+        self._explicit_concurrency = check_limit(explicit, owner=owner)
+        declared = (
+            self._explicit_concurrency
+            if self._explicit_concurrency is not None
+            else check_limit(type(self).concurrency, owner=owner)
+        )
+        self._batches = predict_batch is not None or predict_chunk_batch is not None
+        #: Runs overlapping predicts; ``None`` for a model that predicts one at a time.
+        self._concurrency: Concurrency | None = None
+        #: The authored predict, before episode state and the call gate.
+        self._row_predict: Corner | None = predict
+        if predict is None:
+            if declared is not None and declared > 1:
+                raise TypeError(f"{owner}: concurrency overlaps predict(); define one")
+            return None
+        if not is_async(predict):
+            self._check_overlap(owner, declared or 1, asynchronous=False)
+            return _refusing_coroutines(predict, owner)
+        self._check_overlap(owner, declared, asynchronous=True)
+        self._concurrency = Concurrency(
+            resolve_limit(declared, asynchronous=True, owner=owner),
+            asynchronous=True,
+            name=owner,
+        )
+        return self._concurrency.sync(
+            cast("Callable[..., Coroutine[Any, Any, Any]]", predict)
+        )
+
+    def _check_overlap(
+        self, owner: str, limit: int | None, *, asynchronous: bool
+    ) -> None:
+        if not asynchronous and (limit is None or limit == 1):
+            return
+        if self._batches:
+            what = "an async predict" if asynchronous else "concurrency"
+            raise TypeError(
+                f"{owner}: {what} overlaps predict() calls, and a model with "
+                "predict_batch or predict_chunk_batch batches them instead; "
+                "define one or the other"
+            )
+
+    def _resolve_concurrency(self, *, inner_models: bool) -> Concurrency | None:
+        """The overlap a built model runs with, from every place it may be declared."""
+        owner = type(self).__name__ if type(self) is not ModelBase else "Model"
+        declared = self._explicit_concurrency
+        policy = getattr(self._policy, "concurrency", None)
+        for source in (vars(self).get("concurrency"), policy):
+            if declared is None:
+                declared = check_limit(source, owner=owner)
+        if declared is None:
+            declared = check_limit(type(self).concurrency, owner=owner)
+        concurrency = self._concurrency
+        asynchronous = concurrency is not None and concurrency.asynchronous
+        limit = resolve_limit(declared, asynchronous=asynchronous, owner=owner)
+        self._check_overlap(owner, limit, asynchronous=asynchronous)
+        if inner_models and (asynchronous or limit > 1):
+            raise TypeError(
+                f"{owner} calls inner models, which run inside one predict at a time: "
+                "use a plain predict without concurrency"
+            )
+        if concurrency is not None:
+            concurrency.limit = limit
+        elif limit > 1:
+            concurrency = Concurrency(limit, asynchronous=False, name=owner)
+            self._concurrency = concurrency
+        if concurrency is not None:
+            self._calls.also_inside(concurrency.owns_current_thread)
+        return concurrency
 
     def _served(self, address: str) -> Callable[[object], object]:
         """Take ``address`` as a served model's; the predict stand-in it returns refuses."""
@@ -632,6 +747,7 @@ class ModelBase(Generic[ObsT, ActT]):
         on_episode_end: LifecycleCallback | None = None,
         on_close: LifecycleCallback | None = None,
         trust_entrypoints: bool = False,
+        concurrency: int | None = None,
     ) -> None: ...
     @overload
     def __init__(
@@ -642,6 +758,7 @@ class ModelBase(Generic[ObsT, ActT]):
         on_episode_end: LifecycleCallback | None = None,
         on_close: LifecycleCallback | None = None,
         trust_entrypoints: bool = False,
+        concurrency: int | None = None,
     ) -> None: ...
     @overload
     def __init__(
@@ -652,6 +769,7 @@ class ModelBase(Generic[ObsT, ActT]):
         on_episode_end: LifecycleCallback | None = None,
         on_close: LifecycleCallback | None = None,
         trust_entrypoints: bool = False,
+        concurrency: int | None = None,
     ) -> None: ...
     def __init__(
         self,
@@ -661,6 +779,7 @@ class ModelBase(Generic[ObsT, ActT]):
         on_episode_end: LifecycleCallback | None = None,
         on_close: LifecycleCallback | None = None,
         trust_entrypoints: bool = False,
+        concurrency: int | None = None,
     ) -> None:
         """Build the model from ``source`` (see the class docstring for the modes).
 
@@ -740,6 +859,13 @@ class ModelBase(Generic[ObsT, ActT]):
             coerced_on_close = coerced.on_close
             policy = coerced.policy
 
+        raw_predict = self._overlap(
+            raw_predict,
+            raw_predict_chunk,
+            raw_predict_batch,
+            raw_predict_chunk_batch,
+            concurrency,
+        )
         raw_predict_chunk = _normalize_chunk(raw_predict_chunk)
         raw_predict_chunk_batch = _normalize_chunk(raw_predict_chunk_batch)
 
@@ -922,7 +1048,9 @@ class ModelBase(Generic[ObsT, ActT]):
     def predict(self, observation: ObsT) -> ActT:
         """Map one observation to an action (or an action chunk per ``spec``).
 
-        Override when subclassing ``Model``. A model built by wrapping a predict
+        Override when subclassing ``Model``, as a plain method or as
+        ``async def predict``, which lets predicts overlap (see ``concurrency``).
+        A model built by wrapping a predict
         callable, or a served one (``Model("host:port/name")``), predicts here
         only as another model's part: held as an attribute of a model a run,
         bind or serve drives (``self.inner = inner``), ``self.inner.predict(obs)``
@@ -996,7 +1124,8 @@ class ModelBase(Generic[ObsT, ActT]):
         (a NumPy/Torch/JAX array per leaf, stacked for this model's framework), not a
         list of N dicts. Return the batched action the same way: one value whose
         leaves carry the leading batch axis (e.g. ``array[N, action_dim]``); the
-        runtime splits it back per lane. The engine prefers this corner for a
+        runtime splits it back per lane. Text cannot stack, so a text leaf arrives
+        as a ``list`` of N strings and is returned as one. The engine prefers this corner for a
         vectorized route; the default raises and the route is driven per-lane through
         :meth:`predict`.
 
@@ -1108,6 +1237,55 @@ class ModelBase(Generic[ObsT, ActT]):
             return
         self._close_with(None)
 
+    def _overlapping_predicts(
+        self, concurrency: Concurrency, observe: Callable[[Value], Any]
+    ) -> Callable[[list[Value], list[Mapping[str, Any]]], list[Value]]:
+        """A batched corner that runs one :meth:`predict` per row, overlapping.
+
+        A row whose predict raised returns its exception in its place. On a
+        spec-less model the native worker fails only that row's request; on a
+        spec'd model the first such row fails the whole call.
+        """
+        predict = cast("Corner", self._row_predict)
+        bridge = self._bridge
+        episodes = self._episodes
+        takes_context = accepts_context(predict, 1)
+
+        def args(row: tuple[Any, Any] | Exception) -> tuple[Any, ...]:
+            if isinstance(row, Exception):
+                raise row
+            observation, context = row
+            return (observation, context) if context is not None else (observation,)
+
+        async def awaited(row: tuple[Any, Any] | Exception) -> Value:
+            coroutine = cast("Coroutine[Any, Any, object]", predict(*args(row)))
+            return bridge.encode(await coroutine)
+
+        def called(row: tuple[Any, Any] | Exception) -> Value:
+            return bridge.encode(predict(*args(row)))
+
+        call: Callable[[Any], Any] = awaited if concurrency.asynchronous else called
+
+        def predict_rows(
+            observations: list[Value], context: list[Mapping[str, Any]]
+        ) -> list[Value]:
+            def row(index: int, observation: Value) -> tuple[Any, Any] | Exception:
+                try:
+                    return (
+                        observe(observation),
+                        episodes.context(context[index])
+                        if takes_context and index < len(context)
+                        else None,
+                    )
+                except Exception as error:
+                    return error
+
+            return concurrency.map(
+                call, [row(*item) for item in enumerate(observations)]
+            )
+
+        return predict_rows
+
     def _close_with(self, authored: Callable[[], object] | None) -> None:
         """The one terminal close; ``authored`` is a subclass's own close body."""
         calls = self._calls
@@ -1119,6 +1297,8 @@ class ModelBase(Generic[ObsT, ActT]):
                 calls.run_close_hook(hook)
         finally:
             calls.finish_close()
+            if self._concurrency is not None:
+                self._concurrency.close()
             # The native worker's callbacks close over self through a
             # class the cycle collector cannot traverse.
             self._worker = None
@@ -1247,6 +1427,18 @@ class ModelBase(Generic[ObsT, ActT]):
 
             predict_batch_neutral = _predict_batch_neutral
 
+        parts: list[ModelBase[Any, Any]] = [
+            part
+            for part in vars(self).values()
+            if isinstance(part, ModelBase) and part is not self
+        ]
+        concurrency = self._resolve_concurrency(inner_models=bool(parts))
+        overlaps = concurrency is not None and concurrency.limit > 1
+        if overlaps:
+            predict_batch_neutral = self._calls.gated(
+                self._overlapping_predicts(cast("Concurrency", concurrency), observe)
+            )
+
         raw_predict_chunk_batch = self._raw_predict_chunk_batch
         predict_chunk_batch_neutral: (
             Callable[[list[Value], int, list[Mapping[str, Any]]], list[Value]] | None
@@ -1268,7 +1460,7 @@ class ModelBase(Generic[ObsT, ActT]):
                     if chunk_batch_fn_takes_context
                     else chunk_batch_fn(fused, horizon)
                 )
-                parts = bridge.tree_unstack(chunks, len(observations))
+                parts = bridge.tree_unstack(chunks, len(observations), chunks=True)
                 return [bridge.encode(c) for c in parts]
 
             predict_chunk_batch_neutral = _predict_chunk_batch_neutral
@@ -1288,15 +1480,11 @@ class ModelBase(Generic[ObsT, ActT]):
             predict_batch_fn=predict_batch_neutral,
             predict_chunk_batch_fn=predict_chunk_batch_neutral,
             allow_fusion=self._loaded_allow_fusion,
+            stacks_batches=not overlaps and bridge.stacks,
             native_chunk=self._native_chunk(),
             on_route_drop=self._drop_env_entries,
             name=self._error_name(),
         )
-        parts: list[ModelBase[Any, Any]] = [
-            part
-            for part in vars(self).values()
-            if isinstance(part, ModelBase) and part is not self
-        ]
         inners = [(id(part), part._install_worker()) for part in parts]
         if inners:
             worker.set_inner_models(inners)
@@ -1318,7 +1506,6 @@ class ModelBase(Generic[ObsT, ActT]):
         execution_horizon: int | None = None,
         prefetch_lead: int = 0,
         trial_index_base: int = 0,
-        workflow_edition: str | None = None,
         view: ViewArg = None,
     ) -> RunResult:
         """Drive this model against an env on the native runtime loop.
@@ -1387,14 +1574,6 @@ class ModelBase(Generic[ObsT, ActT]):
         be attributed to the model forward, the env step, serialization, or
         queueing without a profiler.
 
-        ``workflow_edition`` pins the semantics this run is evaluated under --
-        the runtime's own declaration, above every other surface. It defaults to
-        ``RLMESH_WORKFLOW_EDITION``, then :attr:`workflow_edition` on this model,
-        then ``[tool.rlmesh] workflow_edition``; declaring none floats the run to
-        this build's newest edition (reported once per process). An edition
-        neither side can run is refused before any episode starts, naming what
-        each tier wants and can do.
-
         ``hooks`` observes the loop: a :class:`~rlmesh.RunHooks` (or a list of
         them, each called in order) receives the
         runtime's own events -- episode starts, every step as a
@@ -1436,8 +1615,8 @@ class ModelBase(Generic[ObsT, ActT]):
             context,
             trust=trust_entrypoints,
             instruction=instruction,
-            workflow_edition=workflow_edition,
         )
+        self._workflow_edition()
         failed = True
         try:
             report = self._install_worker().run_facade(
@@ -1452,7 +1631,6 @@ class ModelBase(Generic[ObsT, ActT]):
                     prefetch_lead=prefetch_lead,
                     trial_index_base=trial_index_base,
                     close_env=close_env,
-                    workflow_edition=self._declared_workflow_edition(workflow_edition),
                 ),
             )
             failed = False
@@ -1478,7 +1656,6 @@ class ModelBase(Generic[ObsT, ActT]):
         execution_horizon: int | None = None,
         prefetch_lead: int = 0,
         trial_index_base: int = 0,
-        workflow_edition: str | None = None,
         close_env: bool = False,
     ) -> list[RunResult | Exception]:
         """Drive this model against every env in ``envs`` at once, one route each.
@@ -1553,7 +1730,6 @@ class ModelBase(Generic[ObsT, ActT]):
         results, interrupt = self._run_routes(
             routes,
             execution_horizon=execution_horizon,
-            workflow_edition=workflow_edition,
         )
         if interrupt is not None:
             raise interrupt
@@ -1564,7 +1740,6 @@ class ModelBase(Generic[ObsT, ActT]):
         routes: Sequence[tuple[LocalEnvTarget, dict[str, Any]]],
         *,
         execution_horizon: int | None = None,
-        workflow_edition: str | None = None,
     ) -> tuple[list[RunResult | BaseException], BaseException | None]:
         """:meth:`run_routes` with each route's own options.
 
@@ -1582,16 +1757,15 @@ class ModelBase(Generic[ObsT, ActT]):
         self._calls.check_open("run_routes()")
         self._require_device_support()
         horizon = self._execution_horizon(execution_horizon)
-        edition = self._declared_workflow_edition(workflow_edition)
+        self._workflow_edition()
         native_routes: list[tuple[object, dict[str, Any]]] = [
             (
                 EnvTarget(
                     self,
                     env,
                     NativeRunContext(trust=bool(self._trust_entrypoints)),
-                    workflow_edition=workflow_edition,
                 ),
-                {**options, "execution_horizon": horizon, "workflow_edition": edition},
+                {**options, "execution_horizon": horizon},
             )
             for env, options in routes
         ]
@@ -1609,7 +1783,7 @@ class ModelBase(Generic[ObsT, ActT]):
             for report in reports
         ], interrupt
 
-    def _serve_here(self, env_obj: object, workflow_edition: str | None) -> EnvServer:
+    def _serve_here(self, env_obj: object, workflow_edition: str) -> EnvServer:
         """Serve the local env ``env_obj`` in this process for one run or binding.
 
         In a session of its own, on a served model's host (which the model
@@ -1619,6 +1793,7 @@ class ModelBase(Generic[ObsT, ActT]):
         (a vector env's local spaces are batched while tags describe one lane,
         so its check stays at the route resolve).
         """
+        from .._editions import declaring
         from .._load_native import load_native
         from .._server import EnvServer, VectorServerEnvLike, loopback
 
@@ -1635,24 +1810,16 @@ class ModelBase(Generic[ObsT, ActT]):
                 local_contract(env_obj),
                 trust_entrypoints=self._trust_entrypoints,
             )
-        # The in-process server takes the caller's already-resolved
-        # declaration verbatim rather than re-resolving.
         token = loopback.set(True)
         try:
             address = f"{load_native('run_session')(self._served_address)}/env"
-            server = EnvServer(
-                cast("VectorServerEnvLike", env_obj),
-                address,
-                framework=getattr(env_obj, "_bridge", None),
-                options=(
-                    load_native("ServeOptions")(workflow_edition=workflow_edition)
-                    if workflow_edition is not None
-                    else None
-                ),
-                # The env is borrowed or built here; its close() is
-                # the caller's decision.
-                close_env_on_shutdown=False,
-            )
+            with declaring(workflow_edition):
+                server = EnvServer(
+                    cast("VectorServerEnvLike", env_obj),
+                    address,
+                    framework=getattr(env_obj, "_bridge", None),
+                    close_env_on_shutdown=False,
+                )
         finally:
             loopback.reset(token)
         server.start()
@@ -1668,7 +1835,6 @@ class ModelBase(Generic[ObsT, ActT]):
         view: ViewArg = None,
         execution_horizon: int | None = None,
         close_env: bool = False,
-        workflow_edition: str | None = None,
     ) -> Binding[ObsT, ActT]:
         """Bind this model to one env and return a :class:`Binding` to step by hand.
 
@@ -1691,14 +1857,10 @@ class ModelBase(Generic[ObsT, ActT]):
         self._calls.check_open("bind()")
         self._require_device_support()
         view = resolve_view(view)
-        declared = self._declared_workflow_edition(workflow_edition)
+        self._workflow_edition()
         horizon = self._execution_horizon(execution_horizon)
-        target_adapter = EnvTarget(
-            self, target, binding=True, workflow_edition=workflow_edition
-        )
-        native = self._install_worker().bind_facade(
-            target_adapter, horizon, declared, close_env
-        )
+        target_adapter = EnvTarget(self, target, binding=True)
+        native = self._install_worker().bind_facade(target_adapter, horizon, close_env)
         try:
             return Binding._create(  # pyright: ignore[reportPrivateUsage]
                 native=native,
@@ -1742,21 +1904,12 @@ class ModelBase(Generic[ObsT, ActT]):
         ``RLMESH_MODEL_ENDPOINT_TOKEN`` is refused: keep the session on a
         private network.
 
-        The model declares a workflow edition in the session's roster, where a
-        driver negotiates the run's edition: ``options``' own
-        ``workflow_edition`` if it sets one, else the resolved declaration
-        (``RLMESH_WORKFLOW_EDITION``, :attr:`workflow_edition`, ``[tool.rlmesh]``).
+        The model declares its workflow edition in the session's roster:
+        :attr:`workflow_edition`, else the current edition.
         """
-        from .._editions import serve_options_declaring
-
         self._calls.check_open("serve()")
         self._require_device_support()
-        declared = serve_options_declaring(
-            options,
-            call=options.workflow_edition if options is not None else None,
-            declared=self._class_workflow_edition(),
-            origin=self._edition_origin(),
-        )
+        self._workflow_edition()
         if not name:
             from .._client._endpoint import redact_address
 
@@ -1777,23 +1930,19 @@ class ModelBase(Generic[ObsT, ActT]):
                 _handshake_describe,  # pyright: ignore[reportPrivateUsage]
             )
 
-            envelope = _handshake_describe(
-                self,
-                "model",
-                None,
-                (declared.workflow_edition if declared is not None else None) or "",
-            )
+            envelope = _handshake_describe(self, "model", None)
             batch = batching if batching is not None else BatchOptions()
             worker.serve(
                 address,
                 name,
-                declared,
+                options,
                 envelope,
                 max_batch_size=batch.max_batch_size,
                 batch_window_ms=batch.batch_window_ms,
                 batch_byte_budget=batch.batch_byte_budget,
                 max_in_flight_batches=batch.max_in_flight_batches,
                 batch_records=batch.batch_records,
+                workflow_edition=self._class_workflow_edition(),
             )
         except BaseException:
             self._calls.deregister_serve(token)
@@ -1840,7 +1989,6 @@ class ModelBase(Generic[ObsT, ActT]):
         close_env: bool = False,
         trial_index_base: int = 0,
         prefetch_lead: int = 0,
-        workflow_edition: str | None = None,
         hooks: object | None = None,
         invite_at: str | None = None,
     ) -> dict[str, Any]:
@@ -1861,31 +2009,22 @@ class ModelBase(Generic[ObsT, ActT]):
             close_env,
             trial_index_base,
             prefetch_lead,
-            workflow_edition,
             hooks,
             invite_at,
         )
 
-    def _declared_workflow_edition(self, call: str | None) -> str | None:
-        """This model's declaration for one run or session.
-
-        The explicit call keyword, else the process / class / project surfaces
-        (see :mod:`rlmesh._editions`).
-        """
+    def _workflow_edition(self) -> str:
+        """The edition this model runs at; an edition this build does not know raises."""
         from .._editions import resolve_workflow_edition
 
-        return resolve_workflow_edition(
-            call=call,
-            declared=self._class_workflow_edition(),
-            origin=self._edition_origin(),
-        )
+        return resolve_workflow_edition(self._class_workflow_edition())
 
     def _edition_origin(self) -> object:
         """Where this model's edition is declared: the type or callable it was authored as.
 
         A subclass's own type; for a wrapping ``Model(policy)``, the wrapped
         policy type (``describe`` reads the same one); for a bare callable,
-        the callable. Its module's project holds the ``[tool.rlmesh]`` rung.
+        the callable.
         """
         if self._policy is self:
             return type(self)
@@ -1975,7 +2114,6 @@ def run(
     execution_horizon: int | None = None,
     prefetch_lead: int = 0,
     view: ViewArg = None,
-    workflow_edition: str | None = None,
     trial_index_base: int = 0,
 ) -> RunResult:
     """Drive ``model`` against ``env`` to completion and return a :class:`RunResult`.
@@ -2013,7 +2151,6 @@ def run(
             trust_entrypoints=trust_entrypoints,
             execution_horizon=execution_horizon,
             prefetch_lead=prefetch_lead,
-            workflow_edition=workflow_edition,
             trial_index_base=trial_index_base,
             view=view,
         )

@@ -97,9 +97,8 @@ pub struct RuntimeSessionSpec {
     pub env_id: String,
     pub env_component_id: String,
     pub model_component_id: String,
-    /// Workflow edition negotiated at the env handshake, resolved to the typed arm this session runs under.
-    /// Wire names are parsed by [`rlmesh_proto::parse_retained_edition`], which refuses an edition
-    /// this runtime cannot drive.
+    /// The workflow edition whose defaults this session runs under: the env's declared edition,
+    /// parsed by [`Edition::parse`], which refuses an edition this build does not know.
     pub workflow_edition: Edition,
     pub env_contract: EnvContract,
     pub num_envs: usize,
@@ -220,7 +219,6 @@ impl RuntimeSessionSpec {
                 );
             }
         }
-        rlmesh_proto::parse_retained_edition(self.workflow_edition.base())?;
         if AutoresetMode::try_from(self.env_contract.autoreset_mode).is_err() {
             return Err(format!(
                 "unknown autoreset mode {} on the wire; this build supports \
@@ -522,10 +520,7 @@ mod tests {
             env_id: "env-id".to_string(),
             env_component_id: "env".to_string(),
             model_component_id: "model".to_string(),
-            workflow_edition: rlmesh_proto::parse_retained_edition(
-                rlmesh_proto::CURRENT_WORKFLOW_EDITION,
-            )
-            .expect("this build drives its own edition"),
+            workflow_edition: rlmesh_proto::Edition::current(),
             env_contract: EnvContract {
                 spec: Some(EnvSpec {
                     observation_space: Some(SpaceSpec::default()),
@@ -601,28 +596,6 @@ mod tests {
     #[test]
     fn reset_options_key_is_the_published_string() {
         assert_eq!(super::ENV_RESET_OPTIONS_KEY, "rlmesh.env.v1.reset_options");
-    }
-
-    #[test]
-    fn an_edition_the_runtime_cannot_drive_is_refused_by_name() {
-        let error = rlmesh_proto::parse_retained_edition("2099.01")
-            .expect_err("an unimplemented edition is refused");
-        assert!(
-            error.contains("2099.01")
-                && error.contains("cannot drive")
-                && error.contains(rlmesh_proto::CURRENT_WORKFLOW_EDITION),
-            "expected an edition-refusal error naming the retained list, got: {error}"
-        );
-
-        let mut spec = valid_spec();
-        for name in [
-            rlmesh_proto::CURRENT_WORKFLOW_EDITION,
-            rlmesh_proto::WORKFLOW_EDITION_BASE,
-        ] {
-            spec.workflow_edition = rlmesh_proto::parse_retained_edition(name)
-                .unwrap_or_else(|error| panic!("{name} must parse: {error}"));
-            assert!(spec.validate().is_ok());
-        }
     }
 
     #[test]

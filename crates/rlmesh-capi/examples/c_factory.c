@@ -106,12 +106,10 @@ static void expect_retired_refusal(RLMeshStatus status) {
   CHECK(status == RLMESH_ERR_INVALID_ARGUMENT);
   CHECK(rlmesh_last_error_class() == RLMESH_ERROR_CLASS_VALUE_ERROR);
   const char* message = rlmesh_last_error_message();
-  CHECK(message && strstr(message,
-                          "runtime cannot drive workflow edition \"2026.06\"; "
-                          "this build implements") == message);
+  CHECK(message &&
+        strstr(message, "workflow edition \"2026.06\" is unknown to this rlmesh build") == message);
 }
 static void refuse_retired_edition(State* state) {
-  if (getenv("RLMESH_WORKFLOW_EDITION")) return;
   RLMeshEnvFactoryAttributes attrs = RLMESH_ENV_FACTORY_ATTRIBUTES_INIT;
   attrs.workflow_edition = "2026.06";
   RLMeshEnvFactoryVtable vt = RLMESH_ENV_FACTORY_VTABLE_INIT;
@@ -196,7 +194,6 @@ int main(void) {
   CHECK(state.makes == 1 && state.reentry == 1);
   RLMeshEnvServer* server = NULL;
   RLMeshServeOptions serve = RLMESH_SERVE_OPTIONS_INIT;
-  serve.workflow_edition = attrs.workflow_edition;
   RLMeshEnvServerOptions so = RLMESH_ENV_SERVER_OPTIONS_INIT;
   so.options = &serve;
   CHECK(rlmesh_env_server_new(&env, 1, &so, &server) == RLMESH_OK);

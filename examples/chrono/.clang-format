@@ -1,6 +1,0 @@
-# 100-column limit to match the repo's Rust/Python line width.
-BasedOnStyle: Google
-ColumnLimit: 100
-IndentWidth: 2
-DerivePointerAlignment: false
-PointerAlignment: Left

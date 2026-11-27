@@ -178,10 +178,10 @@ input!(
 input!(crate::run_hooks::RLMeshRunContextVtable);
 input!(crate::run_hooks::RLMeshRunHooksVtable);
 input!(
-    crate::run_hooks::RLMeshStepEvent,
-    has_seed,
-    terminated,
-    truncated
+    crate::run_hooks::RLMeshStepEvent;
+    first_appended = final_observation;
+    appended = [final_observation];
+    bools = [has_seed, terminated, truncated]
 );
 input!(
     crate::run_results::RLMeshEpisodeResult,

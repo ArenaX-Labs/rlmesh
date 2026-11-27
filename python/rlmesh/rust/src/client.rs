@@ -8,9 +8,7 @@ use pyo3::types::{PyAny, PyTuple};
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::inventory::submit;
-use rlmesh::binding::env::{
-    CoreConnect, EditionCell, EnvClientCore, VectorResetResult, VectorStepResult,
-};
+use rlmesh::binding::env::{CoreConnect, EnvClientCore, VectorResetResult, VectorStepResult};
 use rlmesh_spaces::spaces::SpaceSpec;
 
 use crate::spaces::{
@@ -73,22 +71,6 @@ fn shared_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// A client's selected workflow edition, read without borrowing the client,
-/// so it never waits on (or fails against) a call in flight (RMT-P5).
-#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
-#[pyclass(module = "rlmesh._rlmesh", frozen)]
-pub struct PyEditionCell {
-    cell: EditionCell,
-}
-
-#[pymethods]
-impl PyEditionCell {
-    /// The selection: the handshake's, or the last pin.
-    fn get(&self) -> String {
-        self.cell.get()
-    }
-}
-
 struct ClientCore {
     client: EnvClientCore,
     runtime: &'static tokio::runtime::Runtime,
@@ -107,7 +89,6 @@ impl ClientCore {
         address: &str,
         connect_timeout_seconds: Option<f64>,
         request_timeout_seconds: Option<f64>,
-        workflow_edition: Option<String>,
         runtime_info: bool,
     ) -> PyResult<Self> {
         init_tracing(role);
@@ -135,13 +116,11 @@ impl ClientCore {
             "request_timeout_seconds",
         )
         .map_err(to_py_err)?;
-        let declared = crate::lifecycle::checked_workflow_edition(workflow_edition)?;
         let mut client = Python::attach(|py| {
             py.detach(|| {
                 runtime.block_on(EnvClientCore::connect_with(
                     address,
                     CoreConnect {
-                        declared: declared.as_deref(),
                         connect_timeout,
                         request_timeout,
                     },
@@ -296,13 +275,12 @@ macro_rules! client_class {
         #[pymethods]
         impl $Class {
             #[new]
-            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, workflow_edition=None, runtime_info=true))]
+            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None, runtime_info=true))]
             #[allow(clippy::too_many_arguments)]
             fn new(
                 address: &str,
                 connect_timeout_seconds: Option<f64>,
                 request_timeout_seconds: Option<f64>,
-                workflow_edition: Option<String>,
                 runtime_info: bool,
             ) -> PyResult<Self> {
                 Ok(Self {
@@ -312,7 +290,6 @@ macro_rules! client_class {
                         address,
                         connect_timeout_seconds,
                         request_timeout_seconds,
-                        workflow_edition,
                         runtime_info,
                     )?,
                 })
@@ -332,19 +309,6 @@ macro_rules! client_class {
             /// Gym view (not a served Gym env).
             fn drives_view(&self) -> bool {
                 self.core.client.drives_view()
-            }
-
-            /// The workflow edition this connection negotiated with the env.
-            fn selected_workflow_edition(&self) -> String {
-                self.core.client.selected_workflow_edition().to_string()
-            }
-
-            /// A handle reading the selected edition without borrowing this
-            /// client, for accessors that overlap a call (RMT-P5).
-            fn edition_cell(&self) -> PyEditionCell {
-                PyEditionCell {
-                    cell: self.core.client.edition_cell(),
-                }
             }
 
             fn handshake(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -555,11 +519,9 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, runtime_info: bool = True) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
-    def selected_workflow_edition(self) -> str: ...
-    def edition_cell(self) -> PyEditionCell: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -576,11 +538,9 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, workflow_edition: str | None = None, runtime_info: bool = True) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None, runtime_info: bool = True) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
-    def selected_workflow_edition(self) -> str: ...
-    def edition_cell(self) -> PyEditionCell: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -589,16 +549,6 @@ class PyVectorEnvClient:
     def step(self, actions: object) -> tuple[Value, Value, Value, Value, StepInfo]: ...
     def render(self, env_index: int = 0) -> Value | None: ...
     def close(self) -> None: ...
-"#
-    }
-}
-
-#[cfg(feature = "stub-gen")]
-submit! {
-    gen_methods_from_python! {
-        r#"
-class PyEditionCell:
-    def get(self) -> str: ...
 "#
     }
 }

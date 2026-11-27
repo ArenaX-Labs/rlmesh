@@ -35,10 +35,6 @@ pub struct RLMeshBuildInfo {
     pub version: *const c_char,
     pub protocol_generation: *const c_char,
     pub workflow_edition: *const c_char,
-    pub workflow_edition_base: *const c_char,
-    pub supported_workflow_editions: *const *const c_char,
-    pub supported_workflow_editions_len: usize,
-    pub build_cohort: *const c_char,
     pub build_source: RLMeshBuildSource,
     pub session_wire_revision: u32,
     pub git: *const c_char,
@@ -50,17 +46,8 @@ struct StaticInfo {
     version: CString,
     protocol_generation: CString,
     workflow_edition: CString,
-    workflow_edition_base: CString,
-    supported: Vec<CString>,
-    supported_ptrs: Vec<*const c_char>,
-    build_cohort: CString,
     git: Option<CString>,
 }
-
-// SAFETY: the pointers point into `supported`, which is never mutated after
-// construction and lives for the process.
-unsafe impl Send for StaticInfo {}
-unsafe impl Sync for StaticInfo {}
 
 fn c_string(text: &str) -> CString {
     CString::new(text).unwrap_or_default()
@@ -68,20 +55,10 @@ fn c_string(text: &str) -> CString {
 
 static INFO: LazyLock<StaticInfo> = LazyLock::new(|| {
     let info = rlmesh::build_info();
-    let supported: Vec<CString> = info
-        .supported_workflow_editions
-        .iter()
-        .map(|edition| c_string(edition))
-        .collect();
-    let supported_ptrs = supported.iter().map(|edition| edition.as_ptr()).collect();
     StaticInfo {
         version: c_string(info.version),
         protocol_generation: c_string(info.protocol_generation),
         workflow_edition: c_string(info.workflow_edition),
-        workflow_edition_base: c_string(info.workflow_edition_base),
-        supported,
-        supported_ptrs,
-        build_cohort: c_string(info.build_cohort),
         git: info.git.map(c_string),
     }
 });
@@ -119,10 +96,6 @@ pub unsafe extern "C" fn rlmesh_build_info(out: *mut RLMeshBuildInfo) -> RLMeshS
             version: info.version.as_ptr(),
             protocol_generation: info.protocol_generation.as_ptr(),
             workflow_edition: info.workflow_edition.as_ptr(),
-            workflow_edition_base: info.workflow_edition_base.as_ptr(),
-            supported_workflow_editions: info.supported_ptrs.as_ptr(),
-            supported_workflow_editions_len: info.supported.len(),
-            build_cohort: info.build_cohort.as_ptr(),
             build_source: RLMeshBuildSource::of(rlmesh::build_info().build_source),
             session_wire_revision: rlmesh::build_info().session_wire_revision,
             git: info
@@ -320,10 +293,6 @@ mod tests {
             version: std::ptr::null(),
             protocol_generation: std::ptr::null(),
             workflow_edition: std::ptr::null(),
-            workflow_edition_base: std::ptr::null(),
-            supported_workflow_editions: std::ptr::null(),
-            supported_workflow_editions_len: 0,
-            build_cohort: std::ptr::null(),
             build_source: RLMeshBuildSource::Invalid,
             session_wire_revision: 0,
             git: std::ptr::null(),
@@ -333,14 +302,7 @@ mod tests {
         let rust = rlmesh::build_info();
         assert_eq!(text(info.version), rust.version);
         assert_eq!(text(info.protocol_generation), rust.protocol_generation);
-        assert_eq!(text(info.workflow_edition_base), rust.workflow_edition_base);
-        let editions = unsafe {
-            std::slice::from_raw_parts(
-                info.supported_workflow_editions,
-                info.supported_workflow_editions_len,
-            )
-        };
-        assert_eq!(text(editions[0]), rust.workflow_edition);
+        assert_eq!(text(info.workflow_edition), rust.workflow_edition);
         assert_eq!(info.git.is_null(), rust.git.is_none());
         assert_eq!(info.session_wire_revision, rust.session_wire_revision);
         assert_eq!(

@@ -775,7 +775,6 @@ mod tests {
             has_close_timeout_seconds: true,
             _reserved: [0; 7],
             close_timeout_seconds: 0.001,
-            workflow_edition: null(),
         };
         let opts = RLMeshEnvServerOptions {
             struct_size: std::mem::size_of::<RLMeshEnvServerOptions>(),

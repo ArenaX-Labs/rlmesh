@@ -49,11 +49,8 @@ void options_setters() {
   static_assert(std::is_aggregate_v<rlmesh::ServeOptions>);
   {
     rlmesh::ServeOptions options;
-    options.with_close_timeout(options.close_timeout)
-        .with_workflow_edition(options.workflow_edition);
-    std::move(options)
-        .with_close_timeout(options.close_timeout)
-        .with_workflow_edition(options.workflow_edition);
+    options.with_close_timeout(options.close_timeout);
+    std::move(options).with_close_timeout(options.close_timeout);
   }
   static_assert(std::is_aggregate_v<rlmesh::ext::EnvServerOptions>);
   {
@@ -98,12 +95,10 @@ void options_setters() {
   {
     rlmesh::EnvFactoryServeOptions options;
     options.with_num_envs(options.num_envs)
-        .with_workflow_edition(options.workflow_edition)
         .with_make_kwargs(options.make_kwargs)
         .with_cancel(options.cancel);
     std::move(options)
         .with_num_envs(options.num_envs)
-        .with_workflow_edition(options.workflow_edition)
         .with_make_kwargs(options.make_kwargs)
         .with_cancel(options.cancel);
   }
@@ -136,14 +131,12 @@ void options_setters() {
         .with_address(options.address)
 
         .with_connect_timeout(options.connect_timeout)
-        .with_request_timeout(options.request_timeout)
-        .with_workflow_edition(options.workflow_edition);
+        .with_request_timeout(options.request_timeout);
     std::move(options)
         .with_address(options.address)
 
         .with_connect_timeout(options.connect_timeout)
-        .with_request_timeout(options.request_timeout)
-        .with_workflow_edition(options.workflow_edition);
+        .with_request_timeout(options.request_timeout);
   }
   static_assert(std::is_aggregate_v<rlmesh::View>);
   {
@@ -169,13 +162,10 @@ void options_setters() {
   static_assert(std::is_aggregate_v<rlmesh::BindOptions>);
   {
     rlmesh::BindOptions options;
-    options.with_close_env(options.close_env)
-        .with_execution_horizon(options.execution_horizon)
-        .with_workflow_edition(options.workflow_edition);
+    options.with_close_env(options.close_env).with_execution_horizon(options.execution_horizon);
     std::move(options)
         .with_close_env(options.close_env)
-        .with_execution_horizon(options.execution_horizon)
-        .with_workflow_edition(options.workflow_edition);
+        .with_execution_horizon(options.execution_horizon);
   }
   static_assert(std::is_aggregate_v<rlmesh::RunOptions>);
   {
@@ -191,7 +181,6 @@ void options_setters() {
         .with_execution_horizon(options.execution_horizon)
         .with_prefetch_lead(options.prefetch_lead)
         .with_view(options.view)
-        .with_workflow_edition(options.workflow_edition)
         .with_trial_index_base(options.trial_index_base)
         .with_cancel(options.cancel);
     std::move(options)
@@ -206,7 +195,6 @@ void options_setters() {
         .with_execution_horizon(options.execution_horizon)
         .with_prefetch_lead(options.prefetch_lead)
         .with_view(options.view)
-        .with_workflow_edition(options.workflow_edition)
         .with_trial_index_base(options.trial_index_base)
         .with_cancel(options.cancel);
   }
@@ -276,12 +264,10 @@ void options_setters() {
     rlmesh::DescribeJsonOptions options;
     options.with_kind(options.kind)
         .with_generated_at(options.generated_at)
-        .with_served_env(options.served_env)
-        .with_workflow_edition(options.workflow_edition);
+        .with_served_env(options.served_env);
     std::move(options)
         .with_kind(options.kind)
         .with_generated_at(options.generated_at)
-        .with_served_env(options.served_env)
-        .with_workflow_edition(options.workflow_edition);
+        .with_served_env(options.served_env);
   }
 }

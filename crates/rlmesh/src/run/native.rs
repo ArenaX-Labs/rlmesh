@@ -25,7 +25,6 @@ use super::results::{self, EpisodeResult, RunResult, StepEvent};
 use super::routes::RouteSpec;
 use super::targets::{EnvKind, EnvTarget};
 use super::{LoopbackEnv, RunHooks, RunOptions};
-use crate::editions::EditionSources;
 use crate::model::local::{LocalRun, drive_local};
 use crate::value::{meta_codec, space_codec};
 use crate::{EnvServer, Error, MadeEnv, Model, Result, Value};
@@ -115,7 +114,6 @@ pub(crate) async fn run_route(
         view,
         execution_horizon,
         prefetch_lead,
-        workflow_edition,
         trial_index_base,
         cancel,
     } = options;
@@ -206,11 +204,7 @@ pub(crate) async fn run_route(
         .is_some()
         .then(|| Arc::new(HookRelay::new(driver.clone(), context.clone())));
     let outcome = async {
-        let edition = crate::editions::resolve_native(EditionSources {
-            call: workflow_edition.as_deref(),
-            option: None,
-            declared: declared_edition.as_deref(),
-        })?;
+        crate::editions::resolve_workflow_edition(declared_edition.as_deref())?;
         if execution_horizon > 1 && has_chunk == Some(false) {
             crate::warnings::warn(
                 crate::WarningCategory::UserWarning,
@@ -231,8 +225,6 @@ pub(crate) async fn run_route(
             close_env,
             execution_horizon,
             prefetch_lead,
-            edition,
-            call_edition: workflow_edition,
             trial_index_base,
             route,
         };
@@ -333,8 +325,6 @@ struct Plan {
     close_env: bool,
     execution_horizon: u32,
     prefetch_lead: u32,
-    edition: Option<String>,
-    call_edition: Option<String>,
     trial_index_base: u64,
     route: RouteSpec,
 }
@@ -368,12 +358,7 @@ async fn run_body(
     let mut over_wire = matches!(env, EnvKind::Address(_));
     if let EnvKind::Adapted(adapter) = env {
         let mut owned = crate::binding::model::OwnedTarget::new(adapter, plan.close_env);
-        let target = mode.call(|| {
-            owned.open(
-                plan.edition.as_deref(),
-                crate::binding::model::caller_port(port.clone()),
-            )
-        })?;
+        let target = mode.call(|| owned.open(crate::binding::model::caller_port(port.clone())))?;
         invite_at = target.invite_at;
         over_wire = target.close_over_wire;
         env = EnvKind::Address(target.address);
@@ -415,11 +400,9 @@ async fn run_body(
         _ => None,
     };
     let mut made = OwnedMadeEnv::default();
-    let mut loopback_edition = plan.edition.clone();
+    let mut loopback_edition = None;
     if let EnvKind::Factory(factory) = &mut env {
-        if let Some(own) = factory.local_edition(plan.call_edition.as_deref())? {
-            loopback_edition = Some(own);
-        }
+        loopback_edition = Some(factory.local_edition()?);
         made.0 = Some(mode.call(|| factory.make())?);
     }
     let built = made.0.is_some();
@@ -469,7 +452,6 @@ async fn run_body(
         close_env: plan.close_env && over_wire,
         execution_horizon: plan.execution_horizon,
         prefetch_lead: plan.prefetch_lead,
-        workflow_edition: plan.edition,
         invite_at,
     };
     let runtime_hooks: Arc<dyn RuntimeHooks> = match &relay {
@@ -1015,6 +997,7 @@ impl RuntimeHooks for HookRelay {
             .map(|infos| meta_codec::metadata_from_wire(meta_map_from_proto(infos)))
             .unwrap_or_default();
         let mut events = Vec::new();
+        let mut finals: Option<Vec<Value>> = None;
         {
             let mut state = lock(&self.state);
             let RelayState {
@@ -1023,6 +1006,24 @@ impl RuntimeHooks for HookRelay {
             let Some(group) = groups.get(&event.env_index) else {
                 return Ok(());
             };
+            let ended = |lane: usize| {
+                event.terminated.get(lane).copied().unwrap_or_default()
+                    || event.truncated.get(lane).copied().unwrap_or_default()
+            };
+            if let Some(leaves) = &event.observation
+                && (0..group.ids.len()).any(|lane| {
+                    ended(lane) && !event.autoreset_roll.get(lane).copied().unwrap_or(false)
+                })
+            {
+                match decode_lanes(leaves.clone(), &event.observation_space, group.ids.len()) {
+                    Ok(values) => finals = Some(values),
+                    Err(err) => {
+                        drop(state);
+                        self.fail(err);
+                        return Ok(());
+                    }
+                }
+            }
             for (lane, episode_id) in group.ids.iter().enumerate() {
                 let Some(episode) = episodes.get_mut(episode_id) else {
                     continue;
@@ -1056,6 +1057,9 @@ impl RuntimeHooks for HookRelay {
                     info: info.clone(),
                     predict_ms: event.predict_ms,
                     step_ms: event.step_ms,
+                    final_observation: ended(lane)
+                        .then(|| finals.as_ref().and_then(|values| values.get(lane).cloned()))
+                        .flatten(),
                 });
                 episode.steps += 1;
                 episode.reward += event.rewards.get(lane).copied().unwrap_or_default();

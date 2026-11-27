@@ -295,7 +295,6 @@ async fn spec_handler(
                 ResolveOptions {
                     execution_horizon: horizon,
                     delivers_history: false,
-                    workflow_edition: None,
                 },
             )
             .await
@@ -645,7 +644,6 @@ async fn camera_grouped_predict_timing() {
                 ResolveOptions {
                     execution_horizon: 10,
                     delivers_history: false,
-                    workflow_edition: None,
                 },
             )
             .await
@@ -799,6 +797,314 @@ impl RouteResolver for SpecLessResolver {
     }
 }
 
+mod mixed_spec_less {
+    use super::*;
+    use crate::model::BatchPredictContext;
+    use crate::model::bridge::{engine_handler, from_adapter, to_adapter};
+    use crate::spaces::{SpaceKind, SpaceSpec};
+    use crate::{Corners, Model, ModelOptions, Policy, Value as RawValue};
+
+    struct MixedResolver(Arc<dyn RouteResolver>);
+
+    #[async_trait]
+    impl RouteResolver for MixedResolver {
+        async fn resolve(&self, key: &str, contract: &EnvContract) -> Result<Option<RouteConfig>> {
+            self.0.resolve(key, contract).await?;
+            if key == "routed" {
+                TagResolver.resolve(key, contract).await
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum Call {
+        Single(RawValue),
+        Batch(Vec<RawValue>, Vec<(String, Option<SpaceKind>)>),
+    }
+
+    #[derive(Clone, Copy)]
+    enum BatchOutput {
+        Actions,
+        Rejected,
+        Short,
+        Long,
+    }
+
+    struct RecordingPolicy {
+        calls: Arc<Mutex<Vec<Call>>>,
+        batch_output: BatchOutput,
+    }
+
+    fn text(value: &str) -> RawValue {
+        RawValue::Text(value.to_string())
+    }
+
+    fn action(input: &RawValue) -> Result<RawValue> {
+        match input {
+            RawValue::Text(value) if value == "5" => Ok(RawValue::Int(6)),
+            RawValue::Text(value) => Ok(text(&format!("{value}-action"))),
+            _ => from_adapter(action_value(state_number(&to_adapter(input)?))),
+        }
+    }
+
+    impl Policy for RecordingPolicy {
+        const CORNERS: Corners = Corners::PREDICT.union(Corners::PREDICT_BATCH);
+        const CONTEXT: Corners = Corners::PREDICT_BATCH;
+
+        fn predict(&mut self, input: RawValue) -> Result<RawValue> {
+            let output = action(&input);
+            self.calls.lock().unwrap().push(Call::Single(input));
+            output
+        }
+
+        fn predict_batch_with_context(
+            &mut self,
+            inputs: Vec<RawValue>,
+            context: &mut BatchPredictContext<'_>,
+        ) -> Result<Vec<RawValue>> {
+            let mut actions = inputs.iter().map(action).collect::<Result<Vec<_>>>()?;
+            let spec_less = !inputs
+                .iter()
+                .any(|input| matches!(input, RawValue::Dict(_)));
+            let rows = context
+                .iter()
+                .map(|row| {
+                    (
+                        row.episode_id.to_string(),
+                        row.action_space.map(SpaceSpec::kind),
+                    )
+                })
+                .collect();
+            self.calls.lock().unwrap().push(Call::Batch(inputs, rows));
+            if spec_less {
+                match self.batch_output {
+                    BatchOutput::Actions => (),
+                    BatchOutput::Rejected => return Err(Error::model("policy rejected the batch")),
+                    BatchOutput::Short => {
+                        actions.pop();
+                    }
+                    BatchOutput::Long => actions.push(RawValue::Int(7)),
+                }
+            }
+            Ok(actions)
+        }
+    }
+
+    fn text_space() -> spaces::SpaceSpec {
+        spaces::spaces::TextBuilder::new(32).build().unwrap()
+    }
+
+    fn text_observation(
+        env: &str,
+        inputs: &[&str],
+        actions: spaces::SpaceSpec,
+    ) -> ModelObservation {
+        let mut env_contract = contract(env, inputs.len() as u32);
+        env_contract.observation_space = Some(text_space());
+        env_contract.action_space = Some(actions);
+        let lanes: Vec<_> = inputs
+            .iter()
+            .map(|value| SpaceValue::Text((*value).into()))
+            .collect();
+        let wire = crate::data::encode_batched_partial_values(&lanes, &text_space()).unwrap();
+        ModelObservation {
+            observation: Some(wire.leaves),
+            route: ModelRouteContext {
+                env_id: env.into(),
+                episodes: inputs
+                    .iter()
+                    .map(|value| EpisodeInfo {
+                        episode_id: format!("{env}-{value}"),
+                        env_id: env.into(),
+                        seed: None,
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            num_envs: lanes.len(),
+            env_contract: Some(Arc::new(env_contract)),
+            ..Default::default()
+        }
+    }
+
+    fn mixed_group() -> Vec<ModelObservation> {
+        vec![
+            text_observation("text", &["beta", "alpha"], text_space()),
+            grouped_obs("routed", &[4.0], &Arc::new(contract("routed", 1))),
+            text_observation(
+                "discrete",
+                &["5"],
+                spaces::spaces::DiscreteBuilder::new(8).build().unwrap(),
+            ),
+        ]
+    }
+
+    async fn grouped(
+        observations: Vec<ModelObservation>,
+        batch_output: BatchOutput,
+    ) -> (Vec<Result<PredictFrames>>, Vec<Call>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let policy = RecordingPolicy {
+            calls: Arc::clone(&calls),
+            batch_output,
+        };
+        let model = Model::new(policy, ModelOptions::default()).unwrap();
+        let mut handler = engine_handler(Arc::clone(model.shared()));
+        handler.resolver = Some(Arc::new(MixedResolver(handler.resolver.take().unwrap())));
+        let setup = handler.route_setup().unwrap();
+        for observation in &observations {
+            let options = ResolveOptions {
+                execution_horizon: 1,
+                delivers_history: false,
+            };
+            let contract = observation.env_contract.as_ref().unwrap();
+            setup
+                .resolve_adapter(&observation.route.env_id, contract, options)
+                .await
+                .unwrap();
+        }
+        let results = handler.predict_grouped(observations).await;
+        model.close_async().await.unwrap();
+        let calls = std::mem::take(&mut *calls.lock().unwrap());
+        (results, calls)
+    }
+
+    fn spec_less_calls(calls: Vec<Call>) -> Vec<Call> {
+        calls
+            .into_iter()
+            .filter(|call| match call {
+                Call::Batch(inputs, _) => !inputs.iter().any(|i| matches!(i, RawValue::Dict(_))),
+                Call::Single(_) => true,
+            })
+            .collect()
+    }
+
+    fn assert_actions(result: &Result<PredictFrames>, actions: &[SpaceValue]) {
+        let frames = result.as_ref().unwrap();
+        assert_eq!(frames.actions, actions);
+        assert!(frames.replay.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_mixed_group_fuses_its_spec_less_routes_and_leaves_the_routed_one_alone() {
+        let (results, calls) = grouped(mixed_group(), BatchOutput::Actions).await;
+        let [text_route, routed, discrete] = results.as_slice() else {
+            panic!("expected one result per observation: {results:?}")
+        };
+        assert_actions(
+            text_route,
+            &[
+                SpaceValue::Text("beta-action".into()),
+                SpaceValue::Text("alpha-action".into()),
+            ],
+        );
+        assert_actions(routed, &[box_f32(4.0)]);
+        assert_actions(discrete, &[SpaceValue::Discrete(6)]);
+        assert_eq!(
+            spec_less_calls(calls),
+            [Call::Batch(
+                vec![text("beta"), text("alpha"), text("5")],
+                vec![
+                    ("text-beta".into(), Some(SpaceKind::Text)),
+                    ("text-alpha".into(), Some(SpaceKind::Text)),
+                    ("discrete-5".into(), Some(SpaceKind::Discrete)),
+                ],
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_spec_less_batch_leaves_the_routed_result_intact() {
+        for (output, reason) in [
+            (BatchOutput::Rejected, "policy rejected the batch"),
+            (BatchOutput::Short, "returned 2 results for 3 lanes"),
+            (BatchOutput::Long, "returned 4 results for 3 lanes"),
+        ] {
+            let (results, _) = grouped(mixed_group(), output).await;
+            let [text_route, routed, discrete] = results.as_slice() else {
+                panic!("expected one result per observation: {results:?}")
+            };
+            assert_actions(routed, &[box_f32(4.0)]);
+            for result in [text_route, discrete] {
+                let error = result.as_ref().unwrap_err().to_string();
+                assert!(error.contains(reason), "{reason:?} not in {error:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn only_observations_of_one_space_share_a_fused_call() {
+        let mut wide = text_observation("wide", &["beta"], text_space());
+        Arc::make_mut(wide.env_contract.as_mut().unwrap()).observation_space =
+            Some(spaces::spaces::TextBuilder::new(64).build().unwrap());
+        let group = vec![
+            text_observation("first", &["alpha"], text_space()),
+            wide,
+            text_observation("last", &["delta"], text_space()),
+        ];
+        let (results, calls) = grouped(group, BatchOutput::Actions).await;
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        assert_eq!(
+            calls,
+            [
+                Call::Batch(
+                    vec![text("alpha"), text("delta")],
+                    vec![
+                        ("first-alpha".into(), Some(SpaceKind::Text)),
+                        ("last-delta".into(), Some(SpaceKind::Text)),
+                    ],
+                ),
+                Call::Single(text("beta")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_group_whose_episodes_miss_its_lanes_is_served_alone() {
+        let mut short = text_observation("short", &["beta", "gamma"], text_space());
+        short.route.episodes.pop();
+        let group = vec![
+            text_observation("first", &["alpha"], text_space()),
+            short,
+            text_observation("last", &["delta"], text_space()),
+        ];
+        let (results, calls) = grouped(group, BatchOutput::Actions).await;
+        let [first, short, last] = results.as_slice() else {
+            panic!("expected one result per observation: {results:?}")
+        };
+        assert_actions(first, &[SpaceValue::Text("alpha-action".into())]);
+        assert_actions(
+            short,
+            &[
+                SpaceValue::Text("beta-action".into()),
+                SpaceValue::Text("gamma-action".into()),
+            ],
+        );
+        assert_actions(last, &[SpaceValue::Text("delta-action".into())]);
+        assert_eq!(
+            calls,
+            [
+                Call::Batch(
+                    vec![text("beta"), text("gamma")],
+                    vec![
+                        ("short-beta".into(), Some(SpaceKind::Text)),
+                        (String::new(), Some(SpaceKind::Text)),
+                    ],
+                ),
+                Call::Batch(
+                    vec![text("alpha"), text("delta")],
+                    vec![
+                        ("first-alpha".into(), Some(SpaceKind::Text)),
+                        ("last-delta".into(), Some(SpaceKind::Text)),
+                    ],
+                ),
+            ]
+        );
+    }
+}
+
 async fn resolve_once(
     predict: Arc<dyn PredictFn>,
     resolver: Arc<dyn RouteResolver>,
@@ -815,7 +1121,6 @@ async fn resolve_once(
             ResolveOptions {
                 execution_horizon: horizon,
                 delivers_history: false,
-                workflow_edition: None,
             },
         )
         .await
@@ -1182,7 +1487,6 @@ async fn stacked_handler(
             ResolveOptions {
                 execution_horizon: horizon,
                 delivers_history,
-                workflow_edition: None,
             },
         )
         .await?;
@@ -1221,7 +1525,6 @@ async fn a_stacked_route_needs_history_only_when_the_runtime_offers_it() {
             ResolveOptions {
                 execution_horizon: 4,
                 delivers_history: true,
-                workflow_edition: None,
             },
         )
         .await
@@ -1280,7 +1583,6 @@ async fn held_state_is_an_endpoint_total_kept_by_route_deltas() {
             ResolveOptions {
                 execution_horizon: 1,
                 delivers_history: true,
-                workflow_edition: None,
             },
         )
         .await
@@ -1524,7 +1826,6 @@ async fn previous_handler(
             ResolveOptions {
                 execution_horizon: horizon,
                 delivers_history,
-                workflow_edition: None,
             },
         )
         .await?;
@@ -1760,7 +2061,6 @@ async fn fresh_lanes_are_admitted_against_the_endpoint_window_budget() {
                 ResolveOptions {
                     execution_horizon: 1,
                     delivers_history: true,
-                    workflow_edition: None,
                 },
             )
             .await

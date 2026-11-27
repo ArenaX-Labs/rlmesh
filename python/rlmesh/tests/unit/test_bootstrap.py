@@ -596,3 +596,16 @@ def make_env(**kwargs):
     assert markers == {"alpha": "alpha", "beta": "beta"}
     hf_modules = [name for name in sys.modules if name.startswith("rlmesh_hf_env")]
     assert len(hf_modules) >= 2
+
+
+def test_a_factory_spec_carries_the_factory_declaration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rlmesh._bootstrap.loaders import declared_edition
+
+    module = ModuleType("fake_declaring_factory")
+    module.Factory = type("Factory", (), {"workflow_edition": "2026.10"})  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fake_declaring_factory", module)
+    spec = {"kind": "factory", "entrypoint": "fake_declaring_factory:Factory"}
+    assert declared_edition(spec) == "2026.10"
+    assert declared_edition({"kind": "gym", "id": "CartPole-v1"}) is None

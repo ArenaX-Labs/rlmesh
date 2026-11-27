@@ -32,14 +32,6 @@ pub struct ModelLink {
 }
 
 impl ModelLink {
-    /// A link to the model answering on `key`.
-    pub fn new(session: zenoh::Session, key: String) -> Self {
-        Self {
-            session: Transport::from_session(session),
-            key,
-        }
-    }
-
     /// Waits until the model answers, probing every 20 ms for up to
     /// `timeout`.
     pub async fn wait_ready(&self, timeout: Duration) -> Result<(), GymError> {
@@ -172,7 +164,7 @@ impl ModelBinding {
                 vec![Role::Controller],
                 PriorityClass::Model,
                 timeout,
-                service.editions.clone(),
+                service.workflow_edition.clone(),
             )
             .await?;
         service.serving_as(self.name.as_str(), self.address());
@@ -272,6 +264,24 @@ impl ModelConnection {
             )),
             other => other,
         })?;
+        let mut roster = participant.watch();
+        tokio::time::timeout(
+            timeout,
+            roster.wait_for(|snapshot| {
+                snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.roster.iter().any(|p| p.id == *model))
+            }),
+        )
+        .await
+        .map_err(|_| {
+            GymError::Session(SessionError::Timeout(
+                timeout,
+                format!("model {model} to appear in the roster at {session}"),
+            ))
+        })?
+        .map_err(|_| GymError::Closed("the session closed before the model appeared".into()))?;
+        drop(roster);
         let lockstep = crate::lockstep::session::owns_links(participant.transport())
             .then(|| link.session.clone());
         Ok(Self {
@@ -295,15 +305,12 @@ impl ModelConnection {
             .is_ok_and(|session| session.base == own.base && session.session == own.session)
     }
 
-    /// The workflow editions the model declared in its session, from the
+    /// The workflow edition the model declared in its session, from the
     /// roster; `None` when it declared none.
-    pub fn workflow_editions(&self) -> Option<rlmesh_proto::SessionOffer> {
+    pub fn workflow_edition(&self) -> Option<String> {
         let snapshot = self.participant.watch().borrow().clone()?;
         let model = snapshot.roster.into_iter().find(|p| p.id == self.model)?;
-        (!model.workflow_editions.is_empty()).then(|| rlmesh_proto::SessionOffer {
-            editions: model.workflow_editions,
-            preferred: Some(model.workflow_edition).filter(|edition| !edition.is_empty()),
-        })
+        Some(model.workflow_edition).filter(|edition| !edition.is_empty())
     }
 
     /// Leaves the model's session (asking an invited model to leave it).

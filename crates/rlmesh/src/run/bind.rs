@@ -74,7 +74,6 @@ pub struct Binding<'a> {
     cancel: tokio_util::sync::CancellationToken,
     track: Option<Track<'a>>,
     adapted: Option<crate::binding::model::OwnedTarget>,
-    workflow_edition: Option<String>,
 }
 
 impl std::fmt::Debug for Binding<'_> {
@@ -100,7 +99,6 @@ impl<'a> Binding<'a> {
         let BindOptions {
             close_env,
             execution_horizon,
-            workflow_edition,
             hooks,
             view,
         } = options;
@@ -114,18 +112,14 @@ impl<'a> Binding<'a> {
             ModelKind::Remote(model) => Some(model.address().to_string()),
             _ => None,
         };
-        let (handler, edition, execution_horizon): (Box<dyn ModelHandler>, _, _) = match model.0 {
+        let (handler, execution_horizon): (Box<dyn ModelHandler>, _) = match model.0 {
             ModelKind::Model(model) => {
                 let shared = model.shared();
                 shared.check_not_reentrant("bind()")?;
                 shared.admit()?;
                 let execution_horizon = shared.decl.resolve_horizon(execution_horizon)?;
                 check_horizon(execution_horizon, shared.decl.native_chunk)?;
-                let edition = crate::editions::resolve_native(crate::editions::EditionSources {
-                    call: workflow_edition.as_deref(),
-                    option: None,
-                    declared: shared.decl.workflow_edition.as_deref(),
-                })?;
+                crate::editions::resolve_workflow_edition(shared.decl.workflow_edition.as_deref())?;
                 if execution_horizon > 1 && !shared.decl.has_chunk() {
                     crate::warnings::warn(
                         crate::WarningCategory::UserWarning,
@@ -141,7 +135,7 @@ impl<'a> Binding<'a> {
                     None,
                     Some(context.clone()),
                 );
-                (Box::new(handler), edition, execution_horizon)
+                (Box::new(handler), execution_horizon)
             }
             ModelKind::Remote(model) => {
                 if !crate::address::is_v2(model.address()) {
@@ -170,11 +164,7 @@ impl<'a> Binding<'a> {
                 };
                 check_horizon(execution_horizon, None)?;
                 let handler = model.served(timeout);
-                (
-                    Box::new(handler),
-                    call_edition(workflow_edition.as_deref())?,
-                    execution_horizon,
-                )
+                (Box::new(handler), execution_horizon)
             }
             ModelKind::Prepared(model) => {
                 let horizon = super::options::resolve_execution_horizon(
@@ -183,11 +173,7 @@ impl<'a> Binding<'a> {
                     None,
                     model.native_chunk,
                 )?;
-                let edition = crate::editions::resolve_native(crate::editions::EditionSources {
-                    call: workflow_edition.as_deref(),
-                    option: None,
-                    declared: model.workflow_edition.as_deref(),
-                })?;
+                crate::editions::resolve_workflow_edition(model.workflow_edition.as_deref())?;
                 if horizon > 1 && model.has_chunk == Some(false) {
                     crate::warnings::warn(
                         crate::WarningCategory::UserWarning,
@@ -196,14 +182,13 @@ impl<'a> Binding<'a> {
                         ),
                     )?;
                 }
-                (model.handler, edition, horizon)
+                (model.handler, horizon)
             }
             ModelKind::Random => {
                 let execution_horizon = execution_horizon.unwrap_or(1);
                 check_horizon(execution_horizon, None)?;
                 (
                     Box::<crate::model::random::RandomSampleHandler>::default(),
-                    call_edition(workflow_edition.as_deref())?,
                     execution_horizon,
                 )
             }
@@ -222,7 +207,6 @@ impl<'a> Binding<'a> {
             cancel: tokio_util::sync::CancellationToken::new(),
             track: None,
             adapted: None,
-            workflow_edition: edition.clone(),
         };
         let mut invite_at = None;
         let address = match env.0 {
@@ -232,10 +216,11 @@ impl<'a> Binding<'a> {
             }
             EnvKind::Adapted(adapter) => {
                 binding.adapted = Some(crate::binding::model::OwnedTarget::new(adapter, close_env));
-                let target = binding.adapted.as_mut().expect("installed target").open(
-                    edition.as_deref(),
-                    crate::binding::model::caller_port(port.clone()),
-                )?;
+                let target = binding
+                    .adapted
+                    .as_mut()
+                    .expect("installed target")
+                    .open(crate::binding::model::caller_port(port.clone()))?;
                 super::options::check_address_close(
                     &target.address,
                     close_env && target.close_over_wire,
@@ -257,23 +242,16 @@ impl<'a> Binding<'a> {
                         .into(),
                 ));
             }
-            EnvKind::Env(env) => binding.serve(
-                Local::Borrowed(LocalEnv::Env(env)),
-                &port,
-                &edition,
-                &beside,
-            )?,
-            EnvKind::Vector(env) => binding.serve(
-                Local::Borrowed(LocalEnv::Vector(env)),
-                &port,
-                &edition,
-                &beside,
-            )?,
+            EnvKind::Env(env) => {
+                binding.serve(Local::Borrowed(LocalEnv::Env(env)), &port, None, &beside)?
+            }
+            EnvKind::Vector(env) => {
+                binding.serve(Local::Borrowed(LocalEnv::Vector(env)), &port, None, &beside)?
+            }
             EnvKind::Factory(mut factory) => {
-                let own = factory.local_edition(workflow_edition.as_deref())?;
+                let own = factory.local_edition()?;
                 let made = OwnedMadeEnv(Some(factory.make()?), false);
-                let served = own.or_else(|| edition.clone());
-                binding.serve(Local::Made(made), &port, &served, &beside)?
+                binding.serve(Local::Made(made), &port, Some(own), &beside)?
             }
         };
         let inner = binding.drive(crate::model::bind::Binding::connect(
@@ -281,7 +259,6 @@ impl<'a> Binding<'a> {
             &address,
             invite_at.as_deref(),
             execution_horizon,
-            edition.as_deref(),
         ))?;
         let contract = EnvContract::from_wire(inner.contract())?;
         binding.context.connect(contract.clone());
@@ -305,11 +282,11 @@ impl<'a> Binding<'a> {
 
     fn attach_hooks(&mut self, hooks: HookSink<'a>) -> Result<()> {
         let edition = self
-            .workflow_edition
-            .as_deref()
-            .unwrap_or(rlmesh_proto::CURRENT_WORKFLOW_EDITION);
-        let edition =
-            rlmesh_proto::parse_retained_edition(edition).map_err(Error::invalid_argument)?;
+            .inner
+            .as_ref()
+            .map_or_else(rlmesh_proto::Edition::current, |inner| {
+                inner.workflow_edition()
+            });
         let track = self.track.insert(Track {
             hooks,
             success_keys: rlmesh_proto::defaults(edition).success_info_keys,
@@ -332,7 +309,7 @@ impl<'a> Binding<'a> {
         &mut self,
         local: Local<'a>,
         port: &CallerPort,
-        edition: &Option<String>,
+        edition: Option<String>,
         beside: &Option<String>,
     ) -> Result<String> {
         self.local = Some(local);
@@ -345,7 +322,7 @@ impl<'a> Binding<'a> {
             }
             None => return Err(Error::Internal("no local env to serve".into())),
         };
-        let server = EnvServer::loopback(lent, edition.clone(), beside.as_deref())?;
+        let server = EnvServer::loopback(lent, edition, beside.as_deref())?;
         server.start()?;
         let address = server.address().to_string();
         self.loopback = Some(server);
@@ -524,6 +501,7 @@ impl<'a> Binding<'a> {
                 info: info.clone(),
                 predict_ms,
                 step_ms,
+                final_observation: (step.terminated || truncated).then(|| observation.clone()),
             })?;
         }
         if step.terminated || truncated {
@@ -702,13 +680,5 @@ fn info_success(keys: &[&str], info: &InfoDict) -> Option<bool> {
         Value::Int(value) => Some(*value != 0),
         Value::Float(value) => Some(*value != 0.0),
         _ => None,
-    })
-}
-
-fn call_edition(call: Option<&str>) -> Result<Option<String>> {
-    crate::editions::resolve_native(crate::editions::EditionSources {
-        call,
-        option: None,
-        declared: None,
     })
 }

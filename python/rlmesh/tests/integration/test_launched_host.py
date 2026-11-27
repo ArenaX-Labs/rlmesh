@@ -102,7 +102,6 @@ def test_a_served_env_is_reachable_at_the_printed_keyed_address(
         **os.environ,
         "RLMESH_HOST_IDENTITY": identity,
         "RLMESH_ADDRESS": f"0.0.0.0:{port}",
-        "RLMESH_WORKFLOW_EDITION": "",
         "RLMESH_STATE_DIR": str(tmp_path / "state"),
     }
     proc = subprocess.Popen(
@@ -211,7 +210,6 @@ def test_a_served_env_is_reachable_from_another_machine(tmp_path: Path) -> None:
     env.update(
         RLMESH_TEST_DIR=str(tmp_path),
         RLMESH_TEST_PORT=str(sandbox_session_port()),
-        RLMESH_WORKFLOW_EDITION="",
         RLMESH_STATE_DIR=str(tmp_path / "state"),
     )
     done = subprocess.run(

@@ -15,11 +15,6 @@ from .support import ROOT, compare, native_args, scenarios
 CASES = scenarios()
 
 
-@pytest.fixture(autouse=True)
-def quiet_edition(monkeypatch):
-    monkeypatch.setenv("RLMESH_WORKFLOW_EDITION", "")
-
-
 @pytest.mark.parametrize("language", ["python", "c", "cpp"])
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["id"])
 def test_scenario(language, case):

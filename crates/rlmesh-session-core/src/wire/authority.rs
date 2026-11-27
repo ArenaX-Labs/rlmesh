@@ -295,8 +295,6 @@ pub struct ParticipantInfo {
     pub requires: Vec<String>,
     /// The workflow edition it declares (empty: none).
     pub workflow_edition: String,
-    /// Every workflow edition it runs.
-    pub workflow_editions: Vec<String>,
     /// Its heartbeats arrive. A robot whose heartbeats lapsed stays in the
     /// roster, absent, while its parts remain.
     pub present: bool,
@@ -725,8 +723,6 @@ pub enum Command {
         requires: Vec<String>,
         /// The workflow edition it declares (empty: none).
         workflow_edition: String,
-        /// Every workflow edition it runs.
-        workflow_editions: Vec<String>,
         /// An embodiment's e-stop latch from its previous session: the session starts
         /// in ESTOP with this reason.
         estop: Option<Reason>,

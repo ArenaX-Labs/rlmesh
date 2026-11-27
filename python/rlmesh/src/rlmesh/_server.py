@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from ._client import normalize_bind_address
 from ._client._endpoint import redact_address
-from ._editions import serve_options_declaring
+from ._editions import declared_edition
 from ._load_native import load_native
 from ._upgrade import refuse_v1_address
 from ._value_conversion import resolve_bridge
@@ -109,11 +109,7 @@ class EnvServer:
             ``"host:port/env"``. Defaults to ``":0/env"``. A v1 endpoint
             (``"tcp://..."`` or ``"unix://..."``) raises a ``ValueError``
             naming the session form.
-        options: Optional serve lifecycle options: the close timeout and the
-            workflow edition this endpoint declares (see
-            :doc:`/editions/index`). An edition set here is declared verbatim;
-            options without one take ``RLMESH_WORKFLOW_EDITION``, then
-            ``[tool.rlmesh]``.
+        options: Optional serve lifecycle options (the close timeout).
         tags: Optional adapter env tags
             (:class:`rlmesh.adapters.EnvTags`) to publish for this env.
             They are validated against the env's spaces and merged into its
@@ -240,8 +236,6 @@ class EnvServer:
         normalized_address = normalize_bind_address(address)
         refuse_v1_address("EnvServer", normalized_address)
         server_cls = load_native("PyVectorEnvServer" if is_vector else "PyEnvServer")
-        if options is None or options.workflow_edition is None:
-            options = serve_options_declaring(options)
         self._server: PyEnvServer | PyVectorEnvServer = server_cls(
             env=env,
             address=normalized_address,
@@ -249,6 +243,7 @@ class EnvServer:
             native_values=native_values,
             close_env_on_shutdown=close_env_on_shutdown,
             announce=not loopback.get(),
+            workflow_edition=declared_edition(),
         )
         # A server still running at CPython finalization is fatal (its threads call into a tearing-down
         # interpreter); stop it from a finalizer.

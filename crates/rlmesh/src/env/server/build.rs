@@ -13,13 +13,12 @@ use super::{
     Served, Shared, State, lock,
 };
 use crate::adapters::EnvTags;
-use crate::editions::EditionSources;
 use crate::env::envelope::{DescribingHost, env_envelope};
 use crate::env::single_lane::SingleLaneEnv;
 use crate::env::sync_wire::{env_contract_of, vector_contract_of};
 use crate::env::{Env, VectorEnv};
 use crate::specs::{EnvContract, value_to_json};
-use crate::{Error, Result, ServeOptions};
+use crate::{Error, Result};
 
 impl EnvServer {
     /// Serve one env.
@@ -89,7 +88,7 @@ impl EnvServer {
                 language,
                 extra,
             },
-            resources.options.workflow_edition.as_deref(),
+            Some(&resources.workflow_edition),
             matches!(resources.served, Served::Vector(_)),
         )?;
         *lock(&self.shared.binding_description) = Some(envelope.clone());
@@ -112,7 +111,7 @@ impl EnvServer {
 
     pub(crate) fn loopback(
         env: crate::run::LoopbackEnv,
-        edition: Option<String>,
+        declared: Option<String>,
         beside: Option<&str>,
     ) -> Result<EnvServer> {
         let options = EnvServerOptions {
@@ -125,10 +124,6 @@ impl EnvServer {
                         .map_err(|err| Error::Internal(err.to_string()))?,
                 }
             )),
-            options: Some(ServeOptions {
-                workflow_edition: edition,
-                ..Default::default()
-            }),
             close_env_on_shutdown: false,
             ..Default::default()
         };
@@ -136,7 +131,7 @@ impl EnvServer {
             crate::run::LoopbackEnv::Env(env) => Served::Lanes(vec![env]),
             crate::run::LoopbackEnv::Vector(env) => Served::Vector(env),
         };
-        Self::build(served, options, None, false)
+        Self::build_declaring(served, options, None, false, declared.as_deref())
     }
 
     fn build(
@@ -144,6 +139,19 @@ impl EnvServer {
         options: EnvServerOptions,
         factory: Option<Publish>,
         announce: bool,
+    ) -> Result<EnvServer> {
+        let declared = factory
+            .as_ref()
+            .map(|publish| publish.workflow_edition.clone());
+        Self::build_declaring(served, options, factory, announce, declared.as_deref())
+    }
+
+    fn build_declaring(
+        served: Served,
+        options: EnvServerOptions,
+        factory: Option<Publish>,
+        announce: bool,
+        declared: Option<&str>,
     ) -> Result<EnvServer> {
         let mut served = match served {
             Served::Lanes(lanes) if lanes.is_empty() => {
@@ -225,11 +233,7 @@ impl EnvServer {
         let serve = options.options.clone().unwrap_or_default();
         serve.validate()?;
 
-        let edition = crate::editions::resolve_native(EditionSources {
-            call: serve.workflow_edition.as_deref(),
-            option: None,
-            declared: None,
-        })?;
+        let edition = crate::editions::resolve_workflow_edition(declared)?;
 
         let binding_description = match factory.as_ref() {
             Some(publish) => publish.envelope.as_ref().ok().cloned(),
@@ -239,7 +243,7 @@ impl EnvServer {
                     None,
                     None,
                     &DescribingHost::rust(),
-                    edition.as_deref(),
+                    Some(&edition),
                     matches!(served, Served::Vector(_)),
                 )?)
             }
@@ -255,10 +259,6 @@ impl EnvServer {
 
         let close_timeout = serve.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE);
         let close_env_on_shutdown = options.close_env_on_shutdown;
-        let options = ServeOptions {
-            workflow_edition: edition,
-            ..serve
-        };
         let (done, _) = tokio::sync::watch::channel(false);
         Ok(EnvServer {
             shared: Arc::new(Shared {
@@ -272,7 +272,7 @@ impl EnvServer {
                     served,
                     runtime,
                     listener,
-                    options,
+                    workflow_edition: edition,
                     close_timeout,
                     close_env_on_shutdown,
                     announce,

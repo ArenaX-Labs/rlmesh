@@ -311,7 +311,6 @@ fn rust_drop_detaches_a_close_beyond_its_timeout() {
     let options = EnvServerOptions {
         options: Some(crate::ServeOptions {
             close_timeout: Some(Duration::from_millis(20)),
-            ..Default::default()
         }),
         ..quick()
     };

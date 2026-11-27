@@ -83,13 +83,7 @@ fn serve_command_table() {
         },
         Case {
             name: "no target",
-            entrypoint: &[
-                "python",
-                "-m",
-                "rlmesh.serve",
-                "--workflow-edition",
-                "2026.06",
-            ],
+            entrypoint: &["python", "-m", "rlmesh.serve"],
             cmd: &[],
             env: &[],
             ports: PORTS,
@@ -355,15 +349,12 @@ fn label(kind: &str, runtime: serde_json::Value) -> String {
 fn describe_label_wrapper_is_read() {
     let parsed = parse_describe_label(&label(
         "model",
-        serde_json::json!({"supported_workflow_editions": ["2026.06"]}),
+        serde_json::json!({"workflow_edition": "2026.10"}),
     ))
     .unwrap();
     assert_eq!(parsed.kind, Some(Kind::Model));
     assert_eq!(parsed.target.as_deref(), Some("pkg:Policy"));
-    assert_eq!(
-        parsed.runtime.session_offer(),
-        Some(SessionOffer::new(&["2026.06"]))
-    );
+    assert_eq!(parsed.runtime.workflow_edition.as_deref(), Some("2026.10"));
     assert!(parse_describe_label("{nope").is_err());
     assert!(parse_describe_label(r#"{"schema_version":2,"kind":"model"}"#).is_err());
     assert!(parse_describe_label(r#"{"schema_version":1,"kind":"thing"}"#).is_err());
@@ -371,7 +362,7 @@ fn describe_label_wrapper_is_read() {
         parse_describe_label(r#"{"schema_version":1,"kind":"env"}"#)
             .unwrap()
             .runtime
-            .session_offer()
+            .workflow_edition
             .is_none()
     );
 }
@@ -404,66 +395,82 @@ fn missing_describe_label_on_a_custom_entrypoint_points_at_the_native_describe()
 
 #[test]
 fn edition_table() {
-    let platform = EditionTarget::platform(platform_offer(&[
-        "2026.06-0.1.0-rc.13".to_owned(),
-        "2026.06".to_owned(),
-    ]));
-    let offer =
-        |generation: Option<&str>, editions: &[&str], preferred: Option<&str>| RuntimeOffer {
-            protocol_generation: generation.map(str::to_owned),
-            supported_workflow_editions: editions.iter().map(|e| (*e).to_owned()).collect(),
-            preferred_workflow_edition: preferred.map(str::to_owned),
-            ..RuntimeOffer::default()
-        };
-    let report = check_editions(
-        &offer(
-            Some(PROTOCOL_GENERATION),
-            &["2026.06-0.1.0-rc.12", "2026.06"],
-            Some("2026.06"),
-        ),
-        Some(Kind::Model),
-        &platform,
-    );
-    assert!(report.ok(), "{report:?}");
-    assert!(report.passed.iter().any(|m| m.contains("run at 2026.06")));
-    let report = check_editions(
-        &offer(Some(PROTOCOL_GENERATION), &["2031.01"], None),
-        Some(Kind::Env),
-        &platform,
-    );
-    assert_eq!(report.failed.len(), 1, "{report:?}");
-    assert_eq!(
-        report.failed[0],
-        "editions: the image speaks [\"2031.01\"]; the target platform speaks \
-         [\"2026.06-0.1.0-rc.13\", \"2026.06\"]; no edition satisfies both, so a session \
-         would be refused: rebuild the image with an rlmesh that offers one of the target \
-         platform's editions"
-    );
-    let report = check_editions(
-        &offer(Some("rlmesh-wire-v2"), &["2026.06"], None),
+    let platform = EditionTarget::platform(
+        Some(platform_editions(&[
+            " 2026.06".to_owned(),
+            "2026.10".to_owned(),
+            " ".to_owned(),
+        ])),
         None,
+    );
+    assert_eq!(
+        platform.editions.as_deref(),
+        Some(&["2026.06".to_owned(), "2026.10".to_owned()][..])
+    );
+    let runtime = |generation: Option<&str>, edition: Option<&str>| DescribeRuntime {
+        protocol_generation: generation.map(str::to_owned),
+        session_wire_revision: Some(WIRE_REVISION),
+        workflow_edition: edition.map(str::to_owned),
+        ..DescribeRuntime::default()
+    };
+    let report = check_editions(
+        &runtime(Some(PROTOCOL_GENERATION), Some("2026.06")),
         &platform,
     );
+    assert!(report.ok() && report.warnings.is_empty(), "{report:?}");
+    assert!(
+        report.passed.contains(
+            &"editions: workflow edition 2026.06, which the target platform knows".to_owned()
+        ),
+        "{report:?}"
+    );
+    let report = check_editions(
+        &runtime(Some(PROTOCOL_GENERATION), Some("2031.01")),
+        &platform,
+    );
+    assert_eq!(
+        report.failed,
+        [
+            "editions: the image declares workflow edition 2031.01, which the target platform \
+          does not know (it knows [\"2026.06\", \"2026.10\"]); run it on an rlmesh release \
+          that knows 2031.01, or rebuild the image on a release whose edition the target \
+          platform knows"
+        ]
+    );
+    let report = check_editions(&runtime(Some(PROTOCOL_GENERATION), None), &platform);
+    assert!(report.ok(), "{report:?}");
+    assert!(
+        report
+            .not_checked
+            .iter()
+            .any(|m| m.contains("no workflow_edition")),
+        "{report:?}"
+    );
+    let report = check_editions(&runtime(Some("rlmesh-wire-v2"), Some("2026.10")), &platform);
     assert!(
         report.failed[0].contains("protocol generation"),
         "{report:?}"
     );
-    let legacy = check_editions(
-        &offer(Some("rlmesh-wire-v1"), &["2026.06"], None),
-        Some(Kind::Env),
-        &platform,
-    );
+    let legacy = check_editions(&runtime(Some("rlmesh-wire-v1"), Some("2026.10")), &platform);
     assert!(
         legacy.failed.iter().any(|m| m.contains("0.1 runner")),
         "{legacy:?}"
     );
-    let on = |revision| RuntimeOffer {
+    let on = |revision| DescribeRuntime {
         session_wire_revision: revision,
-        ..offer(Some(PROTOCOL_GENERATION), &["2026.06"], None)
+        ..runtime(Some(PROTOCOL_GENERATION), Some("2026.10"))
     };
-    let report = check_editions(&on(Some(WIRE_REVISION)), None, &platform);
-    assert!(report.ok() && report.warnings.is_empty(), "{report:?}");
-    let report = check_editions(&on(Some(WIRE_REVISION + 1)), None, &platform);
+    let unchecked = check_editions(&on(Some(WIRE_REVISION + 1)), &platform);
+    assert!(unchecked.ok(), "{unchecked:?}");
+    assert!(
+        unchecked
+            .not_checked
+            .iter()
+            .any(|m| m.contains("the target platform names no wire revision")),
+        "{unchecked:?}"
+    );
+    let this_build = EditionTarget::this_build();
+    let report = check_editions(&on(Some(WIRE_REVISION + 1)), &this_build);
     assert!(
         report.failed.iter().any(|m| m.contains(&format!(
             "the image speaks session wire revision {} (a later pre-release)",
@@ -471,7 +478,15 @@ fn edition_table() {
         ))),
         "{report:?}"
     );
-    let report = check_editions(&on(None), None, &platform);
+    let report = check_editions(&on(Some(1)), &this_build);
+    assert!(
+        report
+            .failed
+            .iter()
+            .any(|m| m.contains("session wire revision 1 (negotiated editions")),
+        "{report:?}"
+    );
+    let report = check_editions(&on(None), &this_build);
     assert!(report.ok(), "{report:?}");
     assert!(
         report
@@ -480,53 +495,14 @@ fn edition_table() {
             .any(|m| m.contains("no session_wire_revision")),
         "{report:?}"
     );
-    let report = check_editions(&offer(None, &[], None), None, &platform);
-    assert!(report.ok());
-    assert_eq!(report.not_checked.len(), 2, "{report:?}");
-    let mut impossible = offer(Some(PROTOCOL_GENERATION), &["2026.06"], Some("2026.06"));
-    impossible.workflow_edition_error = Some("cannot drive 1999.01".to_owned());
-    let report = check_editions(&impossible, None, &platform);
-    assert!(
-        report.failed.iter().any(|m| m.contains("refuse to start")),
-        "{report:?}"
-    );
-}
-
-#[test]
-fn platform_offer_for_version_knows_only_this_build() {
-    let own = platform_offer_for_version(env!("CARGO_PKG_VERSION")).unwrap();
-    assert_eq!(own.editions, supported_workflow_editions());
-    let pep440 = env!("CARGO_PKG_VERSION").replace("-rc.", "rc");
-    assert_eq!(platform_offer_for_version(&pep440), Some(own));
-    assert_eq!(platform_offer_for_version("0.1.0-rc.12"), None);
-    assert_eq!(platform_offer_for_version("0.0.1"), None);
-    assert_eq!(platform_offer_for_version("99.0.0"), None);
-}
-
-#[test]
-fn version_spellings_normalize() {
-    for (raw, expected) in [
-        ("0.1.0-rc.13", "0.1.0-rc.13"),
-        ("0.1.0rc13", "0.1.0-rc.13"),
-        ("0.1.0-rc13", "0.1.0-rc.13"),
-        ("0.1.0.rc.13", "0.1.0-rc.13"),
-        ("v0.1.0RC13", "0.1.0-rc.13"),
-        ("0.1.0", "0.1.0"),
-        ("0.1.0a1", "0.1.0-a.1"),
-        ("0.1.0-alpha.1", "0.1.0-a.1"),
-        ("0.1.0-beta.3", "0.1.0-b.3"),
-        ("0.1.0-dev.abc123", "0.1.0-dev.abc123"),
-    ] {
-        assert_eq!(normalize_version(raw), expected, "{raw}");
-    }
 }
 
 #[test]
 fn host_baked_label_is_refused() {
-    let runtime = |os: &str, arch: &str| RuntimeOffer {
+    let runtime = |os: &str, arch: &str| DescribeRuntime {
         os: Some(os.to_owned()),
         arch: Some(arch.to_owned()),
-        ..RuntimeOffer::default()
+        ..DescribeRuntime::default()
     };
     let report = check_label_runtime(&runtime("macos", "arm64"));
     assert!(
@@ -541,7 +517,7 @@ fn host_baked_label_is_refused() {
             .is_empty()
     );
     assert_eq!(
-        check_label_runtime(&RuntimeOffer::default()),
+        check_label_runtime(&DescribeRuntime::default()),
         CheckReport::default()
     );
     let mut config = image(
@@ -565,16 +541,9 @@ fn host_baked_label_is_refused() {
 }
 
 #[test]
-fn image_declared_edition_overrides_the_label() {
+fn the_image_edition_is_the_label_and_the_old_variable_only_warns() {
     let mut config = image(
-        &[
-            "python",
-            "-m",
-            "rlmesh.serve",
-            "pkg:Policy",
-            "--workflow-edition",
-            "2020.01",
-        ],
+        &["python", "-m", "rlmesh.serve", "pkg:Policy"],
         &[],
         &[],
         PORTS,
@@ -585,42 +554,24 @@ fn image_declared_edition_overrides_the_label() {
             "model",
             serde_json::json!({
                 "protocol_generation": PROTOCOL_GENERATION,
-                "supported_workflow_editions": ["2026.06-0.1.0-rc.13", "2026.06"],
-                "preferred_workflow_edition": "2026.06",
+                "session_wire_revision": WIRE_REVISION,
+                "workflow_edition": "2026.06",
             }),
         ),
     );
-    let platform = EditionTarget::platform(platform_offer(&["2026.06".to_owned()]));
-    assert_eq!(
-        declared_workflow_edition(&config),
-        Some(Some("2020.01".to_owned()))
-    );
+    let platform = EditionTarget::platform(Some(vec!["2026.06".to_owned()]), Some(WIRE_REVISION));
     let report = check_image(&config, Some(&platform));
-    assert!(
-        report
-            .failed
-            .iter()
-            .any(|m| m.contains("no edition satisfies both")),
-        "{report:?}"
-    );
-    config.env.push(format!("{WORKFLOW_EDITION_ENV}="));
-    assert_eq!(declared_workflow_edition(&config), Some(None));
+    assert!(report.ok() && report.warnings.is_empty(), "{report:?}");
+    config.env.push(format!("{WORKFLOW_EDITION_ENV}=2020.01"));
     let report = check_image(&config, Some(&platform));
     assert!(report.ok(), "{report:?}");
     assert!(
         report
-            .passed
+            .warnings
             .iter()
-            .any(|m| m.contains("floating to its newest")),
+            .any(|m| m.contains("no longer reads")),
         "{report:?}"
     );
-    config.env.pop();
-    config.env.push(format!("{WORKFLOW_EDITION_ENV}=2026.06"));
-    assert_eq!(
-        declared_workflow_edition(&config),
-        Some(Some("2026.06".to_owned()))
-    );
-    assert!(check_image(&config, Some(&platform)).ok());
 }
 
 #[test]
@@ -637,8 +588,8 @@ fn check_image_ties_the_label_to_the_command() {
             "model",
             serde_json::json!({
                 "protocol_generation": PROTOCOL_GENERATION,
-                "supported_workflow_editions": supported_workflow_editions(),
-                "preferred_workflow_edition": CURRENT_WORKFLOW_EDITION,
+                "session_wire_revision": WIRE_REVISION,
+                "workflow_edition": CURRENT_WORKFLOW_EDITION,
             }),
         ),
     );
@@ -650,42 +601,6 @@ fn check_image_ties_the_label_to_the_command() {
     let report = check_image(&config, Some(&EditionTarget::this_build()));
     assert!(report.ok(), "{report:?}");
     assert!(report.not_checked.is_empty(), "{report:?}");
-}
-
-#[test]
-fn an_undeclared_image_is_told_where_to_pin_its_edition() {
-    let mut config = image(
-        &["python", "-m", "rlmesh.serve", "pkg:Policy"],
-        &[],
-        &[],
-        PORTS,
-    );
-    config.labels.insert(
-        DESCRIBE_LABEL.to_owned(),
-        label(
-            "model",
-            serde_json::json!({
-                "protocol_generation": PROTOCOL_GENERATION,
-                "supported_workflow_editions": supported_workflow_editions(),
-                "preferred_workflow_edition": CURRENT_WORKFLOW_EDITION,
-                "workflow_edition_floats": true,
-            }),
-        ),
-    );
-    let floats = |config: &ImageConfig| {
-        check_image(config, None)
-            .warnings
-            .iter()
-            .any(|m| m.contains("no workflow edition declared") && m.contains("Pin it"))
-    };
-    assert!(floats(&config));
-    config.env.push(format!("{WORKFLOW_EDITION_ENV}="));
-    assert!(!floats(&config));
-    config.env.pop();
-    config
-        .env
-        .push(format!("{WORKFLOW_EDITION_ENV}={CURRENT_WORKFLOW_EDITION}"));
-    assert!(!floats(&config));
 }
 
 #[test]
@@ -704,7 +619,7 @@ fn a_local_check_names_this_build_and_no_platform() {
             serde_json::json!({
                 "protocol_generation": PROTOCOL_GENERATION,
                 "session_wire_revision": WIRE_REVISION,
-                "supported_workflow_editions": ["2026.10-dev.1a2b3c4d5e6f"],
+                "workflow_edition": "2099.01",
                 "os": "macos",
                 "arch": "arm64",
             }),
@@ -714,10 +629,7 @@ fn a_local_check_names_this_build_and_no_platform() {
         PACKAGE_LABEL.to_owned(),
         r#"{"schemaVersion": 2}"#.to_owned(),
     );
-    let this_build = EditionTarget {
-        offer: SessionOffer::new(&["2026.10-dev.ffffffffffff"]),
-        ..EditionTarget::this_build()
-    };
+    let this_build = EditionTarget::this_build();
     let report = check_image(&config, Some(&this_build));
     let refused = report
         .failed
@@ -727,10 +639,10 @@ fn a_local_check_names_this_build_and_no_platform() {
     assert_eq!(
         refused,
         &format!(
-            "editions: the image speaks [\"2026.10-dev.1a2b3c4d5e6f\"]; this rlmesh build \
-             speaks [\"2026.10-dev.ffffffffffff\"]; no edition satisfies both, so a session \
-             would be refused: {}",
-            rlmesh_proto::DEV_BUILD_HINT
+            "editions: the image declares workflow edition 2099.01, which this rlmesh build \
+             does not know (it knows [{CURRENT_WORKFLOW_EDITION:?}]); run it on an rlmesh \
+             release that knows 2099.01, or rebuild the image on a release whose edition this \
+             rlmesh build knows"
         )
     );
     let every = report

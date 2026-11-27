@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, cast
-
 import pytest
 import rlmesh
 from rlmesh import serve
@@ -192,9 +190,8 @@ class _Declared(rlmesh.Model):
         self.options = options
 
 
-@pytest.mark.parametrize("env_var", [None, ""])
-def test_envelope_preferred_edition_is_what_the_serve_options_declare(
-    monkeypatch: pytest.MonkeyPatch, env_var: str | None
+def test_envelope_edition_is_the_class_declaration(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import json
 
@@ -208,29 +205,13 @@ def test_envelope_preferred_edition_is_what_the_serve_options_declare(
         "register_python_peer_info",
         lambda extra=None: stamped.update(extra or {}),
     )
-    if env_var is None:
-        monkeypatch.delenv("RLMESH_WORKFLOW_EDITION", raising=False)
-    else:
-        monkeypatch.setenv("RLMESH_WORKFLOW_EDITION", env_var)
     served = _Declared()
     monkeypatch.setattr(serve, "_resolve_model", lambda source, binding: served)
 
-    option = None if env_var == "" else build_info().workflow_edition
-    serve.serve_model(_Declared, "127.0.0.1:0", workflow_edition=option)
+    serve.serve_model(_Declared, "127.0.0.1:0")
 
     envelope = json.loads(stamped[rlmesh.DESCRIBE_METADATA_KEY])
-    options = cast("Any", served.options)
-    wire = (
-        options.workflow_edition if options is not None else None
-    ) or build_info().workflow_edition
-    assert envelope["runtime"]["preferred_workflow_edition"] == wire
-    if env_var == "":
-        assert options is None or options.workflow_edition is None
-    else:
-        assert options.workflow_edition == option
-    assert envelope["runtime"]["supported_workflow_editions"] == list(
-        build_info().supported_workflow_editions
-    )
+    assert envelope["runtime"]["workflow_edition"] == build_info().workflow_edition
 
 
 def test_an_env_prints_no_serving_line_before_it_answers(

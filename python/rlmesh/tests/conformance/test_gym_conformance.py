@@ -21,7 +21,6 @@ import rlmesh.numpy  # noqa: E402
 spaces = gym.spaces
 
 ADDRESS = ":0/gym"
-EDITION = rlmesh.ServeOptions(workflow_edition="2026.10")
 
 
 def digest(value: Any) -> int:
@@ -115,11 +114,11 @@ def make(env_id: str, **kwargs: Any) -> Any:
 
 @contextmanager
 def served(env: Any) -> Iterator[Any]:
-    server = rlmesh.EnvServer(env, ADDRESS, options=EDITION)
+    server = rlmesh.EnvServer(env, ADDRESS)
     server.start()
     vector = hasattr(env, "num_envs") and env.num_envs > 1
     cls = rlmesh.numpy.RemoteVectorEnv if vector else rlmesh.numpy.RemoteEnv
-    remote = cls(server.address, workflow_edition="2026.10")
+    remote = cls(server.address)
     try:
         yield remote
     finally:
@@ -538,16 +537,16 @@ def test_the_env_s_spec_is_forwarded_and_close_detaches() -> None:
     env = make("CartPole-v1")
     closed: list[bool] = []
     env.unwrapped.close = lambda: closed.append(True)
-    server = rlmesh.EnvServer(env, ADDRESS, options=EDITION)
+    server = rlmesh.EnvServer(env, ADDRESS)
     server.start()
     try:
-        remote = rlmesh.numpy.RemoteEnv(server.address, workflow_edition="2026.10")
+        remote = rlmesh.numpy.RemoteEnv(server.address)
         assert remote.spec is not None and reference.spec is not None
         assert remote.spec.id == reference.spec.id == "CartPole-v1"
         assert remote.spec.max_episode_steps == reference.spec.max_episode_steps
         remote.close()
         assert not closed, "close() detaches; the server owns the env"
-        again = rlmesh.numpy.RemoteEnv(server.address, workflow_edition="2026.10")
+        again = rlmesh.numpy.RemoteEnv(server.address)
         again.reset(seed=0)
         again.close()
     finally:
@@ -560,12 +559,10 @@ def test_every_backend_s_remote_env_is_a_gymnasium_env(backend: str) -> None:
     module = pytest.importorskip(f"rlmesh.{backend}")
     pytest.importorskip(backend)
     reference = make("CartPole-v1", render_mode="rgb_array")
-    server = rlmesh.EnvServer(
-        make("CartPole-v1", render_mode="rgb_array"), ADDRESS, options=EDITION
-    )
+    server = rlmesh.EnvServer(make("CartPole-v1", render_mode="rgb_array"), ADDRESS)
     server.start()
     try:
-        remote = module.RemoteEnv(server.address, workflow_edition="2026.10")
+        remote = module.RemoteEnv(server.address)
         try:
             assert isinstance(remote, gym.Env)
             assert remote.unwrapped is remote

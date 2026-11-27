@@ -184,7 +184,7 @@ pub fn bind_prepared<'a>(
 /// Language resource conversion for targets the facade cannot construct itself
 /// (for example a Python env server or a lent Docker session).
 pub trait EnvAdapter: Send {
-    fn open(&mut self, edition: Option<&str>, caller: CallerJobs) -> Result<AdaptedEnv>;
+    fn open(&mut self, caller: CallerJobs) -> Result<AdaptedEnv>;
     fn release(&mut self, close_env: bool) -> Result<()>;
     fn owns_env(&self) -> bool;
 }
@@ -215,8 +215,8 @@ impl OwnedTarget {
             released: false,
         }
     }
-    pub(crate) fn open(&mut self, edition: Option<&str>, caller: CallerJobs) -> Result<AdaptedEnv> {
-        let mut target = self.adapter.open(edition, caller)?;
+    pub(crate) fn open(&mut self, caller: CallerJobs) -> Result<AdaptedEnv> {
+        let mut target = self.adapter.open(caller)?;
         target.address = crate::address::env_address(&target.address);
         Ok(target)
     }

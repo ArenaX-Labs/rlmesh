@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-from typing import TYPE_CHECKING, Final
+import contextlib
+import contextvars
+from typing import TYPE_CHECKING
 
 from ._load_native import load_native
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from rlmesh._rlmesh import ServeOptions
+    from collections.abc import Iterator
 
 __all__ = [
     "WorkflowEditionWarning",
@@ -23,225 +21,57 @@ __all__ = [
 class WorkflowEditionWarning(UserWarning):
     """The category of rlmesh's workflow-edition warnings.
 
-    Running and serving an undeclared participant do not warn; ``rlmesh
-    check``, ``check-image`` and ``doctor`` report the float instead. Filter
-    it by category (``warnings.filterwarnings("ignore",
+    Filter it by category (``warnings.filterwarnings("ignore",
     category=rlmesh.WorkflowEditionWarning)``) rather than by message.
     """
 
 
-#: Process-wide declaration, above every in-code surface but a call keyword. The empty
-#: string declares nothing deliberately: resolution stops there and the peer floats.
-WORKFLOW_EDITION_ENV_VAR: Final = "RLMESH_WORKFLOW_EDITION"
-
-#: The ``[tool.rlmesh]`` table and key read from ``pyproject.toml``.
-_PYPROJECT_TABLE: Final = "[tool.rlmesh]"
-_PYPROJECT_KEY: Final = "workflow_edition"
-
-#: This package's own directory: classes defined in rlmesh name no user project.
-_PACKAGE_DIR: Final = Path(__file__).resolve().parent
-
-
 def current_workflow_edition() -> str:
-    """The bare ``YYYY.MM`` edition this build runs at -- what to paste into a declaration.
+    """The bare ``YYYY.MM`` edition this build runs at when nothing declares one.
 
-    The same value on every build of that edition (``"2026.10"``): a declaration
-    names the contract a participant was authored against, and a bare base
-    selects whichever spelling of it both sides offer -- the sealed name on a
-    release, this build's cohort (``"2026.10-<version>"`` on a prerelease,
-    ``"2026.10-dev.<sha>"`` on a local build: what
-    ``rlmesh.build_info().workflow_edition`` reports) on a prerelease or local
-    build. That cohort spelling is also accepted as a
-    declaration, and pins to that exact moving build.
+    The value to paste into a declaration (``"2026.10"``), the same on a release,
+    prerelease and source build.
     """
     return str(load_native("current_workflow_edition")())
 
 
 def validate_workflow_edition(edition: str) -> str:
-    """Return ``edition`` trimmed, or raise :class:`ValueError` naming what this build offers.
-
-    Accepts exactly the editions this build can actually run a session at: the
-    bare base of any edition it retains, or a cohort spelling that admits one it
-    offers. A declaration is a ceiling, so a cohort below everything in
-    ``SUPPORTED_WORKFLOW_EDITIONS`` is refused here rather than deadlocking
-    every negotiation.
-    """
+    """Return ``edition`` trimmed, or raise :class:`ValueError` for one this build does not know."""
     return str(load_native("validate_workflow_edition")(edition))
 
 
-def resolve_workflow_edition(
-    *,
-    call: str | None = None,
-    option: str | None = None,
-    declared: str | None = None,
-    origin: object | None = None,
-) -> str | None:
-    """The workflow edition this participant declares, or ``None`` when it declares none.
+def resolve_workflow_edition(declared: str | None = None) -> str:
+    """The workflow edition a participant runs at.
 
     Args:
-        call: An explicit ``workflow_edition=`` keyword on this call.
-        option: A served peer's ``ServeOptions`` / ``--workflow-edition`` value.
-        declared: The class-level declaration (``EnvFactory.workflow_edition`` /
+        declared: The in-source declaration (``EnvFactory.workflow_edition`` /
             ``Model.workflow_edition``).
-        origin: The authored class (or an instance or function of it) whose
-            project's ``pyproject.toml`` is the project rung. Without one, or
-            when its module lies in no project, the working directory's.
 
     Returns:
-        The winning declaration, validated and trimmed, or ``None`` when no
-        surface declares one, in which case the peer floats to this build's
-        newest edition. An empty ``RLMESH_WORKFLOW_EDITION`` ends resolution
-        without consulting ``option`` / ``declared`` / ``pyproject.toml``.
+        ``declared``, else :func:`current_workflow_edition`; validated and
+        trimmed.
 
     Raises:
-        ValueError: If the winning value names an edition this build cannot run.
+        ValueError: If the winner names an edition this build does not know.
     """
-    return resolve_declaration(
-        call=call, option=option, declared=declared, origin=origin
-    )[0]
+    return str(load_native("resolve_workflow_edition")(declared))
 
 
-def float_nudge() -> str:
-    """What a check says about a participant that floats: where to pin, and why."""
-    edition = current_workflow_edition()
-    return (
-        f"no workflow edition declared: it floats to {edition!r}, which moves when "
-        f'rlmesh upgrades. Pin it before you upgrade: workflow_edition = "{edition}" '
-        "on the class or under [tool.rlmesh] in pyproject.toml "
-        f"({WORKFLOW_EDITION_ENV_VAR}='' floats deliberately)"
-    )
+_declared: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "rlmesh_declared_workflow_edition", default=None
+)
 
 
-def resolve_declaration(
-    *,
-    call: str | None = None,
-    option: str | None = None,
-    declared: str | None = None,
-    origin: object | None = None,
-) -> tuple[str | None, bool]:
-    """:func:`resolve_workflow_edition`, and whether it floats for want of a declaration.
-
-    The flag is ``False`` for a declaration and for the deliberate float (an
-    empty ``RLMESH_WORKFLOW_EDITION``): only an undeclared float is reported.
-    """
-    resolved, deliberate = load_native("resolve_workflow_edition_rungs")(
-        call=call, option=option, declared=declared
-    )
-    if resolved is not None:
-        return str(resolved), False
-    if deliberate:
-        return None, False
-    project = _from_pyproject(origin)
-    if project is not None and project.strip():
-        return validate_workflow_edition(project), False
-    return None, True
-
-
-#: Project-manifest rung, scanned once per starting directory.
-_pyproject_cache: dict[Path, str | None] = {}
-
-
-def _from_pyproject(origin: object | None = None) -> str | None:
-    """``[tool.rlmesh] workflow_edition`` from the project that holds ``origin``."""
-    manifest = _origin_manifest(origin)
-    if manifest is not None:
-        return _cached(manifest.parent, lambda: _manifest_edition(manifest))
-    start = Path.cwd()
-    return _cached(start, lambda: _pyproject_edition(start))
-
-
-def _cached(key: Path, scan: Callable[[], str | None]) -> str | None:
-    if key not in _pyproject_cache:
-        _pyproject_cache[key] = scan()
-    return _pyproject_cache[key]
-
-
-def _origin_manifest(origin: object | None) -> Path | None:
-    if origin is None:
-        return None
-    module_name = getattr(origin, "__module__", None)
-    if not isinstance(module_name, str):
-        module_name = getattr(type(origin), "__module__", None)
-    module = sys.modules.get(module_name) if isinstance(module_name, str) else None
-    filename = getattr(module, "__file__", None)
-    if not isinstance(filename, str):
-        return None
-    directory = Path(filename).resolve().parent
-    if directory == _PACKAGE_DIR or _PACKAGE_DIR in directory.parents:
-        return None
-    for candidate in (directory, *directory.parents):
-        manifest = candidate / "pyproject.toml"
-        if manifest.is_file():
-            return manifest
-    return None
-
-
-def _pyproject_edition(start: Path) -> str | None:
-    for directory in (start, *start.parents):
-        manifest = directory / "pyproject.toml"
-        if manifest.is_file():
-            return _manifest_edition(manifest)
-    return None
-
-
-def _manifest_edition(manifest: Path) -> str | None:
+@contextlib.contextmanager
+def declaring(declared: object) -> Iterator[None]:
+    """Make ``declared`` the edition an :class:`~rlmesh.EnvServer` built inside declares."""
+    token = _declared.set(declared if isinstance(declared, str) else None)
     try:
-        return _scan_table_string(manifest.read_text(encoding="utf-8"))
-    except OSError:
-        return None
+        yield
+    finally:
+        _declared.reset(token)
 
 
-def _scan_table_string(text: str) -> str | None:
-    in_table = False
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if line.startswith("["):
-            in_table = line == _PYPROJECT_TABLE
-            continue
-        if not in_table or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        if key.strip() != _PYPROJECT_KEY:
-            continue
-        value = value.strip()
-        for quote in ('"', "'"):
-            if len(value) >= 2 and value.startswith(quote) and value.endswith(quote):
-                return value[1:-1]
-        return None
-    return None
-
-
-def serve_options_declaring(
-    options: ServeOptions | None = None,
-    *,
-    call: str | None = None,
-    option: str | None = None,
-    declared: str | None = None,
-    origin: object | None = None,
-) -> ServeOptions | None:
-    """Return ``options`` carrying this peer's resolved edition declaration.
-
-    ``option`` is the served-peer rung -- ``--workflow-edition``, or whatever
-    ``options`` already carries. ``call`` is a declaration this call already
-    resolved and that the server must adopt verbatim (the loopback env server
-    ``run(workflow_edition=...)`` stands up is part of that one call, so it
-    cannot be allowed to re-resolve to a different edition). The resolved winner
-    is stamped onto a copy of ``options``; resolving to ``None`` clears any
-    lower-priority declaration already carried by the options.
-    """
-    if option is None and options is not None:
-        option = options.workflow_edition
-    resolved = resolve_workflow_edition(
-        call=call, option=option, declared=declared, origin=origin
-    )
-    if (resolved is None and options is None) or (
-        options is not None and resolved == options.workflow_edition
-    ):
-        return options
-    native: type[ServeOptions] = load_native("ServeOptions")
-    if options is None:
-        return native(workflow_edition=resolved)
-    return native(
-        close_timeout_seconds=options.close_timeout_seconds,
-        workflow_edition=resolved,
-    )
+def declared_edition() -> str | None:
+    """The edition the innermost :func:`declaring` names, if any."""
+    return _declared.get()

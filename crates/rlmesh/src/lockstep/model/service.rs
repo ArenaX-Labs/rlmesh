@@ -35,7 +35,7 @@ impl<H: ModelHandler + 'static> ModelService<H> {
             routes: Mutex::default(),
             released: tokio::sync::Notify::new(),
             describe,
-            editions: crate::editions::offer(None),
+            workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
             flights: Arc::default(),
             closing: std::sync::atomic::AtomicBool::new(false),
             closed: watch::channel(None).0,
@@ -71,9 +71,14 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         Ok(self)
     }
 
-    /// Declares the workflow edition the model was authored against (`None`:
+    /// Declares the workflow edition the model runs at, already resolved
+    /// (`None`: this build's current).
     pub fn declaring(mut self, workflow_edition: Option<&str>) -> Self {
-        self.editions = crate::editions::offer(workflow_edition);
+        self.workflow_edition = workflow_edition
+            .map(str::trim)
+            .filter(|edition| !edition.is_empty())
+            .unwrap_or(rlmesh_proto::CURRENT_WORKFLOW_EDITION)
+            .to_string();
         self
     }
 
@@ -143,17 +148,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
         if request.route.is_empty() {
             return Err(Error::invalid_argument("a resolve names no route"));
         }
-        let workflow_edition = (!request.workflow_edition.is_empty())
-            .then(|| {
-                rlmesh_proto::parse_retained_edition(&request.workflow_edition).map_err(|why| {
-                    Error::invalid_argument(format!(
-                        "the driver pinned workflow edition {:?}, which this model build does \
-                         not implement: {why}",
-                        request.workflow_edition
-                    ))
-                })
-            })
-            .transpose()?;
         let value: serde_json::Value = serde_json::from_str(&request.contract_json)
             .map_err(|e| Error::invalid_argument(format!("env contract: {e}")))?;
         let contract =
@@ -170,7 +164,6 @@ impl<H: ModelHandler + 'static> ModelService<H> {
                     ResolveOptions {
                         execution_horizon: request.execution_horizon,
                         delivers_history: request.delivers_history,
-                        workflow_edition,
                     },
                 )
                 .await?;

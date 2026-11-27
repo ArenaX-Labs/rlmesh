@@ -96,6 +96,21 @@ pub trait PredictFn: Send + Sync {
         })
     }
 
+    /// Several spec-less groups of one grouped predict, each with its pinned execution
+    /// horizon and one episode per lane, returning one outcome per group in order. A binding with a batched corner
+    /// overrides this to serve every group's lanes in one corner call, keeping each group's
+    /// outcome (and failure) separate. The default serves each group through
+    /// [`predict_spec_less_chunked`](Self::predict_spec_less_chunked).
+    fn predict_spec_less_grouped(
+        &self,
+        groups: Vec<(ModelObservation, u32)>,
+    ) -> Vec<Result<super::handler::PredictFrames>> {
+        groups
+            .into_iter()
+            .map(|(observation, horizon)| self.predict_spec_less_chunked(observation, horizon))
+            .collect()
+    }
+
     /// Whether this model permits the fused forward pass: a grouped predict may concatenate
     /// lanes from *different* routes into ONE batched corner call. Off by default; turn it on
     /// only when the batched corners are lane-independent.

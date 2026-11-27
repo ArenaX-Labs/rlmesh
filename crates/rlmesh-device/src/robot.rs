@@ -1384,6 +1384,12 @@ impl Robot {
         let Ok(attached) = auth::finish(initiator, &msg2) else {
             return self.fail(Fault::Handshake, now_us);
         };
+        if let Some(why) = rlmesh_session_core::wire::version::host_revision_mismatch(
+            "the host",
+            attached.accept.wire_revision,
+        ) {
+            return self.fail(Fault::Refused(CtlStatus::Incompatible, why), now_us);
+        }
         self.generation = attached.accept.generation;
         self.datagram = attached
             .accept
@@ -1415,7 +1421,6 @@ impl Robot {
             .collect(),
             requires: Vec::new(),
             workflow_edition: String::new(),
-            workflow_editions: Vec::new(),
             estop: self.estop.clone(),
         });
         self.next_ctl(now_us);

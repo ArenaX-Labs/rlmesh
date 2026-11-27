@@ -60,10 +60,6 @@ pub struct DescribeJsonOptions<'a> {
     pub generated_at: Option<String>,
     /// The env a server hosts: its spaces replace the default branch's build.
     pub served_env: Option<ServedEnv<'a>>,
-    /// The edition a server resolved, used as given (`""`: it resolved
-    /// none); `None` resolves the type's declaration here, recording a
-    /// refusal instead of failing.
-    pub workflow_edition: Option<String>,
 }
 
 /// What can be described: a model or env factory type, or an instance.
@@ -333,17 +329,7 @@ impl Host {
     }
 }
 
-pub(crate) fn runtime_json(host: &Host, offer: Offer) -> Json {
-    let Offer {
-        preferred,
-        error,
-        floats,
-    } = offer;
-    let preferred = preferred
-        .as_deref()
-        .map(str::trim)
-        .filter(|edition| !edition.is_empty())
-        .unwrap_or(rlmesh_proto::CURRENT_WORKFLOW_EDITION);
+pub(crate) fn runtime_json(host: &Host, workflow_edition: &str) -> Json {
     let mut runtime = json!({
         "component": host.component,
         "language": host.language,
@@ -352,55 +338,14 @@ pub(crate) fn runtime_json(host: &Host, offer: Offer) -> Json {
         "arch": std::env::consts::ARCH,
         "protocol_generation": rlmesh_proto::PROTOCOL_GENERATION,
         "session_wire_revision": rlmesh_session::wire::version::WIRE_REVISION,
-        "supported_workflow_editions": rlmesh_proto::supported_workflow_editions(),
-        "preferred_workflow_edition": preferred,
+        "workflow_edition": workflow_edition,
     });
     if let Some(object) = runtime.as_object_mut() {
-        if let Some(error) = error {
-            object.insert("workflow_edition_error".to_string(), Json::String(error));
-        }
-        if floats {
-            object.insert("workflow_edition_floats".to_string(), Json::Bool(true));
-        }
         for (key, value) in &host.extra {
             object.insert(key.clone(), value.clone());
         }
     }
     runtime
-}
-
-pub(crate) struct Offer {
-    preferred: Option<String>,
-    error: Option<String>,
-    floats: bool,
-}
-
-fn offer(declared: Option<&str>, given: Option<&str>) -> Offer {
-    if let Some(given) = given {
-        let given = given.trim();
-        return Offer {
-            preferred: (!given.is_empty()).then(|| given.to_string()),
-            error: None,
-            floats: given.is_empty()
-                && std::env::var_os(crate::editions::WORKFLOW_EDITION_ENV_VAR).is_none(),
-        };
-    }
-    match crate::editions::resolve_rungs(crate::editions::EditionSources {
-        call: None,
-        option: None,
-        declared,
-    }) {
-        Ok(resolution) => Offer {
-            floats: resolution == crate::editions::EditionResolution::Undeclared,
-            preferred: resolution.into_declared(),
-            error: None,
-        },
-        Err(err) => Offer {
-            preferred: None,
-            error: Some(err.to_string()),
-            floats: false,
-        },
-    }
 }
 
 fn tag_param_type(value: &Value) -> &'static str {
@@ -426,12 +371,7 @@ fn kind_error(asked: DescribeKind, actual: DescribeKind) -> Error {
     ))
 }
 
-fn model_pieces(
-    decl: &PolicyDecl,
-    spec: Option<&SpecArg>,
-    edition: Option<&str>,
-    host: &Host,
-) -> Result<Json> {
+fn model_pieces(decl: &PolicyDecl, spec: Option<&SpecArg>, host: &Host) -> Result<Json> {
     if let Some(native) = decl.native_chunk {
         if !decl.corners.has_chunk() {
             return Err(Error::Type(
@@ -447,7 +387,7 @@ fn model_pieces(
             )));
         }
     }
-    let offer = offer(decl.workflow_edition.as_deref(), edition);
+    let edition = crate::editions::resolve_workflow_edition(decl.workflow_edition.as_deref())?;
     let signature_tier: Vec<Json> = decl
         .load_keys
         .iter()
@@ -459,7 +399,7 @@ fn model_pieces(
     let mut pieces = json!({
         "target": { "entrypoint": null, "qualname": if host.language == "rust" {format!("rust:{}", decl.type_name)} else {"native:model".into()} },
         "params": { "param_spec": null, "signature_tier": signature_tier },
-        "runtime": runtime_json(host, offer),
+        "runtime": runtime_json(host, &edition),
         "model_spec": match spec {
             Some(SpecArg::ModelSpec(spec)) => spec.wire_json().unwrap_or(Json::Null),
             _ => Json::Null,
@@ -478,12 +418,10 @@ fn model_pieces(
 fn factory_pieces(
     form: &mut dyn FactoryForm,
     served: Option<&ServedEnv<'_>>,
-    edition: Option<&str>,
     host: &Host,
 ) -> Result<Json> {
     let served = served.map(ServedEnv::read).transpose()?;
-    let declared = form.workflow_edition();
-    let offer = offer(declared.as_deref(), edition);
+    let edition = crate::editions::resolve_workflow_edition(form.workflow_edition().as_deref())?;
     let tag_params = form.tag_params();
     let signature_tier = tag_params
         .iter()
@@ -519,7 +457,7 @@ fn factory_pieces(
     let mut pieces = json!({
         "target": { "entrypoint": null, "qualname": qualname },
         "params": { "param_spec": null, "signature_tier": signature_tier },
-        "runtime": runtime_json(host, offer),
+        "runtime": runtime_json(host, &edition),
         "env_tags": env_tags,
         "env_spec": built.spec,
     });
@@ -569,7 +507,6 @@ pub(crate) fn envelope(
         kind,
         generated_at,
         served_env,
-        workflow_edition,
     } = options;
     let mut target = obj.0;
     let actual = match &target {
@@ -590,18 +527,13 @@ pub(crate) fn envelope(
             spec,
             execution_horizon,
         } => {
-            let mut pieces = model_pieces(decl, spec.as_ref(), workflow_edition.as_deref(), host)?;
+            let mut pieces = model_pieces(decl, spec.as_ref(), host)?;
             if let Some(horizon) = execution_horizon {
                 pieces["execution_horizon"] = json!(horizon);
             }
             pieces
         }
-        Target::Factory(form) => factory_pieces(
-            form.as_mut(),
-            served_env.as_ref(),
-            workflow_edition.as_deref(),
-            host,
-        )?,
+        Target::Factory(form) => factory_pieces(form.as_mut(), served_env.as_ref(), host)?,
     };
     build_describe_envelope(
         actual.as_str(),

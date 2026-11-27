@@ -455,7 +455,6 @@ mod tests {
                     supports: vec![],
                     requires: vec![],
                     workflow_edition: String::new(),
-                    workflow_editions: vec![],
                     present: true,
                     left: None,
                     device: "local".into(),

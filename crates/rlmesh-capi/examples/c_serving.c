@@ -199,7 +199,6 @@ static int occupied(char* address, size_t cap) {
 typedef struct OldFactoryOptions {
   size_t struct_size;
   int64_t num_envs;
-  const char* workflow_edition;
   const RLMeshValue* make_kwargs;
   RLMeshExtCancelToken* cancel;
 } OldFactoryOptions;
@@ -230,7 +229,7 @@ _Static_assert(sizeof(RLMeshEnvFactoryServeOptions) ==
 _Static_assert(sizeof(RLMeshExtModelServeOptions) == sizeof(OldModelOptions) + sizeof(size_t),
                "model no tail padding");
 #if SIZE_MAX == UINT64_MAX
-_Static_assert(sizeof(OldFactoryOptions) == 40 && sizeof(RLMeshEnvFactoryServeOptions) == 56,
+_Static_assert(sizeof(OldFactoryOptions) == 32 && sizeof(RLMeshEnvFactoryServeOptions) == 48,
                "factory 64-bit layout");
 _Static_assert(sizeof(OldModelOptions) == 24 && sizeof(RLMeshExtModelServeOptions) == 32,
                "model 64-bit layout");
@@ -378,9 +377,6 @@ static void start_tests(State* s) {
   ext.struct_size = 0;
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_INVALID_ARGUMENT && !a);
   ext.struct_size = sizeof(ext);
-  o.workflow_edition = "invalid-edition";
-  CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_INVALID_ARGUMENT && !a);
-  o.workflow_edition = NULL;
   CHECK(rlmesh_ext_env_factory_start(f, "tcp://127.0.0.1:not-a-port", &o, &a) ==
             RLMESH_ERR_INVALID_ARGUMENT &&
         !a);
@@ -463,7 +459,7 @@ static void start_tests(State* s) {
   CHECK(rlmesh_ext_cancel_token_cancel(s->cancel) == RLMESH_OK);
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", &o, &a) == RLMESH_ERR_CANCELLED && !a);
   CHECK(s->prepares == prepares);
-  OldFactoryOptions old = {sizeof(old), 1, NULL, NULL, NULL};
+  OldFactoryOptions old = {sizeof(old), 1, NULL, NULL};
   CHECK(rlmesh_ext_env_factory_start(f, ":0/env", (const RLMeshEnvFactoryServeOptions*)&old, &a) ==
         RLMESH_OK);
   drive(a);

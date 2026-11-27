@@ -26,7 +26,6 @@ impl PyBinding {
         last_error: LastPyError,
         address: &str,
         execution_horizon: u32,
-        workflow_edition: Option<String>,
     ) -> PyResult<Self> {
         let binding = py
             .detach(|| {
@@ -35,7 +34,6 @@ impl PyBinding {
                     address.to_owned().into(),
                     rlmesh::BindOptions {
                         execution_horizon: Some(execution_horizon),
-                        workflow_edition,
                         ..Default::default()
                     },
                 )

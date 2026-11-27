@@ -121,25 +121,30 @@ async fn a_connect_failure_says_whether_retrying_can_succeed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_edition_the_env_does_not_run_is_a_final_refusal() {
+async fn an_env_declaring_an_edition_this_build_does_not_know_is_a_final_refusal() {
     let binding = rlmesh::lockstep::bind(":0/catalog").await.unwrap();
     let address = binding.address();
     let cancel = tokio_util::sync::CancellationToken::new();
     let served = tokio::spawn(binding.serve(
         Arc::new(CatalogEnv::new(1, AutoresetMode::Disabled, false)),
-        rlmesh::lockstep::ServeOptions::default(),
+        rlmesh::lockstep::ServeOptions {
+            workflow_edition: Some("2099.01".into()),
+            ..Default::default()
+        },
         cancel.clone(),
     ));
-    let refused = rlmesh::binding::model::LockstepEnv::connect(
-        &address,
-        ConnectOptions::default(),
-        Some("2026.06"),
-    )
-    .await
-    .err()
-    .expect("no mutual edition");
+    let refused = rlmesh::binding::model::LockstepEnv::connect(&address, ConnectOptions::default())
+        .await
+        .err()
+        .expect("an unknown edition");
     assert!(!refused.is_transient(), "{refused}");
-    assert!(refused.to_string().contains("edition"), "{refused}");
+    let message = refused.to_string();
+    assert!(
+        message.contains("\"2099.01\"")
+            && message.contains(rlmesh::current_workflow_edition())
+            && message.contains("upgrade the rlmesh runtime"),
+        "{message}"
+    );
     cancel.cancel();
     served.await.unwrap().unwrap();
 }

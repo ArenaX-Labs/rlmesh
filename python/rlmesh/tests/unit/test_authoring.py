@@ -283,7 +283,6 @@ def test_env_factory_serve_separates_serving_options_from_make_kwargs(
         "vectorization_mode": None,
         "framework": "numpy",
         "device": None,
-        "workflow_edition": None,
         "task_id": 7,
     }
 

@@ -7,7 +7,7 @@
 //! | Protocol minor | [`PROTOCOL_MINOR`], announced in `Attach` and `AuthorityState` | Monotonic. Any minor talks to any other; new behaviour is a feature string. |
 //! | Features | `Attach.supports/requires`, `AuthorityState.supports`, `PartSpec.requires` | Attach fails with `CtlStatus::Incompatible` if the host lacks a feature the participant requires. |
 //! | Kind table | [`SPEC_VERSION`], in `DeclareParts` | Additive. A host accepts a robot on any table from 1 up to its own and refuses a newer one. |
-//! | Wire revision | [`WIRE_REVISION`], in `HandshakeRequest` and `HandshakeAccept` | Pre-release only. A participant refuses a host on another revision or none; a host refuses a participant on another revision and admits one that sends none. Both refuse with `CtlStatus::Incompatible`, naming both revisions. |
+//! | Wire revision | [`WIRE_REVISION`], in `HandshakeRequest` and `HandshakeAccept` | Pre-release only. Each side refuses a peer on another revision or none (0). Both refuse with `CtlStatus::Incompatible`, naming both revisions. |
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -25,9 +25,13 @@ pub const SPEC_VERSION: u32 = 1;
 /// pre-release speaks, so two builds of one version that cannot talk say so
 /// instead of timing out. Bumped on any wire-breaking change before 0.2.0
 /// freezes the protocol, frozen from then on. 0 on the wire means absent.
-pub const WIRE_REVISION: u32 = 1;
+pub const WIRE_REVISION: u32 = 2;
 
-const REVISIONS: &[&str] = &["four ports: an earlier 0.2 pre-release", "one port"];
+const REVISIONS: &[&str] = &[
+    "four ports: an earlier 0.2 pre-release",
+    "negotiated editions: 0.2.0-alpha.1",
+    "declared editions",
+];
 
 /// What wire revision `revision` is (`"one port"`).
 pub fn wire_revision_name(revision: u32) -> &'static str {
@@ -52,11 +56,10 @@ pub fn host_revision_mismatch(host: &str, revision: u32) -> Option<String> {
     })
 }
 
-/// Why a host refuses `participant`'s hello carrying `revision`, or `None` when
-/// it is this build's or absent (0: a board flashed before revisions were sent,
-/// which still talks to this host).
+/// Why a host refuses `participant`'s hello carrying `revision` (0: none), or
+/// `None` when it is this build's.
 pub fn participant_revision_mismatch(participant: &str, revision: u32) -> Option<String> {
-    (revision != 0 && revision != WIRE_REVISION).then(|| {
+    (revision != WIRE_REVISION).then(|| {
         format!(
             "participant {participant} speaks session wire revision {revision} ({}); this host \
              speaks revision {WIRE_REVISION} ({}); rebuild both from the same release",
@@ -141,17 +144,17 @@ mod tests {
             host_revision_mismatch("the host at 10.0.0.2:7500", 0).as_deref(),
             Some(
                 "the host at 10.0.0.2:7500 speaks session wire revision 0 (four ports: an earlier \
-                 0.2 pre-release); this build speaks revision 1 (one port); rebuild both from the \
-                 same release"
+                 0.2 pre-release); this build speaks revision 2 (declared editions); rebuild both \
+                 from the same release"
             )
         );
-        assert_eq!(participant_revision_mismatch("eye-3", 0), None);
+        assert!(participant_revision_mismatch("eye-3", 0).is_some());
         assert_eq!(participant_revision_mismatch("eye-3", WIRE_REVISION), None);
         assert_eq!(
-            participant_revision_mismatch("eye-3", 2).as_deref(),
+            participant_revision_mismatch("eye-3", 3).as_deref(),
             Some(
-                "participant eye-3 speaks session wire revision 2 (a later pre-release); this \
-                 host speaks revision 1 (one port); rebuild both from the same release"
+                "participant eye-3 speaks session wire revision 3 (a later pre-release); this \
+                 host speaks revision 2 (declared editions); rebuild both from the same release"
             )
         );
     }

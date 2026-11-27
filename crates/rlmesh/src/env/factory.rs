@@ -8,7 +8,6 @@ use rlmesh_adapters::v1::ENV_BRANCH_METADATA_KEY;
 use super::server::{EnvServer, EnvServerOptions, Publish, Tagged};
 use super::{Env, VectorEnv, VectorSeed};
 use crate::adapters::EnvTags;
-use crate::editions::EditionSources;
 use crate::spaces::Space;
 use crate::specs::value_to_json;
 use crate::{
@@ -124,9 +123,6 @@ mod sealed {
 pub struct EnvFactoryServeOptions {
     /// Lanes to make and serve (default 1; `<= 1` serves one env).
     pub num_envs: i64,
-    /// The edition this endpoint declares, above the type's own and below
-    /// `RLMESH_WORKFLOW_EDITION`.
-    pub workflow_edition: Option<String>,
     /// Keywords passed to `make`.
     pub make_kwargs: Kwargs,
     /// Stops the serve as SIGINT does: drain, close the envs, then the
@@ -138,7 +134,6 @@ impl Default for EnvFactoryServeOptions {
     fn default() -> Self {
         EnvFactoryServeOptions {
             num_envs: 1,
-            workflow_edition: None,
             make_kwargs: Kwargs::new(),
             cancel: None,
         }
@@ -254,17 +249,10 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
     check_branch_table::<F>()?;
     factory.prepare()?;
     let num_envs = options.num_envs.max(1);
-    let edition = crate::editions::resolve_native(EditionSources {
-        call: None,
-        option: options.workflow_edition.as_deref(),
-        declared: F::workflow_edition().as_deref(),
-    })?;
+    let edition = crate::editions::resolve_workflow_edition(F::workflow_edition().as_deref())?;
     let server_options = EnvServerOptions {
         address: Some(address.to_string()),
-        options: Some(ServeOptions {
-            workflow_edition: edition.clone(),
-            ..ServeOptions::default()
-        }),
+        options: Some(ServeOptions::default()),
         tags: if F::tag_params().is_empty() {
             F::tags()
         } else {
@@ -277,7 +265,6 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
             factory.into(),
             crate::describe::DescribeJsonOptions {
                 served_env: Some(served),
-                workflow_edition: Some(edition.clone().unwrap_or_default()),
                 ..Default::default()
             },
             host,
@@ -287,6 +274,7 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
         let made = factory.make_env(&options.make_kwargs)?;
         let publish = Publish {
             envelope: describe_with(factory, crate::env::ServedEnv::from(&made)),
+            workflow_edition: edition.clone(),
         };
         match made {
             MadeEnv::Env(env) => EnvServer::lanes_resolved(vec![env], server_options, publish)?,
@@ -311,6 +299,7 @@ pub(crate) fn prepare_serve<F: EnvFactory>(
         );
         let publish = Publish {
             envelope: describe_with(factory, served),
+            workflow_edition: edition.clone(),
         };
         EnvServer::lanes_resolved(lanes, server_options, publish)?
     };

@@ -6,11 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- A served model without a `spec` (a text or LLM harness) that defines `predict_batch` or `predict_chunk_batch` now gets every coalesced session's rows in one call, each row with its own context, instead of one call per session. Each session keeps its own outcome: an action that does not fit fails only that session. This holds in Python and in Rust, and so in C, C++ and C#. A vector env served to such a model at `execution_horizon > 1` uses `predict_chunk_batch` too.
+- A served model's batches no longer alternate between sessions that fell out of step. After a forward ends, the next batch stays open up to `batch_window_ms` for the sessions that forward answered.
+- A NumPy, PyTorch or JAX model's `predict_batch` can return a text action as a list of one string per row, the shape its text observations arrive in.
+
+### Added
+
+- `StepEvent.final_observation` carries the observation returned by the step that ended an episode, which no action follows: a chat episode's closing tool results, a robot episode's terminal frame. It is the env's own value, and `None` on every other step. It is on every lane of a vector or lane-served env, whichever loop runs it, and in Rust (`Option<Value>`), C (`RLMeshStepEvent.final_observation`, appended, so a struct built against an older header still reads) and C++ (`std::optional<Value>`). Runners with their own runtime hooks get it on the step completion event.
+- The recorder keeps that final observation. Each image-role video gains the episode's last frame, and `trajectory.parquet` gains a `final_obs` column (with `final_obs_images` when observations carry images), filled on the row of the step that ended the episode.
+- A Python model can overlap its predicts, for a model that waits on an LLM or a remote API rather than computing. An `async def predict` runs up to 32 calls at once by default. A plain `predict` overlaps only when the model sets `concurrency = N` (or `Model(fn, concurrency=N)`), and then runs on N threads. The sessions a served model answers together run side by side; on a model without a `spec`, a predict that raises fails only its own session, while on a spec'd model it fails the round. A model with `predict_batch` or `predict_chunk_batch` batches instead and is refused `concurrency`, and so is a model that calls inner models. `concurrency` may be set on the class, the instance (in `__init__` or `load()`) or a wrapped policy. Python only for now.
+
+### Removed
+
+- The examples that moved to [rlmesh-examples](https://github.com/ArenaX-Labs/rlmesh-examples/tree/main): `chrono` (now `cpp/chrono`), and the Python `byo_container`, `coding_agent`, `isaacsim`, `llm_agent`, `sandbox`, `v2/ur10e_mujoco` and `vla_adapters` (now `byo-container`, `coding-agent`, `isaacsim/franka-reach`, `llm-agent`, `sandbox`, `ur10e-mujoco` and `vla-adapters`).
+
+## [0.2.0-alpha.2] - 2026-11-25
+
+Workflow editions become a local declaration, and the session wire revision is the one compatibility gate inside 0.2. This release is wire revision 2: it does not talk to 0.2.0-alpha.1, so rebuild images on it.
+
+### Breaking
+
+- Workflow editions are declared locally and never negotiated. A participant runs at its class's `workflow_edition` (the `Policy` / `EnvFactory` declaration in Rust, the vtable or factory attributes in C), else the build's current edition, and every build (release, prerelease or source) reports the bare `2026.10`. An edition the runtime does not know is refused with the edition, the editions it knows and the remedy. Builds of one protocol generation interoperate exactly when their session wire revisions match. Removed: `workflow_edition=` on `run`, `bind`, `run_routes`, `RemoteEnv`, `RemoteVectorEnv`, `EnvFactory.serve` and `rlmesh.serve.serve_env` / `serve_model`; `--workflow-edition` on `python -m rlmesh.serve`; `[tool.rlmesh] workflow_edition` in `pyproject.toml`; `RemoteEnv.selected_workflow_edition`; and `BuildInfo.workflow_edition_base`, `supported_workflow_editions` and `build_cohort`. The same goes in Rust (`RunOptions`, `BindOptions`, `RemoteEnvOptions` and `EnvFactoryServeOptions` lose `workflow_edition`), C and C++.
+- The session wire is revision 2: `Attach` and the roster entry no longer carry `workflow_editions`, and `ModelResolve` no longer carries `workflow_edition`. Both sides of a handshake now require the same revision: a host refuses a participant that sends none, a board checks the host's, and a build on revision 1 and one on revision 2 refuse each other by name. `ModelLink::new` is gone, so a driver reaches a served model only through a checked `ModelConnection`.
+- `ServeOptions.workflow_edition` (Python, Rust, C `RLMeshServeOptions`, C++) and the `workflow_edition` of `describe_json` / `DescribeJsonOptions` are removed: the in-source declaration is the only one, so an image's label always matches what it runs. A plain env declares nothing and runs at the current edition. A blank declaration declares nothing.
+- `RLMESH_WORKFLOW_EDITION` is no longer read: an edition is declared in source, stamped into the label by `rlmesh describe`, and nothing at deploy time changes it. `rlmesh check-image` warns on an image that still sets it.
+- `rlmesh check-image --platform-version` is gone; pass the platform runtime's `--platform-wire-revision` (and `--platform-editions`). `mise run check` refuses a change to the session protos or a changed or removed wire vector since the last release unless `WIRE_REVISION` is bumped.
+- The describe envelope's `runtime` block carries `workflow_edition` in place of `supported_workflow_editions`, `preferred_workflow_edition`, `workflow_edition_floats` and `workflow_edition_error`; describing a class that declares an unknown edition fails. `rlmesh check-image` checks the image's edition is one the target knows, and `check`, `check-image` and `doctor` no longer warn about undeclared editions.
+
+### Added
+
+- An example that runs Prime Environments Hub tasks with an LLM agent harness (`examples/python/llm_agent`).
+
 ### Changed
+
+- Sampling a Box no longer holds a bound and a scalar for every element, so sampling a camera image uses memory close to the image's own size. `rlmesh doctor` and `rlmesh bench` use far less memory on image observations.
 
 #### Other bindings (not published)
 
 - JavaScript: Node's `Robot`, `Policy` and `SessionRecorder` follow Python's hosting rule. With no session or `''` (now `Robot.connect`'s default), or a loopback port that nothing listens on, the participant hosts the session in its own process until it closes, so a script ported from Python no longer waits for a host that never comes. `robot.address` is its participant address. `EdgeStats` gains `received`, `lost`, `lateMs`, `lateMaxMs`, `gapMaxMs` and `clockRefused`, and `PolicyStats` gains `clockRefused` and `waiting`, as in Python. The package refuses a native addon of another version, naming both. It no longer exports the unreleased lobby and scenes (`Robot.waitInLobby`, `robot.leaving`, `runScene`, `Scene`). See [the Node binding](docs/node.md).
+
+### Fixed
+
+#### Python
+
+- A served model no longer segfaults on Python 3.10 when a short-chunk warning is raised while an audit hook is installed (importing `transformers` installs one).
 
 ## [0.2.0-alpha.1] - 2026-11-15
 
@@ -404,6 +445,7 @@ RLMesh connects models to environments across process, dependency, and machine b
 - The describe envelope's `runtime` block advertises the edition handshake under the wire's names: `protocol_generation`, `supported_workflow_editions`, and `preferred_workflow_edition`, and `rlmesh.build_info().supported_workflow_editions` lists the editions a build can drive.
 - `python -m rlmesh.serve` warns at startup when the served model declares no `spec`: automated input synthesis requires a `ModelSpec`.
 
-[Unreleased]: https://github.com/ArenaX-Labs/rlmesh/compare/v0.2.0-alpha.1...HEAD
+[Unreleased]: https://github.com/ArenaX-Labs/rlmesh/compare/v0.2.0-alpha.2...HEAD
+[0.2.0-alpha.2]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.2.0-alpha.2
 [0.2.0-alpha.1]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.2.0-alpha.1
 [0.1.0]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0

@@ -6,7 +6,7 @@ Install the Python package. 0.2 is an alpha, so pip needs `--pre` to pick it; wi
 pip install --pre "rlmesh[gymnasium,numpy]"
 ```
 
-To pin the alpha exactly (in a Dockerfile, say), name its version: `pip install "rlmesh[gymnasium,numpy]==0.2.0a1"`.
+To pin the alpha exactly (in a Dockerfile, say), name its version: `pip install "rlmesh[gymnasium,numpy]==0.2.0a2"`.
 
 RLMesh supports Python 3.10 and newer. Start with Gymnasium for environments and the NumPy backend for examples and notebooks, then follow the [quickstart](https://rlmesh.dev/docs/start/quickstart/).
 
@@ -34,7 +34,7 @@ Until the alpha is on PyPI, install this branch from source. The build needs a R
 RLMESH_RELEASE_BUILD=1 pip install "rlmesh[gymnasium,numpy] @ git+https://github.com/ArenaX-Labs/rlmesh@v2/core#subdirectory=python/rlmesh"
 ```
 
-`RLMESH_RELEASE_BUILD=1` stamps the alpha's workflow edition. Without it the build is a dev build, which only talks to a build of the identical commit (see [dev builds](local-dev.md#dev-builds-and-the-dev-cohort)). Install the same commit in every process and container that takes part.
+`RLMESH_RELEASE_BUILD=1` makes it a release build; without it the build is a dev build of its commit (see [dev builds](local-dev.md#dev-builds)). Builds talk when their session wire revisions match, so install the same release in every process and container that takes part.
 
 ## Repository Examples
 

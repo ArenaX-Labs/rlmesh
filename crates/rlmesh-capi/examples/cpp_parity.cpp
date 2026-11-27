@@ -102,6 +102,7 @@ struct Hooks : RunHooks {
   void on_step(const StepEvent& e) override {
     ++steps;
     assert(e.reward == 1);
+    assert(e.final_observation.has_value() == (e.terminated || e.truncated));
   }
   void on_run_end(const RunResult& r) override {
     ++ends;
@@ -721,10 +722,7 @@ void factories_remote_describe() {
     return value;
   }();
   assert(to_string(v).find("Variant") != std::string::npos);
-  EnvServer server(
-      Counter{},
-      rlmesh::EnvServerOptions{}.with_address(":0/env").with_options(
-          ServeOptions{}.with_workflow_edition(std::string(current_workflow_edition()))));
+  EnvServer server(Counter{}, rlmesh::EnvServerOptions{}.with_address(":0/env"));
   server.start();
   {
     RemoteEnv remote(rlmesh::RemoteEnvOptions{}.with_address(server.address()));
@@ -763,9 +761,7 @@ struct RetiredFactory : EnvFactory<RetiredFactory> {
   }
 };
 void local_runs_refuse_a_retired_edition() {
-  if (std::getenv("RLMESH_WORKFLOW_EDITION")) return;
-  const std::string refusal =
-      "runtime cannot drive workflow edition \"2026.06\"; this build implements";
+  const std::string refusal = "workflow edition \"2026.06\" is unknown to this rlmesh build";
   RetiredFactory factory;
   Model model(Greedy{});
   try {

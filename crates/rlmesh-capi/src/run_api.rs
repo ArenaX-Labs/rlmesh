@@ -69,7 +69,6 @@ pub struct RLMeshRunOptions {
     pub seeds: *const i64,
     pub seeds_len: usize,
     pub hooks: *mut RLMeshRunHooks,
-    pub workflow_edition: *const c_char,
     pub cancel: *const RLMeshExtCancelToken,
     pub episodes: u64,
     pub max_episode_steps: u64,
@@ -130,7 +129,6 @@ pub(crate) unsafe fn options(
         r.execution_horizon =
             (o.has_execution_horizon || o.execution_horizon != 0).then_some(o.execution_horizon);
         r.prefetch_lead = o.prefetch_lead;
-        r.workflow_edition = unsafe { ffi::text(o.workflow_edition) }?;
         r.instruction = unsafe { ffi::text(o.instruction) }?;
         r.view = unsafe { crate::view::read(o.view) }?;
         r.trial_index_base = o.trial_index_base;

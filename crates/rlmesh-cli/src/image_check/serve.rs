@@ -19,8 +19,6 @@ pub struct ServeCommand {
     pub target: Option<String>,
     /// The value of a baked `--address`, when one is present.
     pub address: Option<String>,
-    /// The value of a baked `--workflow-edition`, when one is present.
-    pub workflow_edition: Option<String>,
 }
 
 impl ServeCommand {
@@ -81,11 +79,6 @@ pub fn parse_serve_command(config: &ImageConfig) -> ServeCommand {
             index += 1;
         } else if let Some(value) = arg.strip_prefix("--address=") {
             command.address = Some(value.to_owned());
-        } else if arg == "--workflow-edition" {
-            command.workflow_edition = Some(args.get(index + 1).cloned().unwrap_or_default());
-            index += 1;
-        } else if let Some(value) = arg.strip_prefix("--workflow-edition=") {
-            command.workflow_edition = Some(value.to_owned());
         } else if arg.starts_with("--") {
             if !arg.contains('=')
                 && args

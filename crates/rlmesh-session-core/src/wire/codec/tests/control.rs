@@ -121,8 +121,7 @@ fn control_messages_round_trip() {
             protocol_minor: 3,
             supports: vec!["frame.fixed".into()],
             requires: vec!["merge.blend".into()],
-            workflow_edition: "2026.06".into(),
-            workflow_editions: vec!["2026.06".into()],
+            workflow_edition: "2026.10".into(),
             estop: None,
         },
         Command::DeclareParts {

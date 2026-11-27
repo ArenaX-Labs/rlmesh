@@ -69,15 +69,6 @@ macro_rules! client_common {
                 &self.shared.env_id
             }
 
-            /// The workflow edition this connection negotiated, or the last
-            /// edition a session pinned it to.
-            pub fn selected_workflow_edition(&self) -> &str {
-                match &self.core {
-                    Some(core) => core.selected_workflow_edition(),
-                    None => &self.lent_edition,
-                }
-            }
-
             /// The contract the server reported at handshake.
             pub fn env_contract(&self) -> &EnvContract {
                 &self.shared.contract
@@ -157,7 +148,6 @@ macro_rules! client_common {
                 let core = self.core.take().ok_or_else(|| {
                     Error::Runtime(concat!($name, " is in use by a run").to_string())
                 })?;
-                self.lent_edition = core.selected_workflow_edition().to_string();
                 Ok(core)
             }
 
@@ -193,7 +183,6 @@ mod vector;
 
 pub use client_core::{CoreConnect, EnvClientCore};
 pub(crate) use client_core::{decode_render_frame, decode_render_png};
-pub use link::EditionCell;
 pub(crate) use link::{ENV_HELD, lockstep_error};
 pub use single::RemoteEnv;
 pub use vector::RemoteVectorEnv;
@@ -212,9 +201,6 @@ pub struct RemoteEnvOptions {
     pub connect_timeout: Option<Duration>,
     /// Local bound on each reset, step, render and close.
     pub request_timeout: Option<Duration>,
-    /// The workflow edition this client declares on the handshake; empty or
-    /// whitespace declares nothing and resolution continues.
-    pub workflow_edition: Option<String>,
 }
 
 impl std::fmt::Debug for RemoteEnvOptions {
@@ -226,7 +212,6 @@ impl std::fmt::Debug for RemoteEnvOptions {
             )
             .field("connect_timeout", &self.connect_timeout)
             .field("request_timeout", &self.request_timeout)
-            .field("workflow_edition", &self.workflow_edition)
             .finish()
     }
 }
@@ -247,12 +232,6 @@ impl RemoteEnvOptions {
     /// Set `request_timeout`.
     pub fn request_timeout(mut self, timeout: impl Into<Duration>) -> Self {
         self.request_timeout = Some(timeout.into());
-        self
-    }
-
-    /// Set `workflow_edition`.
-    pub fn workflow_edition(mut self, edition: impl Into<String>) -> Self {
-        self.workflow_edition = Some(edition.into());
         self
     }
 }

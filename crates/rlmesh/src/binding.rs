@@ -16,26 +16,17 @@ pub use crate::run::resolve_execution_horizon;
 /// traits) are written with.
 pub use async_trait::async_trait;
 
-pub use crate::editions::{
-    EditionResolution, EditionSources, resolve_rungs as resolve_workflow_edition_rungs,
-    validate_workflow_edition,
-};
+pub use crate::editions::{resolve_workflow_edition, validate_workflow_edition};
 /// The build's wire identity and the host-supplied handshake `PeerInfo`
 /// override, for a non-Rust host (the C ABI) that describes itself.
 pub use rlmesh_proto::{
-    CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, PeerInfoOverride, parse_declared_edition,
-    peer_info_override, supported_workflow_editions, update_peer_info_override,
+    CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, PeerInfoOverride, peer_info_override,
+    update_peer_info_override,
 };
 
 /// The readiness signal: the serving hook a binding prints its line from,
 /// and the `RLMESH_READY_FILE` a launcher waits on.
 pub use crate::ready::{Announce, READY_FILE_ENV, Ready, ready_file_from_env, set_ready_hook};
-
-/// Resolve a native participant's workflow edition: rungs 1 to 4;
-/// `None` when it floats.
-pub fn resolve_workflow_edition(sources: EditionSources<'_>) -> Result<Option<String>> {
-    crate::editions::resolve_native(sources)
-}
 
 use crate::{Error, Metadata, Result, Tensor, Value};
 
@@ -229,7 +220,6 @@ pub fn env_describe_envelope(
     component: &'static str,
     language: &'static str,
     host_runtime: serde_json::Map<String, serde_json::Value>,
-    workflow_edition: Option<&str>,
 ) -> Result<String> {
     crate::env::envelope::env_envelope(
         contract,
@@ -240,7 +230,7 @@ pub fn env_describe_envelope(
             language,
             extra: host_runtime,
         },
-        workflow_edition,
+        None,
         contract.num_envs() > 1,
     )
 }
@@ -456,13 +446,6 @@ pub fn env_factory_native_start<F: crate::EnvFactory>(
 ) -> Result<crate::EnvServer> {
     // Validate inputs before subscribing: a refused call must not consume a pre-fired token.
     crate::ext::ConnectAddress::env(address)?;
-    if let Some(edition) = options
-        .workflow_edition
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-    {
-        crate::editions::validate_workflow_edition(edition)?;
-    }
     crate::env::factory::bind_discriminants::<F>(&options.make_kwargs)?;
     // Subscribe once before any hooks; other operations may share the token, so don't poll its idle flag.
     let subscription = options.cancel.take().map(|token| token.subscribe());

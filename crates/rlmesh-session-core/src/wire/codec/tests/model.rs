@@ -14,7 +14,6 @@ fn model_messages_round_trip() {
             contract_json: "{}".into(),
             execution_horizon: 4,
             delivers_history: true,
-            workflow_edition: "2026.06".into(),
             reads_advisories: true,
         }),
         ModelRequest::Predict(vec![ModelGroup {

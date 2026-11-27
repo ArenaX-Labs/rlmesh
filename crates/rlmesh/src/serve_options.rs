@@ -7,8 +7,6 @@ use std::time::Duration;
 pub struct ServeOptions {
     /// Maximum time the env or model close hook may take (default 5 s).
     pub close_timeout: Option<Duration>,
-    /// The workflow edition this server declares.
-    pub workflow_edition: Option<String>,
 }
 impl ServeOptions {
     pub(crate) fn validate(&self) -> Result<()> {
@@ -29,7 +27,8 @@ impl ServeOptions {
 /// A batch closes at `max_batch_size` groups or `batch_byte_budget` observation
 /// bytes, or as soon as every route the model has resolved has a request in it.
 /// While the model is idle it also closes `batch_window_ms` after its first
-/// request; while a forward runs, it stays open until that forward ends. A model
+/// request; while a forward runs, it stays open until that forward ends and
+/// then up to `batch_window_ms` more, so the sessions it answered can rejoin. A model
 /// that cannot fuse (`allow_fusion = false`, or no batched corner) is not
 /// batched. Build one with `..Default::default()`.
 #[derive(Debug, Clone)]
@@ -37,7 +36,7 @@ pub struct BatchOptions {
     /// The most predict groups (one route's rows each) one handler call carries; 1 answers
     /// each request on its own, at once.
     pub max_batch_size: usize,
-    /// The longest an idle model holds a batch open for more requests.
+    /// The longest a batch stays open for more requests once the model is idle.
     pub batch_window_ms: u64,
     /// The most observation bytes one handler call carries. A request over
     /// it runs as a batch of its own.

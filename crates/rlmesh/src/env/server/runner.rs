@@ -12,7 +12,7 @@ use super::{Listener, Resources, Served, Shared, in_callback, lock};
 use crate::env::sync_wire::{Actor, ActorRunner, SyncLane, SyncVector};
 use crate::env::wire::{WireEnvAdapter, WireLaneAdapter};
 use crate::env::{Env, VectorEnv};
-use crate::{Error, Result, ServeOptions};
+use crate::{Error, Result};
 
 enum Runner {
     None,
@@ -113,7 +113,7 @@ fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Re
         served,
         runtime,
         listener,
-        options,
+        workflow_edition,
         close_timeout,
         close_env_on_shutdown,
         announce,
@@ -123,7 +123,7 @@ fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Re
     let parts = ServeParts {
         runtime,
         listener,
-        options,
+        workflow_edition,
         close_timeout,
         close_env_on_shutdown,
         shutdown: shared.shutdown.clone(),
@@ -173,7 +173,7 @@ fn run_inner(resources: Resources, shared: &Arc<Shared>, foreground: bool) -> Re
 struct ServeParts {
     runtime: tokio::runtime::Runtime,
     listener: Listener,
-    options: ServeOptions,
+    workflow_edition: String,
     close_timeout: Duration,
     close_env_on_shutdown: bool,
     shutdown: ShutdownTrigger,
@@ -191,7 +191,7 @@ fn drive<E: Driven + Send + Sync + 'static>(
     let ServeParts {
         runtime,
         listener,
-        options,
+        workflow_edition,
         close_timeout,
         close_env_on_shutdown,
         shutdown,
@@ -211,7 +211,7 @@ fn drive<E: Driven + Send + Sync + 'static>(
                         })
                     };
                     let options = crate::lockstep::ServeOptions {
-                        workflow_edition: options.workflow_edition.clone(),
+                        workflow_edition: Some(workflow_edition),
                         record: std::env::var_os("RLMESH_LOCKSTEP_RECORD").map(Into::into),
                         announce,
                     };

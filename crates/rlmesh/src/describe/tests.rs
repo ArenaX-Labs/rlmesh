@@ -61,7 +61,11 @@ fn a_model_type_describes_its_declarations_without_constructing() {
     let runtime = &envelope["runtime"];
     assert_eq!(runtime["component"], "rlmesh-rust");
     assert_eq!(runtime["language"], "rust");
-    assert!(runtime["preferred_workflow_edition"].is_string());
+    assert_eq!(
+        runtime["workflow_edition"],
+        rlmesh_proto::CURRENT_WORKFLOW_EDITION
+    );
+    assert!(runtime.get("supported_workflow_editions").is_none());
     assert_eq!(
         runtime["session_wire_revision"],
         rlmesh_session::wire::version::WIRE_REVISION
@@ -140,23 +144,6 @@ fn describe_refuses_a_contradicting_kind_and_a_bad_timestamp() {
         .unwrap(),
     );
     assert_eq!(envelope["generated_at"], "2026-10-15T00:00:00Z");
-}
-
-#[test]
-fn a_given_edition_is_used_as_given() {
-    let edition = |given: &str| {
-        let text = describe_json(
-            Describable::model::<Planner>(),
-            DescribeJsonOptions {
-                workflow_edition: Some(given.into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        json(&text)["runtime"]["preferred_workflow_edition"].clone()
-    };
-    assert_eq!(edition(" 2099.01 "), "2099.01", "never validated");
-    assert_eq!(edition(""), rlmesh_proto::CURRENT_WORKFLOW_EDITION);
 }
 
 struct Sized {

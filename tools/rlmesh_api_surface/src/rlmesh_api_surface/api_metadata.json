@@ -287,16 +287,16 @@
       "description": "Per-predict sampling seed mixed from an episode's reset seed and its re-plan ordinal."
     },
     "rlmesh.WorkflowEditionWarning": {
-      "description": "Warned once per process when an authored EnvFactory/Model subclass or a served participant declares no workflow edition and floats to this build's newest; filter it by category."
+      "description": "The category of rlmesh's workflow-edition warnings; filter it by category."
     },
     "rlmesh.current_workflow_edition": {
-      "description": "The bare YYYY.MM workflow edition this build runs at, on every build of it: the value to paste into a workflow_edition declaration. It names the contract and selects whichever spelling both sides offer, a prerelease or source build's cohort included."
+      "description": "The bare YYYY.MM workflow edition this build runs at when nothing declares one, the same on every build of a release line: the value to paste into a workflow_edition declaration."
     },
     "rlmesh.build_info": {
-      "description": "This build's identity: package version, protocol generation, the workflow edition it advertises with its sealed base, and the cohort and git state behind that spelling."
+      "description": "This build's identity: package version, protocol generation, session wire revision, workflow edition, and how the build was made."
     },
     "rlmesh.BuildInfo": {
-      "description": "Immutable build identity returned by build_info(): version, protocol_generation, session_wire_revision, workflow_edition, workflow_edition_base, supported_workflow_editions, build_cohort, build_source, and git."
+      "description": "Immutable build identity returned by build_info(): version, protocol_generation, session_wire_revision, workflow_edition, build_source, and git."
     },
     "rlmesh.trial_index": {
       "description": "Read the reserved trial_index reset option an env declared, from a reset's options mapping."

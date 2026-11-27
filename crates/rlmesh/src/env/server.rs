@@ -75,6 +75,7 @@ impl Default for EnvServerOptions {
 
 pub(crate) struct Publish {
     pub(crate) envelope: Result<String>,
+    pub(crate) workflow_edition: String,
 }
 
 enum Served {
@@ -124,7 +125,7 @@ struct Resources {
     served: Served,
     runtime: tokio::runtime::Runtime,
     listener: Listener,
-    options: ServeOptions,
+    workflow_edition: String,
     close_timeout: Duration,
     close_env_on_shutdown: bool,
     announce: Option<crate::binding::Announce>,

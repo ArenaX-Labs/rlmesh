@@ -540,7 +540,7 @@ inline constexpr std::string_view DESCRIBE_METADATA_KEY = RLMESH_DESCRIBE_METADA
 inline constexpr int64_t DESCRIBE_SCHEMA_VERSION = RLMESH_DESCRIBE_SCHEMA_VERSION;
 inline constexpr std::string_view ENV_RESET_OPTIONS_KEY = RLMESH_ENV_RESET_OPTIONS_KEY;
 
-/// Where a build's cohort came from.
+/// How a build was made.
 enum class BuildSource : int32_t {
   Release = RLMESH_BUILD_SOURCE_RELEASE,
   Package = RLMESH_BUILD_SOURCE_PACKAGE,
@@ -556,10 +556,7 @@ inline std::string_view to_string(BuildSource source) {
 struct BuildInfo {
   std::string_view version{};
   std::string_view protocol_generation{};
-  std::string_view workflow_edition{};
-  std::string_view workflow_edition_base{};
-  std::vector<std::string_view> supported_workflow_editions{};  ///< newest first
-  std::string_view build_cohort{};
+  std::string_view workflow_edition{};  ///< the bare YYYY.MM edition this build runs at
   BuildSource build_source = BuildSource::Package;
   std::optional<std::string_view> git{};
   uint32_t session_wire_revision = 0;  ///< 0 from a library built before the field
@@ -574,11 +571,6 @@ inline BuildInfo build_info() {
   info.version = detail::sv(raw.version);
   info.protocol_generation = detail::sv(raw.protocol_generation);
   info.workflow_edition = detail::sv(raw.workflow_edition);
-  info.workflow_edition_base = detail::sv(raw.workflow_edition_base);
-  for (size_t i = 0; i < raw.supported_workflow_editions_len; ++i) {
-    info.supported_workflow_editions.push_back(detail::sv(raw.supported_workflow_editions[i]));
-  }
-  info.build_cohort = detail::sv(raw.build_cohort);
   info.build_source = static_cast<BuildSource>(raw.build_source);
   if (raw.git != nullptr) info.git = detail::sv(raw.git);
   info.session_wire_revision = raw.session_wire_revision;
@@ -593,8 +585,6 @@ inline std::string to_string(const BuildInfo& info) {
       << ", protocol_generation=" << std::quoted(std::string(info.protocol_generation))
       << ", session_wire_revision=" << info.session_wire_revision
       << ", workflow_edition=" << std::quoted(std::string(info.workflow_edition))
-      << ", workflow_edition_base=" << std::quoted(std::string(info.workflow_edition_base))
-      << ", build_cohort=" << std::quoted(std::string(info.build_cohort))
       << ", build_source=" << std::quoted(std::string(to_string(info.build_source))) << ", git=";
   if (info.git)
     out << std::quoted(std::string(*info.git));
@@ -4242,12 +4232,10 @@ class ServedEnv {
 };
 struct ServeOptions {
   std::optional<Duration> close_timeout{};
-  std::optional<std::string> workflow_edition{};
   RLMeshServeOptions raw() const {
     RLMeshServeOptions c = RLMESH_SERVE_OPTIONS_INIT;
     c.has_close_timeout_seconds = close_timeout.has_value();
     if (close_timeout) c.close_timeout_seconds = close_timeout->count();
-    c.workflow_edition = detail::ptr(workflow_edition);
     return c;
   }
   ServeOptions& with_close_timeout(std::optional<Duration> value) & {
@@ -4256,14 +4244,6 @@ struct ServeOptions {
   }
   ServeOptions with_close_timeout(std::optional<Duration> value) && {
     close_timeout = std::move(value);
-    return std::move(*this);
-  }
-  ServeOptions& with_workflow_edition(std::optional<std::string> value) & {
-    workflow_edition = std::move(value);
-    return *this;
-  }
-  ServeOptions with_workflow_edition(std::optional<std::string> value) && {
-    workflow_edition = std::move(value);
     return std::move(*this);
   }
 };
@@ -4506,7 +4486,6 @@ struct TagParam {
 };
 struct EnvFactoryServeOptions {
   int64_t num_envs = 1;
-  std::optional<std::string> workflow_edition{};
   Kwargs make_kwargs{};
   std::optional<ext::CancelToken> cancel{};
   EnvFactoryServeOptions& with_num_envs(int64_t value) & {
@@ -4515,14 +4494,6 @@ struct EnvFactoryServeOptions {
   }
   EnvFactoryServeOptions with_num_envs(int64_t value) && {
     num_envs = std::move(value);
-    return std::move(*this);
-  }
-  EnvFactoryServeOptions& with_workflow_edition(std::optional<std::string> value) & {
-    workflow_edition = std::move(value);
-    return *this;
-  }
-  EnvFactoryServeOptions with_workflow_edition(std::optional<std::string> value) && {
-    workflow_edition = std::move(value);
     return std::move(*this);
   }
   EnvFactoryServeOptions& with_make_kwargs(Kwargs value) & {
@@ -4573,7 +4544,6 @@ class EnvFactoryBase {
     Value k(options.make_kwargs);
     RLMeshEnvFactoryServeOptions c = RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT;
     c.num_envs = options.num_envs;
-    c.workflow_edition = detail::ptr(options.workflow_edition);
     c.make_kwargs = k.raw();
     if (options.cancel) c.cancel = options.cancel->raw();
     RLMeshExtEnvFactoryServeOptions extra = RLMESH_EXT_ENV_FACTORY_SERVE_OPTIONS_INIT;
@@ -4589,7 +4559,6 @@ inline EnvServer start(EnvFactoryBase& factory, std::string_view address,
   Value k(options.make_kwargs);
   RLMeshEnvFactoryServeOptions c = RLMESH_ENV_FACTORY_SERVE_OPTIONS_INIT;
   c.num_envs = options.num_envs;
-  c.workflow_edition = detail::ptr(options.workflow_edition);
   c.make_kwargs = k.raw();
   if (options.cancel) c.cancel = options.cancel->raw();
   RLMeshExtEnvFactoryServeOptions extra = RLMESH_EXT_ENV_FACTORY_SERVE_OPTIONS_INIT;
@@ -5438,7 +5407,6 @@ class Model {
 struct RemoteEnvOptions {
   std::optional<std::string> address{};
   std::optional<Duration> connect_timeout{}, request_timeout{};
-  std::optional<std::string> workflow_edition{};
   /* Sent as `authorization: Bearer <key>`; unset reads RLMESH_API_KEY for an
    * https:// address only, "" sends none. Never printed. */
   /* A PEM bundle an https:// dial trusts instead of the system roots. */
@@ -5449,7 +5417,6 @@ struct RemoteEnvOptions {
     if (connect_timeout) c.connect_timeout_seconds = connect_timeout->count();
     c.has_request_timeout_seconds = request_timeout.has_value();
     if (request_timeout) c.request_timeout_seconds = request_timeout->count();
-    c.workflow_edition = detail::ptr(workflow_edition);
     return c;
   }
   RemoteEnvOptions& with_address(std::optional<std::string> value) & {
@@ -5466,14 +5433,6 @@ struct RemoteEnvOptions {
   }
   RemoteEnvOptions with_connect_timeout(std::optional<Duration> value) && {
     connect_timeout = std::move(value);
-    return std::move(*this);
-  }
-  RemoteEnvOptions& with_workflow_edition(std::optional<std::string> value) & {
-    workflow_edition = std::move(value);
-    return *this;
-  }
-  RemoteEnvOptions with_workflow_edition(std::optional<std::string> value) && {
-    workflow_edition = std::move(value);
     return std::move(*this);
   }
   RemoteEnvOptions& with_request_timeout(std::optional<Duration> value) & {
@@ -5520,9 +5479,6 @@ class RemoteEnv {
   RLMeshRemoteEnv* raw() const { return handle_.get(); }
   std::string address() const { return detail::text(rlmesh_remote_env_address, raw()); }
   std::string env_id() const { return detail::text(rlmesh_remote_env_env_id, raw()); }
-  std::string selected_workflow_edition() const {
-    return detail::text(rlmesh_remote_env_selected_workflow_edition, raw());
-  }
   const specs::EnvContract& env_contract() const { return *contract_; }
   const spaces::Space& observation_space() const { return *observation_; }
   const spaces::Space& action_space() const { return *action_; }
@@ -5595,9 +5551,6 @@ class RemoteVectorEnv {
   RLMeshRemoteVectorEnv* raw() const { return handle_.get(); }
   std::string address() const { return detail::text(rlmesh_remote_vector_env_address, raw()); }
   std::string env_id() const { return detail::text(rlmesh_remote_vector_env_env_id, raw()); }
-  std::string selected_workflow_edition() const {
-    return detail::text(rlmesh_remote_vector_env_selected_workflow_edition, raw());
-  }
   const specs::EnvContract& env_contract() const { return *contract_; }
   const spaces::Space& observation_space() const { return *observation_; }
   const spaces::Space& action_space() const { return *action_; }
@@ -6152,18 +6105,22 @@ struct StepEvent {
   InfoDict info{};
   double predict_ms = 0, step_ms = 0;
   ReadFn read{};
+  /// The observation the step returned when it ended the episode (terminated or truncated):
+  /// the episode's final observation, which no action follows. Empty on every other step.
+  std::optional<Value> final_observation{};
 
   friend bool operator==(const StepEvent& self, const StepEvent& other) noexcept(
       detail::nothrow_equal<decltype(episode), decltype(seed), decltype(step),
                             decltype(observation), decltype(action), decltype(reward),
                             decltype(terminated), decltype(truncated), decltype(info),
-                            decltype(predict_ms), decltype(step_ms), decltype(read)>) {
+                            decltype(predict_ms), decltype(step_ms), decltype(read),
+                            decltype(final_observation)>) {
     return self.episode == other.episode && self.seed == other.seed && self.step == other.step &&
            self.observation == other.observation && self.action == other.action &&
            self.reward == other.reward && self.terminated == other.terminated &&
            self.truncated == other.truncated && self.info == other.info &&
            self.predict_ms == other.predict_ms && self.step_ms == other.step_ms &&
-           self.read == other.read;
+           self.read == other.read && self.final_observation == other.final_observation;
   }
   friend bool operator!=(const StepEvent& self,
                          const StepEvent& other) noexcept(noexcept(self == other)) {
@@ -6199,20 +6156,22 @@ inline Owned<RLMeshRunHooks, rlmesh_run_hooks_free> hooks(RunHooks* user_hooks) 
     return callback([&] {
       auto context = std::make_shared<NativeRunContext>(rlmesh_run_context_clone(e->context));
       auto observation = Value::copy_of(e->observation);
-      StepEvent v{e->episode,
-                  e->has_seed ? std::optional(e->seed) : std::nullopt,
-                  e->step,
-                  observation,
-                  Value::copy_of(e->action),
-                  e->reward,
-                  e->terminated,
-                  e->truncated,
-                  info(e->info),
-                  e->predict_ms,
-                  e->step_ms,
-                  [context, observation](const ReadItem& item) {
-                    return context->read(observation, item);
-                  }};
+      StepEvent v{
+          e->episode,
+          e->has_seed ? std::optional(e->seed) : std::nullopt,
+          e->step,
+          observation,
+          Value::copy_of(e->action),
+          e->reward,
+          e->terminated,
+          e->truncated,
+          info(e->info),
+          e->predict_ms,
+          e->step_ms,
+          [context, observation](const ReadItem& item) { return context->read(observation, item); },
+          e->struct_size > offsetof(RLMeshStepEvent, final_observation) && e->final_observation
+              ? std::optional(Value::copy_of(e->final_observation))
+              : std::nullopt};
       static_cast<RunHooks*>(u)->on_step(v);
     });
   };
@@ -6374,7 +6333,6 @@ struct RunOptions {
   std::optional<uint32_t> execution_horizon{};
   uint64_t prefetch_lead = 0;
   std::optional<View> view{};
-  std::optional<std::string> workflow_edition{};
   uint64_t trial_index_base = 0;
   std::optional<ext::CancelToken> cancel{};
   RunOptions& with_episodes(std::optional<uint64_t> value) & {
@@ -6465,14 +6423,6 @@ struct RunOptions {
     view = std::move(value);
     return std::move(*this);
   }
-  RunOptions& with_workflow_edition(std::optional<std::string> value) & {
-    workflow_edition = std::move(value);
-    return *this;
-  }
-  RunOptions with_workflow_edition(std::optional<std::string> value) && {
-    workflow_edition = std::move(value);
-    return std::move(*this);
-  }
   RunOptions& with_trial_index_base(uint64_t value) & {
     trial_index_base = std::move(value);
     return *this;
@@ -6503,7 +6453,6 @@ struct BindOptions {
   bool close_env = false;
   // Unset: the model's own (its load()'s, else its spec's timing), else 1.
   std::optional<uint32_t> execution_horizon{};
-  std::optional<std::string> workflow_edition{};
   // Borrowed for the binding's life: the binding is their run context, an
   // episode reset over before it ended counts as truncated, and on_run_end
   // fires at close.
@@ -6523,14 +6472,6 @@ struct BindOptions {
   }
   BindOptions with_execution_horizon(std::optional<uint32_t> value) && {
     execution_horizon = value;
-    return std::move(*this);
-  }
-  BindOptions& with_workflow_edition(std::optional<std::string> value) & {
-    workflow_edition = std::move(value);
-    return *this;
-  }
-  BindOptions with_workflow_edition(std::optional<std::string> value) && {
-    workflow_edition = std::move(value);
     return std::move(*this);
   }
   BindOptions& with_hooks(RunHooks* value) & {
@@ -6566,7 +6507,6 @@ void run_options(C& c, const O& o) {
   if (o.trust_entrypoints) c.trust_entrypoints = *o.trust_entrypoints;
   c.has_execution_horizon = o.execution_horizon.has_value();
   c.execution_horizon = o.execution_horizon.value_or(0);
-  c.workflow_edition = ptr(o.workflow_edition);
   if (o.cancel) c.cancel = o.cancel->raw();
 }
 }  // namespace detail
@@ -6686,7 +6626,6 @@ inline Binding bind(ModelTarget model, EnvTarget target, const BindOptions& opti
   c.close_env = options.close_env;
   c.has_execution_horizon = options.execution_horizon.has_value();
   c.execution_horizon = options.execution_horizon.value_or(0);
-  c.workflow_edition = detail::ptr(options.workflow_edition);
   std::shared_ptr<RLMeshRunHooks> hooks(detail::hooks(options.hooks).release(),
                                         rlmesh_run_hooks_free);
   c.hooks = hooks.get();
@@ -7128,6 +7067,7 @@ inline void NativeRunHooks::on_step(const StepEvent& e) {
   c.predict_ms = e.predict_ms;
   c.step_ms = e.step_ms;
   c.context = ctx.get();
+  c.final_observation = e.final_observation ? e.final_observation->raw() : nullptr;
   check_status(rlmesh_run_hooks_on_step(handle_.get(), &c));
 }
 }  // namespace detail
@@ -7261,13 +7201,11 @@ struct DescribeJsonOptions {
   std::optional<DescribeKind> kind{};
   std::optional<std::string> generated_at{};
   std::optional<ServedEnv> served_env{};
-  std::optional<std::string> workflow_edition{};
   RLMeshDescribeJsonOptions raw() const {
     RLMeshDescribeJsonOptions c = RLMESH_DESCRIBE_JSON_OPTIONS_INIT;
     c.has_kind = kind.has_value();
     if (kind) c.kind = static_cast<RLMeshDescribeKind>(*kind);
     c.generated_at = detail::ptr(generated_at);
-    c.workflow_edition = detail::ptr(workflow_edition);
     if (served_env) {
       c.served_env = served_env->lanes().data();
       c.served_env_len = served_env->lanes().size();
@@ -7297,14 +7235,6 @@ struct DescribeJsonOptions {
   }
   DescribeJsonOptions with_served_env(std::optional<ServedEnv> value) && {
     served_env = std::move(value);
-    return std::move(*this);
-  }
-  DescribeJsonOptions& with_workflow_edition(std::optional<std::string> value) & {
-    workflow_edition = std::move(value);
-    return *this;
-  }
-  DescribeJsonOptions with_workflow_edition(std::optional<std::string> value) && {
-    workflow_edition = std::move(value);
     return std::move(*this);
   }
 };
@@ -7389,6 +7319,7 @@ inline std::string to_string(const StepEvent& e) {
   c.info = info.raw();
   c.predict_ms = e.predict_ms;
   c.step_ms = e.step_ms;
+  c.final_observation = e.final_observation ? e.final_observation->raw() : nullptr;
   return detail::text(rlmesh_step_event_repr, &c);
 }
 inline std::ostream& operator<<(std::ostream& s, const StepEvent& e) { return s << to_string(e); }

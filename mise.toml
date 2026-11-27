@@ -106,11 +106,11 @@ run = ["python scripts/dev/python_synced.py", "uv run --no-sync ruff format --ch
 
 [tasks."fmt:cxx"]
 description = "Format the C/C++ bindings and examples (clang-format)"
-run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp integrations/arduino/src/*.h integrations/arduino/src/*/* integrations/arduino/test/* integrations/esp32/src/*.h integrations/esp32/transport/*.h integrations/esp32/transport/*.c integrations/esp32/src/*.cpp integrations/esp32/test/*.c crates/rlmesh-device/include/*.h"
+run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp integrations/arduino/src/*.h integrations/arduino/src/*/* integrations/arduino/test/* integrations/esp32/src/*.h integrations/esp32/transport/*.h integrations/esp32/transport/*.c integrations/esp32/src/*.cpp integrations/esp32/test/*.c crates/rlmesh-device/include/*.h"
 
 [tasks."fmt:check:cxx"]
 description = "Check the C/C++ binding and example formatting"
-run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp examples/chrono/src/* integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp integrations/arduino/src/*.h integrations/arduino/src/*/* integrations/arduino/test/* integrations/esp32/src/*.h integrations/esp32/transport/*.h integrations/esp32/transport/*.c integrations/esp32/src/*.cpp integrations/esp32/test/*.c crates/rlmesh-device/include/*.h"
+run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*.c crates/rlmesh-capi/examples/*.cpp tests/parity/*.c tests/parity/*.cpp integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.h integrations/unreal/RLMesh/Source/RLMeshUnreal/*/*.cpp integrations/unreal/RLMesh/Tests/*.cpp integrations/unity/Tests~/step_client.cpp csharp/tests/init.c csharp/tests/Benchmark/runner.cpp integrations/arduino/src/*.h integrations/arduino/src/*/* integrations/arduino/test/* integrations/esp32/src/*.h integrations/esp32/transport/*.h integrations/esp32/transport/*.c integrations/esp32/src/*.cpp integrations/esp32/test/*.c crates/rlmesh-device/include/*.h"
 
 [tasks."fmt:check:proto"]
 description = "Check Protobuf formatting"
@@ -305,6 +305,10 @@ run = "uv run pytest python/rlmesh/tests -m perf -q"
 [tasks."test:python:api-surface"]
 description = "Run Python API surface tests"
 run = "uv run pytest python/rlmesh/tests/api_surface -q"
+
+[tasks."test:python:wire-previous"]
+description = "Run a live session between this tree and the last release (from PyPI) and check that a wire revision change refuses both ways by name"
+run = "uv run pytest python/rlmesh/tests/release -q"
 
 [tasks."test:python:examples"]
 description = "Run the headless example programs end to end"
@@ -506,6 +510,7 @@ run = [
   "mise run release:artifacts:licenses",
   "mise run test:system:heavy",
   "mise run test:python:floors",
+  "mise run test:python:wire-previous",
   "mise run test:sandbox:docker --require",
 ]
 

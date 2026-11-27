@@ -155,6 +155,16 @@ pub struct StepCompletedEvent {
     /// group experienced both.
     pub predict_ms: f64,
     pub step_ms: f64,
+    /// Shared so the per-step, per-hook event fan-out clones an `Arc` pointer
+    /// rather than deep-copying the observation space spec on every step.
+    pub observation_space: Arc<SpaceSpec>,
+    /// The observation this step returned, every lane's, as the env's own leaf
+    /// slabs (no transform applied). For a lane this step ended (`terminated` or
+    /// `truncated`) it is the episode's final observation, which no action
+    /// follows and no `ObservationEmittedEvent` carries when the runtime owns
+    /// resets; for an `autoreset_roll` lane it is the new episode's reset
+    /// observation. `None` when the env returned none.
+    pub observation: Option<Vec<Bytes>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -108,29 +108,30 @@ fn describe_with(
 }
 
 fn edition_target(args: &CheckImageArgs) -> Result<(Option<EditionTarget>, String)> {
-    if !args.platform_editions.is_empty() {
-        let offer = image_check::platform_offer(&args.platform_editions);
-        if offer.editions.is_empty() {
-            bail!("--platform-editions names no edition");
-        }
-        let against = format!("platform editions {:?}", offer.editions);
-        return Ok((Some(EditionTarget::platform(offer)), against));
+    if args.platform_editions.is_empty() && args.platform_wire_revision.is_none() {
+        return Ok((
+            Some(EditionTarget::this_build()),
+            format!("this rlmesh build ({})", env!("CARGO_PKG_VERSION")),
+        ));
     }
-    if let Some(version) = &args.platform_version {
-        let offer = image_check::platform_offer_for_version(version).map(EditionTarget::platform);
-        let against = match &offer {
-            Some(_) => format!("a platform on rlmesh {} (this CLI's build)", version.trim()),
-            None => format!(
-                "a platform on rlmesh {} (not this CLI's {}, editions unknown)",
-                version.trim(),
-                env!("CARGO_PKG_VERSION")
-            ),
-        };
-        return Ok((offer, against));
+    let editions = (!args.platform_editions.is_empty())
+        .then(|| image_check::platform_editions(&args.platform_editions));
+    if editions.as_ref().is_some_and(Vec::is_empty) {
+        bail!("--platform-editions names no edition");
+    }
+    let mut against = Vec::new();
+    if let Some(editions) = &editions {
+        against.push(format!("editions {editions:?}"));
+    }
+    if let Some(revision) = args.platform_wire_revision {
+        against.push(format!("session wire revision {revision}"));
     }
     Ok((
-        Some(EditionTarget::this_build()),
-        format!("this rlmesh build ({})", env!("CARGO_PKG_VERSION")),
+        Some(EditionTarget::platform(
+            editions,
+            args.platform_wire_revision,
+        )),
+        format!("a platform with {}", against.join(" and ")),
     ))
 }
 
@@ -352,36 +353,39 @@ mod tests {
 
     #[test]
     fn edition_target_defaults_to_this_build() {
-        let args = |editions: &[&str], version: Option<&str>| CheckImageArgs {
+        let args = |editions: &[&str], revision: Option<u32>| CheckImageArgs {
             image: "img:tag".to_owned(),
             platform_editions: editions.iter().map(|e| (*e).to_owned()).collect(),
-            platform_version: version.map(str::to_owned),
+            platform_wire_revision: revision,
             json: false,
         };
         let (target, against) = edition_target(&args(&[], None)).unwrap();
         assert_eq!(target, Some(EditionTarget::this_build()));
+        let target = target.unwrap();
         assert_eq!(
-            target.unwrap().offer,
-            rlmesh_proto::SessionOffer::this_build(None)
+            target.editions,
+            Some(vec![rlmesh::current_workflow_edition().to_owned()])
+        );
+        assert_eq!(
+            target.wire_revision,
+            Some(rlmesh_session::wire::version::WIRE_REVISION)
         );
         assert_eq!(
             against,
             format!("this rlmesh build ({})", env!("CARGO_PKG_VERSION"))
         );
-        assert!(!against.contains("platform"), "{against}");
-        let (target, _) = edition_target(&args(&["2026.06", " "], None)).unwrap();
+        let (target, against) = edition_target(&args(&["2026.06", " "], Some(7))).unwrap();
         let target = target.unwrap();
-        assert_eq!(target.offer, rlmesh_proto::SessionOffer::new(&["2026.06"]));
+        assert_eq!(target.editions, Some(vec!["2026.06".to_owned()]));
+        assert_eq!(target.wire_revision, Some(7));
         assert_eq!(target.name, "the target platform");
-        assert!(edition_target(&args(&[" "], None)).is_err());
-        let (target, against) = edition_target(&args(&[], Some("0.0.1"))).unwrap();
-        assert_eq!(target, None);
-        assert!(against.contains("editions unknown"), "{against}");
-        let (target, _) = edition_target(&args(&[], Some(env!("CARGO_PKG_VERSION")))).unwrap();
         assert_eq!(
-            target.map(|t| t.offer.editions),
-            Some(rlmesh_proto::supported_workflow_editions())
+            against,
+            "a platform with editions [\"2026.06\"] and session wire revision 7"
         );
+        let (target, _) = edition_target(&args(&[], Some(7))).unwrap();
+        assert_eq!(target.unwrap().editions, None);
+        assert!(edition_target(&args(&[" "], None)).is_err());
     }
 
     #[test]
@@ -393,9 +397,7 @@ mod tests {
                 "labels: the describe label was generated on macos".to_owned(),
                 "variant: requires accel.cuda needs accel.vendor".to_owned(),
             ],
-            not_checked: vec![
-                "editions: describe carries no supported_workflow_editions".to_owned(),
-            ],
+            not_checked: vec!["editions: describe carries no workflow_edition".to_owned()],
             ..CheckReport::default()
         };
         let deep = CheckReport {

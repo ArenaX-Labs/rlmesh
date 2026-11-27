@@ -4,9 +4,7 @@ package_family = "0.2"
 
 [workflow]
 # TODO: 2026.10 is provisional
-base_edition = "2026.10"
-current_edition = "2026.10-0.2.0-alpha.1"
-supported_editions = ["2026.10-0.2.0-alpha.1"]
+current_edition = "2026.10"
 
 [workflow.dropped_editions]
 "2026.06" = "0.2 replaces the 0.1 gRPC protocol with realtime sessions"
@@ -17,7 +15,7 @@ spec = "docs/editions/2026.06.md"
 sealed_in = "0.1.0"
 spec_sha256 = "a3dcf2195f6b35819c91192396e94a445c039278d99e20db81fa2a2fe43664a2"
 
-[workflow.editions."2026.10-0.2.0-alpha.1"]
+[workflow.editions."2026.10"]
 status = "provisional"
 spec = "docs/editions/2026.10.md"
 
@@ -78,7 +76,7 @@ id = "pypi:rlmesh"
 ecosystem = "pypi"
 name = "rlmesh"
 manifest = "python/rlmesh/pyproject.toml"
-version = "0.2.0a1"
+version = "0.2.0a2"
 role = "core"
 publish = true
 
@@ -87,7 +85,7 @@ id = "cargo:rlmesh"
 ecosystem = "cargo"
 name = "rlmesh"
 manifest = "crates/rlmesh/Cargo.toml"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 role = "core"
 publish = true
 
@@ -96,7 +94,7 @@ id = "cargo:rlmesh-adapters"
 ecosystem = "cargo"
 name = "rlmesh-adapters"
 manifest = "crates/rlmesh-adapters/Cargo.toml"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 role = "core"
 publish = true
 
@@ -105,7 +103,7 @@ id = "cargo:rlmesh-cli"
 ecosystem = "cargo"
 name = "rlmesh-cli"
 manifest = "crates/rlmesh-cli/Cargo.toml"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 role = "core"
 publish = true
 
@@ -114,7 +112,7 @@ id = "cargo:rlmesh-cockpit"
 ecosystem = "cargo"
 name = "rlmesh-cockpit"
 manifest = "crates/rlmesh-cockpit/Cargo.toml"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 role = "internal"
 publish = true
 
@@ -123,7 +121,7 @@ id = "cargo:rlmesh-proto"
 ecosystem = "cargo"
 name = "rlmesh-proto"
 manifest = "crates/rlmesh-proto/Cargo.toml"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 role = "internal"
 publish = true
 
@@ -132,7 +130,7 @@ id = "cargo:rlmesh-session-core"
 ecosystem = "cargo"
 name = "rlmesh-session-core"
 manifest = "crates/rlmesh-session-core/Cargo.toml"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 role = "core"
 publish = true
 
@@ -141,7 +139,7 @@ id = "cargo:rlmesh-session"
 ecosystem = "cargo"
 name = "rlmesh-session"
 manifest = "crates/rlmesh-session/Cargo.toml"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 role = "core"
 publish = true
 
@@ -150,7 +148,7 @@ id = "cargo:rlmesh-spaces"
 ecosystem = "cargo"
 name = "rlmesh-spaces"
 manifest = "crates/rlmesh-spaces/Cargo.toml"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 role = "core"
 publish = true
 
@@ -159,7 +157,7 @@ id = "cargo:rlmesh-tether"
 ecosystem = "cargo"
 name = "rlmesh-tether"
 manifest = "crates/rlmesh-tether/Cargo.toml"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 role = "core"
 publish = true
 

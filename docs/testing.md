@@ -178,14 +178,13 @@ mise run test:sandbox:docker --require      # fails instead (release machines)
 mise run test:sandbox:docker --starts 30 --runs 10
 ```
 
-Both sides of every session must be the same build, so it builds this tree
-as the release cohort (`RLMESH_RELEASE_BUILD=1`, see
-[local development](local-dev.md)): the in-tree extension
+Both sides of every session run this tree, built as a release build
+(`RLMESH_RELEASE_BUILD=1`, see [local development](local-dev.md)): the in-tree extension
 (`build:python:develop`, which your editable install then keeps) and the
 manylinux wheel (`build:python:docker`, rebuilt unless it was made from this
 tree state; `--rebuild` forces it). It builds env, model and failing-env
 images from the wheel and the
-[bring-your-own examples](../examples/python/byo_container), then runs
+env and model entrypoints in [`python/rlmesh/tests/docker/images`](../python/rlmesh/tests/docker/images), then runs
 `python/rlmesh/tests/docker` (pytest marker `docker`, which other runs leave
 out):
 
@@ -218,7 +217,9 @@ mise run release:check
 ```
 
 It includes the sandbox Docker gate with `--require`, so the release machine
-needs a Docker daemon.
+needs a Docker daemon, and `test:python:wire-previous`, which installs the last
+release from PyPI and checks that it and this tree refuse each other by name
+when the session wire revision has changed since (it skips when it has not).
 
 ## When parity:check or parity:fixtures fails
 

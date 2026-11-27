@@ -45,9 +45,9 @@ A breaking change to a stable symbol gets a `### Breaking` entry with a before/a
 mise run bump X.Y.Z
 ```
 
-It rewrites every manifest and install snippet, updates the workflow cohort, runs `cargo update` and `uv lock`, then `policy:check` — the backstop that fails loudly if any version-bearing spot was missed. Prereleases use an exact provisional cohort (`YYYY.MM-X.Y.Z-{alpha,beta,rc}.N`), which replaces the previous prerelease's: a provisional cohort is not retained, so builds of two prereleases share no edition unless both offer an older sealed one. A stable release seals the bare edition in `rlmesh.toml` with `sealed_in` and `spec_sha256`. See [workflow editions](editions/index.md).
+It rewrites every manifest and install snippet and the release status, runs `cargo update` and `uv lock`, then `policy:check` — the backstop that fails loudly if any version-bearing spot was missed. A version bump never changes the workflow edition. A stable release seals a provisional current edition in `rlmesh.toml` with `sealed_in` and `spec_sha256`. See [workflow editions](editions/index.md).
 
-**Before 0.2.0, a push that breaks the session wire bumps the version.** Until 0.2.0 freezes the realtime protocol, any change that stops a build from talking to the previous one (an encoding, a key, the transport) bumps, in the same push, both the prerelease number (`mise run bump 0.2.0-alpha.N+1`) and `WIRE_REVISION` in `crates/rlmesh-session-core/src/wire/version.rs` (with a line in its `REVISIONS` naming what changed). The revision lets two builds that cannot talk refuse each other by name instead of timing out; the version keeps those builds from sharing a number. A change that keeps the wire compatible needs neither.
+**Before 0.2.0, a push that breaks the session wire bumps `WIRE_REVISION`.** Until 0.2.0 freezes the realtime protocol, any change that stops a build from talking to the previous one (an encoding, a key, the transport) bumps `WIRE_REVISION` in `crates/rlmesh-session-core/src/wire/version.rs` in the same push, with a line in its `REVISIONS` naming what changed, so two builds that cannot talk refuse each other by name instead of timing out. The prerelease number (`mise run bump 0.2.0-alpha.N+1`) is bumped when the release is cut, together with any wire revision change since the last release, so two releases never share a number across a wire break. A change that keeps the wire compatible needs neither.
 
 ## Freeze a wire protocol
 
@@ -72,7 +72,7 @@ RLMesh publishes wheels only; do not build or upload an sdist. Wheel builds are 
 
 ## Publish order
 
-The publish job uploads the wheels to PyPI first. When the `RLMESH_PUBLISH_CRATES` repository variable is `1`, it then runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-spaces`, `rlmesh-proto`, `rlmesh-tether`, `rlmesh-session-core`, `rlmesh-adapters`, `rlmesh-session`, `rlmesh-cockpit`, `rlmesh`, `rlmesh-cli`); otherwise it skips them with a notice. Last, it cuts the GitHub Release via `release.py --github-release`. When the `RLMESH_PUBLISH_NPM` repository variable is `1`, a separate `publish-npm` job then publishes the npm packages; otherwise the publish job skips them with a notice (see [npm](#npm)). Trusted publishing on crates.io can be configured only for a crate that already exists, so a crate never published before (in 0.2.0-alpha.1, `rlmesh-tether` and `rlmesh-cockpit`) is published once by hand with a token, its trusted publisher configured, and only then is `RLMESH_PUBLISH_CRATES` set to `1`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
+The publish job uploads the wheels to PyPI first. When the `RLMESH_PUBLISH_CRATES` repository variable is `1`, it then runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-spaces`, `rlmesh-proto`, `rlmesh-tether`, `rlmesh-session-core`, `rlmesh-adapters`, `rlmesh-session`, `rlmesh-cockpit`, `rlmesh`, `rlmesh-cli`); otherwise it skips them with a notice. Last, it cuts the GitHub Release via `release.py --github-release`. When the `RLMESH_PUBLISH_NPM` repository variable is `1`, a separate `publish-npm` job then publishes the npm packages; otherwise the publish job skips them with a notice (see [npm](#npm)). Trusted publishing on crates.io can be configured only for a crate that already exists, so a crate never published before (in 0.2.0-alpha.2, `rlmesh-tether` and `rlmesh-cockpit`) is published once by hand with a token, its trusted publisher configured, and only then is `RLMESH_PUBLISH_CRATES` set to `1`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
 
 ## npm
 
@@ -115,13 +115,13 @@ Leave the variable at `1` to publish npm with every release, or delete it (`gh v
 Every release gets a GitHub Release built from its tag and curated changelog.
 For 0.2, the published distributions are the Python wheels, the nine Rust
 crates above once `RLMESH_PUBLISH_CRATES` is on, and the six npm packages once
-`RLMESH_PUBLISH_NPM` is on (0.2.0-alpha.1 ships the wheels only). npm attaches
+`RLMESH_PUBLISH_NPM` is on (0.2.0-alpha.2 ships the wheels only). npm attaches
 nothing to the Release. C/C++, C#, Unity, Unreal and board-library release assets are
 fenced; their code and existing CI build/test coverage remain in the tree.
 C ABI 7 is cut only when the native bindings ship.
 
 `release.py --github-release` does not require or attach native packages in 0.2,
-even if they exist locally. Prereleases (`-beta.N`, `-rc.N`) are marked
+even if they exist locally. Prereleases (`-alpha.N`, `-beta.N`, `-rc.N`) are marked
 `--prerelease` so they stay out of "Latest"; a final `X.Y.Z` becomes Latest.
 
 **Re-run failed jobs only** for releases, preserving successful builder artifacts.

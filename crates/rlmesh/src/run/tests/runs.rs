@@ -614,95 +614,60 @@ impl<const RETIRED: bool> EnvFactory for Declaring<RETIRED> {
     }
 }
 
-#[allow(unsafe_code)]
-fn undeclared_process(body: impl FnOnce()) {
-    let _lock = crate::warnings::tests::HANDLER_LOCK
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
-    let previous = std::env::var(crate::editions::WORKFLOW_EDITION_ENV_VAR).ok();
-    // SAFETY: serialized by HANDLER_LOCK; no other test thread reads it.
-    unsafe { std::env::remove_var(crate::editions::WORKFLOW_EDITION_ENV_VAR) };
-    body();
-    if let Some(previous) = previous {
-        unsafe { std::env::set_var(crate::editions::WORKFLOW_EDITION_ENV_VAR, previous) };
-    }
-}
-
 fn assert_retired_refusal(error: &Error) {
     assert_eq!(error.class(), ErrorClass::ValueError, "{error}");
     assert!(
-        error.to_string().starts_with(
-            "runtime cannot drive workflow edition \"2026.06\"; this build implements"
-        ),
+        error
+            .to_string()
+            .starts_with("workflow edition \"2026.06\" is unknown to this rlmesh build"),
         "{error}"
     );
 }
 
 #[test]
-fn a_local_run_refuses_a_factory_declaring_an_edition_this_build_cannot_drive() {
-    undeclared_process(|| {
-        let model = ones();
-        let mut factory = Declaring::<true>::new();
-        let error = model
-            .run(EnvTarget::factory(&mut factory), RunOptions::default())
-            .unwrap_err();
-        assert_retired_refusal(&error);
-        let error = run(
-            RANDOM_SAMPLE,
+fn a_local_run_refuses_a_factory_declaring_an_edition_this_build_does_not_know() {
+    let model = ones();
+    let mut factory = Declaring::<true>::new();
+    let error = model
+        .run(EnvTarget::factory(&mut factory), RunOptions::default())
+        .unwrap_err();
+    assert_retired_refusal(&error);
+    let error = run(
+        RANDOM_SAMPLE,
+        EnvTarget::factory(&mut factory),
+        RunOptions::default(),
+    )
+    .unwrap_err();
+    assert_retired_refusal(&error);
+    let error = model
+        .bind(EnvTarget::factory(&mut factory), BindOptions::default())
+        .unwrap_err();
+    assert_retired_refusal(&error);
+    let results = crate::binding::routes::run_routes(
+        &ones(),
+        vec![crate::binding::routes::Route::new(
             EnvTarget::factory(&mut factory),
             RunOptions::default(),
-        )
-        .unwrap_err();
-        assert_retired_refusal(&error);
-        let error = model
-            .bind(EnvTarget::factory(&mut factory), BindOptions::default())
-            .unwrap_err();
-        assert_retired_refusal(&error);
-        let results = crate::binding::routes::run_routes(
-            &ones(),
-            vec![crate::binding::routes::Route::new(
-                EnvTarget::factory(&mut factory),
-                RunOptions::default(),
-            )],
-        )
-        .unwrap();
-        assert_retired_refusal(results[0].as_ref().unwrap_err());
-        assert_eq!(factory.0.made, 0);
-    });
+        )],
+    )
+    .unwrap();
+    assert_retired_refusal(results[0].as_ref().unwrap_err());
+    assert_eq!(factory.0.made, 0);
 }
 
 #[test]
 fn a_local_run_drives_a_factory_declaring_this_builds_edition() {
-    undeclared_process(|| {
-        let model = ones();
-        let mut factory = Declaring::<false>::new();
-        let result = model
-            .run(EnvTarget::factory(&mut factory), RunOptions::default())
-            .unwrap();
-        assert_eq!(result.num_episodes(), 1);
-        let mut binding = model
-            .bind(EnvTarget::factory(&mut factory), BindOptions::default())
-            .unwrap();
-        binding.reset(None, None).unwrap();
-        binding.close().unwrap();
-        drop(binding);
-        assert_eq!(factory.0.made, 2);
-    });
-}
-
-#[test]
-fn the_call_edition_outranks_a_local_factory_declaration() {
-    undeclared_process(|| {
-        let mut factory = Declaring::<true>::new();
-        let result = ones()
-            .run(
-                EnvTarget::factory(&mut factory),
-                RunOptions {
-                    workflow_edition: Some(crate::current_workflow_edition().to_string()),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        assert_eq!(result.num_episodes(), 1);
-    });
+    let model = ones();
+    let mut factory = Declaring::<false>::new();
+    let result = model
+        .run(EnvTarget::factory(&mut factory), RunOptions::default())
+        .unwrap();
+    assert_eq!(result.num_episodes(), 1);
+    let mut binding = model
+        .bind(EnvTarget::factory(&mut factory), BindOptions::default())
+        .unwrap();
+    binding.reset(None, None).unwrap();
+    binding.close().unwrap();
+    drop(binding);
+    assert_eq!(factory.0.made, 2);
 }

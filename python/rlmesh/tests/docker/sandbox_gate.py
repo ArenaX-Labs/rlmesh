@@ -116,9 +116,8 @@ def build_images(run: str) -> GateImages:
     with tempfile.TemporaryDirectory(prefix="rlmesh-docker-gate-") as context:
         ctx = Path(context)
         shutil.copy2(wheel, ctx / wheel.name)
-        examples = ROOT / "examples/python/byo_container"
-        shutil.copy2(examples / "env/entrypoint.py", ctx / "env_entrypoint.py")
-        shutil.copy2(examples / "model/entrypoint.py", ctx / "model_entrypoint.py")
+        shutil.copy2(IMAGES / "env_entrypoint.py", ctx / "env_entrypoint.py")
+        shutil.copy2(IMAGES / "model_entrypoint.py", ctx / "model_entrypoint.py")
         shutil.copy2(IMAGES / "exits.py", ctx / "exits.py")
         shutil.copy2(IMAGES / "raises.py", ctx / "raises.py")
         base = os.environ.get("RLMESH_DOCKER_GATE_BASE", "python:3.12-slim")
@@ -150,7 +149,8 @@ def check_same_build(images: GateImages) -> None:
     from rlmesh._rlmesh import build_info
 
     probe = (
-        "from rlmesh._rlmesh import build_info; print(build_info().workflow_edition)"
+        "from rlmesh._rlmesh import build_info; i = build_info(); "
+        "print(f'{i.version} wire {i.session_wire_revision}')"
     )
     inside = docker(
         "run",
@@ -163,7 +163,8 @@ def check_same_build(images: GateImages) -> None:
         "-c",
         probe,
     )
-    here = build_info().workflow_edition
+    info = build_info()
+    here = f"{info.version} wire {info.session_wire_revision}"
     if inside != here:
         pytest.fail(
             f"the gate's images run rlmesh build {inside!r} and this host runs "

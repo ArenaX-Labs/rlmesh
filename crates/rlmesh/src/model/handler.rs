@@ -52,9 +52,6 @@ pub struct ResolveOptions {
     /// step it executed from a replayed chunk without predicting). Without it, a stacked
     /// adapter is refused at a horizon above 1.
     pub delivers_history: bool,
-    /// The workflow edition the run executes at, which a model served
-    /// elsewhere is pinned to (`None`: unpinned).
-    pub workflow_edition: Option<rlmesh_proto::Edition>,
 }
 
 /// What a resolved route needs from the runtime, answered on
@@ -93,6 +90,36 @@ pub struct PredictFrames {
     /// Future-step frames (`replay[step][lane]`), applied without calling the model again;
     /// `replay[j]` is for step `j + 1`. Empty when not chunking.
     pub replay: Vec<Vec<spaces::SpaceValue>>,
+}
+
+impl PredictFrames {
+    /// Assemble a predict's frames from each lane's executed frames (frame 0 first).
+    /// Lanes may differ in length; the replay runs only as far as the shortest lane.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a lane has no frame.
+    pub fn from_lane_frames(lanes: Vec<Vec<spaces::SpaceValue>>) -> crate::Result<Self> {
+        let replay_len = lanes
+            .iter()
+            .map(|frames| frames.len().saturating_sub(1))
+            .min()
+            .unwrap_or(0);
+        let mut actions = Vec::with_capacity(lanes.len());
+        let mut replay: Vec<Vec<spaces::SpaceValue>> = (0..replay_len)
+            .map(|_| Vec::with_capacity(lanes.len()))
+            .collect();
+        for frames in lanes {
+            let mut frames = frames.into_iter();
+            actions.push(frames.next().ok_or_else(|| {
+                crate::Error::invalid_argument("a chunked model returned an empty action chunk")
+            })?);
+            for (step, frame) in frames.take(replay_len).enumerate() {
+                replay[step].push(frame);
+            }
+        }
+        Ok(Self { actions, replay })
+    }
 }
 
 /// Engine-held per-episode adapter state at a model endpoint, as stamped on
@@ -213,10 +240,9 @@ pub trait ModelHandler: Send {
         Ok(())
     }
 
-    /// The workflow editions a model served elsewhere declared in its session, after
-    /// [`join`](Self::join): a run executes at the floor across the env, the model and
-    /// itself.
-    async fn workflow_editions(&mut self) -> Result<Option<rlmesh_proto::SessionOffer>> {
+    /// The workflow edition a model served elsewhere declared in its session, after
+    /// [`join`](Self::join).
+    async fn workflow_edition(&mut self) -> Result<Option<String>> {
         Ok(None)
     }
 
@@ -295,8 +321,8 @@ impl<H: ModelHandler + ?Sized> ModelHandler for $ty {
         (**self).join(session).await
     }
 
-    async fn workflow_editions(&mut self) -> Result<Option<rlmesh_proto::SessionOffer>> {
-        (**self).workflow_editions().await
+    async fn workflow_edition(&mut self) -> Result<Option<String>> {
+        (**self).workflow_edition().await
     }
 
     fn reset_options(&self) -> Option<Arc<dyn ModelResetOptions>> {

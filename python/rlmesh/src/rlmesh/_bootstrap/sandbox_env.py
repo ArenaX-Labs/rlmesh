@@ -7,7 +7,7 @@ import sys
 from typing import TYPE_CHECKING, Any, cast
 
 from .._client._endpoint import redact_address
-from .loaders import load_env_from_spec
+from .loaders import declared_edition, load_env_from_spec
 from .spec_resolution import BootstrapUsageError, resolve_bootstrap_spec
 
 if TYPE_CHECKING:
@@ -66,9 +66,15 @@ def main(
             )
         address = os.environ.get("RLMESH_ADDRESS") or "0.0.0.0:7447"
         name = os.environ.get("RLMESH_NAME") or "env"
-        server = EnvServer(
-            env, f"{address.rstrip('/')}/{name}", framework=framework, device=device
-        )
+        from .._editions import declaring
+
+        with declaring(declared_edition(spec)):
+            server = EnvServer(
+                env,
+                f"{address.rstrip('/')}/{name}",
+                framework=framework,
+                device=device,
+            )
         # The bound address carries the session key; don't print it.
         print(f"RLMesh sandbox serving {redact_address(server.address)}", flush=True)
         server.serve()

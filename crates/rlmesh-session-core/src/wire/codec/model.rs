@@ -69,7 +69,6 @@ pub fn encode_model_request(request: &ModelRequest) -> Vec<u8> {
             contract_json: r.contract_json.clone(),
             execution_horizon: r.execution_horizon,
             delivers_history: r.delivers_history,
-            workflow_edition: r.workflow_edition.clone(),
             reads_advisories: r.reads_advisories,
         }),
         ModelRequest::Predict(groups) => Kind::Predict(pb::ModelPredict {
@@ -131,7 +130,6 @@ pub fn decode_model_request(buf: Bytes) -> Result<ModelRequest, WireError> {
             contract_json: r.contract_json,
             execution_horizon: r.execution_horizon,
             delivers_history: r.delivers_history,
-            workflow_edition: r.workflow_edition,
             reads_advisories: r.reads_advisories,
         }),
         Kind::Predict(p) => ModelRequest::Predict(

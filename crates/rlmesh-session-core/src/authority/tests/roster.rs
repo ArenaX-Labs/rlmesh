@@ -46,7 +46,6 @@ fn an_attach_requiring_a_missing_feature_is_incompatible() {
         supports: vec!["merge.blend".into()],
         requires,
         workflow_edition: String::new(),
-        workflow_editions: Vec::new(),
         estop: None,
     };
     assert_eq!(

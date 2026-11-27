@@ -88,7 +88,6 @@ fn resolve(route: &str, horizon: u32) -> ModelRequest {
         contract_json: contract_to_json(&contract()).to_string(),
         execution_horizon: horizon,
         delivers_history: false,
-        workflow_edition: String::new(),
         reads_advisories: false,
     })
 }
@@ -173,15 +172,6 @@ async fn a_served_model_answers_each_group_of_a_predict_with_its_own_outcome() {
     };
     assert!(outcomes[0].is_err());
 
-    let ModelRequest::Resolve(mut pinned) = resolve("c", 1) else {
-        unreachable!()
-    };
-    pinned.workflow_edition = "1999.01".into();
-    let ModelReply::Fault(fault) = call(ModelRequest::Resolve(pinned)).await else {
-        panic!("a fault")
-    };
-    assert!(fault.message.contains("1999.01"), "{fault:?}");
-
     model.close().await;
     cancel.cancel();
     served.await.unwrap().unwrap();
@@ -207,7 +197,6 @@ async fn a_served_model_is_a_handler_a_driver_drives_like_a_local_one() {
             ResolveOptions {
                 execution_horizon: 3,
                 delivers_history: false,
-                workflow_edition: None,
             },
         )
         .await
@@ -275,7 +264,6 @@ async fn a_served_model_answers_in_the_session_it_is_invited_into() {
                     ResolveOptions {
                         execution_horizon: 1,
                         delivers_history: false,
-                        workflow_edition: None,
                     },
                 )
                 .await
@@ -330,7 +318,7 @@ async fn a_served_model_answers_in_the_session_it_is_invited_into() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_served_model_declares_its_workflow_editions_in_the_roster() {
+async fn a_served_model_declares_its_workflow_edition_in_the_roster() {
     let binding = ModelBinding::bind(":0/echo").await.unwrap();
     let address = binding.address();
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -341,9 +329,7 @@ async fn a_served_model_declares_its_workflow_editions_in_the_roster() {
         .await
         .unwrap();
 
-    let offer = model.workflow_editions().expect("the model's editions");
-    assert_eq!(offer.preferred.as_deref(), Some(declared));
-    assert!(!offer.editions.is_empty(), "{offer:?}");
+    assert_eq!(model.workflow_edition().as_deref(), Some(declared));
 
     model.close().await;
     cancel.cancel();
@@ -493,7 +479,6 @@ async fn predicts_from_several_sessions_coalesce_into_one_handler_call() {
                 ResolveOptions {
                     execution_horizon: 1,
                     delivers_history: false,
-                    workflow_edition: None,
                 },
             )
             .await
@@ -723,6 +708,43 @@ async fn a_batchs_inference_time_is_split_across_its_requests() {
         assert!((100_000_000..200_000_000).contains(&user), "user_ns {user}");
     }
     assert_eq!(slow.0.calls(), vec![2], "one handler call for both");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_route_answered_by_the_last_forward_joins_the_batch_that_waited_on_it() {
+    let slow = Slow::default();
+    let service = batched(
+        slow.clone(),
+        rlmesh::BatchOptions {
+            batch_window_ms: 100,
+            ..Default::default()
+        },
+    );
+    service.answer(resolve("a", 1)).await;
+    service.answer(resolve("b", 1)).await;
+    let a = tokio::spawn({
+        let service = Arc::clone(&service);
+        async move {
+            for v in [1.0, 2.0] {
+                let (reply, _) = service
+                    .answer(ModelRequest::Predict(vec![group("a", &[v])]))
+                    .await;
+                assert!(matches!(reply, ModelReply::Predicted(o) if o[0].is_ok()));
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let (reply, _) = service
+        .answer(ModelRequest::Predict(vec![group("b", &[3.0])]))
+        .await;
+    assert!(matches!(reply, ModelReply::Predicted(o) if o[0].is_ok()));
+    a.await.unwrap();
+    assert_eq!(
+        slow.0.calls(),
+        vec![1, 2],
+        "b, queued behind a's forward, waits for a's next request"
+    );
 }
 
 #[derive(Default)]

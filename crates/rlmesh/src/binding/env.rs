@@ -16,9 +16,8 @@ pub use crate::env::types::{
 pub use crate::env::wire::{WireEnvAdapter, WireLaneAdapter};
 pub use rlmesh_proto::{EndpointPhases, lane_skew_ns};
 
-/// The any-arity remote env client both shared clients wrap, how it dials, and
-/// its edition cell.
-pub use crate::env::client::{CoreConnect, EditionCell, EnvClientCore};
+/// The any-arity remote env client both shared clients wrap, and how it dials.
+pub use crate::env::client::{CoreConnect, EnvClientCore};
 
 /// Wait without flattening a stopped server's serve error into a misuse error.
 /// `None` means timeout; `Some(result)` means stopped, even when `result` is an

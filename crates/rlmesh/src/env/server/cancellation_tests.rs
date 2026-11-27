@@ -64,10 +64,6 @@ fn server(
         },
         EnvServerOptions {
             address: Some(":0/env".into()),
-            options: Some(crate::ServeOptions {
-                workflow_edition: Some(crate::current_workflow_edition().into()),
-                ..Default::default()
-            }),
             ..Default::default()
         },
     )
