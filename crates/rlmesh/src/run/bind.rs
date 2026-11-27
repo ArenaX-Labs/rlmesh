@@ -501,6 +501,7 @@ impl<'a> Binding<'a> {
                 info: info.clone(),
                 predict_ms,
                 step_ms,
+                final_observation: (step.terminated || truncated).then(|| observation.clone()),
             })?;
         }
         if step.terminated || truncated {

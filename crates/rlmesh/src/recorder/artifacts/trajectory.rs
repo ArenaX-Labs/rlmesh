@@ -15,7 +15,7 @@ use serde_json::{Map, Value, json};
 
 use super::is_image_space;
 use super::os;
-use super::schema::TrajectoryRecordSpec;
+use super::schema::{TrajectoryRecordSpec, TrajectoryStream};
 use crate::Result;
 
 #[derive(Debug, Default, Clone)]
@@ -36,6 +36,7 @@ pub(super) struct StepRow {
     pub(super) obs_perturbed: Option<StepValue>,
     pub(super) action_raw: Option<StepValue>,
     pub(super) action_perturbed: Option<StepValue>,
+    pub(super) final_obs: Option<StepValue>,
 }
 
 impl StepRow {
@@ -50,6 +51,7 @@ impl StepRow {
         }
         pair(self.obs_raw.as_ref(), self.obs_perturbed.as_ref())
             + pair(self.action_raw.as_ref(), self.action_perturbed.as_ref())
+            + pair(self.final_obs.as_ref(), None)
     }
 }
 
@@ -59,6 +61,7 @@ fn value_of(name: &str) -> fn(&StepRow) -> Option<&StepValue> {
         "obs_perturbed" => |row| row.obs_perturbed.as_ref(),
         "action_raw" => |row| row.action_raw.as_ref(),
         "action_perturbed" => |row| row.action_perturbed.as_ref(),
+        "final_obs" => |row| row.final_obs.as_ref(),
         _ => |_| None,
     }
 }
@@ -89,6 +92,7 @@ fn fields(rows: &[StepRow], spec: &TrajectoryRecordSpec) -> Vec<Field> {
         ("obs_perturbed", spec.obs.perturbed()),
         ("action_raw", spec.action.raw()),
         ("action_perturbed", spec.action.perturbed()),
+        ("final_obs", spec.obs != TrajectoryStream::None),
     ] {
         if !enabled {
             continue;
@@ -467,11 +471,18 @@ mod tests {
         };
         assert_eq!(
             columns("with.parquet", &[row(Vec::new()), row(vec![7, 8])]),
-            ["step", "t_ns", "obs_raw", "obs_raw_images", "obs_perturbed"]
+            [
+                "step",
+                "t_ns",
+                "obs_raw",
+                "obs_raw_images",
+                "obs_perturbed",
+                "final_obs"
+            ]
         );
         assert_eq!(
             columns("without.parquet", &[row(Vec::new())]),
-            ["step", "t_ns", "obs_raw", "obs_perturbed"]
+            ["step", "t_ns", "obs_raw", "obs_perturbed", "final_obs"]
         );
     }
 

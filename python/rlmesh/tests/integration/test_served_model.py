@@ -9,10 +9,10 @@ import pytest
 
 
 @contextmanager
-def _served(model: Any, port: int) -> Iterator[str]:
+def _served(model: Any, port: int, **options: Any) -> Iterator[str]:
     session = f"127.0.0.1:{port}"
     thread = threading.Thread(
-        target=model.serve, args=(session,), kwargs={"name": "policy"}
+        target=model.serve, args=(session,), kwargs={"name": "policy", **options}
     )
     thread.start()
     try:
@@ -634,3 +634,234 @@ def test_a_served_models_failure_names_its_exception_and_where_it_raised(
 
     with pytest.raises(AssertionError):
         Asserting().run(ThreeStepEnv(), episodes=1)
+
+
+class EchoTextEnv:
+    def __init__(self) -> None:
+        from rlmesh import spaces
+
+        self.observation_space = spaces.Text(256, min_length=0)
+        self.action_space = spaces.Text(256, min_length=0)
+        self.seed = 0
+        self.steps = 0
+        self.actions: list[str] = []
+
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, object] | None = None
+    ) -> tuple[str, dict[str, object]]:
+        _ = options
+        self.seed, self.steps = seed or 0, 0
+        return f"{self.seed}:0", {}
+
+    def step(self, action: str) -> tuple[str, float, bool, bool, dict[str, object]]:
+        self.actions.append(action)
+        self.steps += 1
+        return f"{self.seed}:{self.steps}", 1.0, self.steps >= 3, False, {}
+
+    def close(self) -> None:
+        return None
+
+
+def test_a_spec_less_batched_model_answers_concurrent_sessions_in_one_call(
+    session_port: int,
+) -> None:
+    import time
+
+    import rlmesh
+
+    calls: list[list[tuple[str, str]]] = []
+
+    class Harness(rlmesh.Model):
+        def predict_batch(
+            self, observations: list[str], context: list[dict[str, Any]]
+        ) -> list[str]:
+            calls.append(
+                [
+                    (row["episode_id"], obs)
+                    for obs, row in zip(observations, context, strict=True)
+                ]
+            )
+            time.sleep(0.3)
+            return [f"re:{obs}" for obs in observations]
+
+    envs = [EchoTextEnv() for _ in range(3)]
+    with _served(Harness(), session_port) as address:
+        clients = [
+            threading.Thread(
+                target=lambda env=env, seed=seed: rlmesh.Model(address).run(
+                    env, seeds=[seed]
+                )
+            )
+            for seed, env in enumerate(envs)
+        ]
+        for client in clients:
+            client.start()
+        for client in clients:
+            client.join(60)
+
+    for seed, env in enumerate(envs):
+        assert env.actions == [f"re:{seed}:{step}" for step in range(3)]
+    assert sum(len(call) for call in calls) == 9
+    assert max(len(call) for call in calls) > 1, calls
+    for call in calls:
+        episodes = [episode for episode, _ in call]
+        assert len(set(episodes)) == len(episodes), call
+
+
+def test_a_fused_spec_less_batch_gives_each_row_its_own_route_context(
+    session_port: int,
+) -> None:
+    import rlmesh
+
+    ready = threading.Barrier(2)
+
+    class TextEnv:
+        observation_space = rlmesh.spaces.Text(8)
+
+        def __init__(self, text: str, action_limit: int) -> None:
+            self.text = text
+            self.action_space = rlmesh.spaces.Text(action_limit)
+            self.actions: list[str] = []
+
+        def reset(
+            self, *, seed: int | None = None, options: dict[str, Any] | None = None
+        ) -> tuple[str, dict[str, Any]]:
+            ready.wait(timeout=10)
+            return self.text, {}
+
+        def step(self, action: str) -> tuple[str, float, bool, bool, dict[str, Any]]:
+            self.actions.append(action)
+            return self.text, 1.0, True, False, {}
+
+        def close(self) -> None:
+            return None
+
+    batches: list[list[tuple[str, str, int | None, int]]] = []
+    ended: list[str] = []
+
+    class Policy(rlmesh.Model):
+        def predict_batch(
+            self, observations: list[str], context: list[dict[str, Any]]
+        ) -> list[str]:
+            batches.append(
+                [
+                    (
+                        obs,
+                        row["episode_id"],
+                        row["episode_seed"],
+                        row["action_space"].max_length,
+                    )
+                    for obs, row in zip(observations, context, strict=True)
+                ]
+            )
+            return [f"reply {obs}" for obs in observations]
+
+        def on_episode_end(self, episode_id: str = "") -> None:
+            ended.append(episode_id)
+
+    left, right = TextEnv("left", 16), TextEnv("right", 32)
+    batching = rlmesh.BatchOptions(max_batch_size=2, batch_window_ms=1000)
+    with _served(Policy(), session_port, batching=batching) as address:
+        results = rlmesh.Model(address).run_routes([left, right], seeds=[11, 22])
+
+    assert all(isinstance(result, rlmesh.RunResult) for result in results), results
+    assert (left.actions, right.actions) == (["reply left"], ["reply right"])
+    (batch,) = batches
+    assert sorted((obs, seed, limit) for obs, _, seed, limit in batch) == [
+        ("left", 11, 16),
+        ("right", 22, 32),
+    ]
+    assert sorted(ended) == sorted(episode for _, episode, _, _ in batch)
+
+
+def test_a_batched_wrapper_reaches_its_inner_model_on_every_route(
+    session_port: int,
+) -> None:
+    import rlmesh
+
+    ready = threading.Barrier(2)
+
+    class TextEnv:
+        observation_space = rlmesh.spaces.Text(8)
+        action_space = rlmesh.spaces.Text(32)
+
+        def __init__(self, text: str) -> None:
+            self.text = text
+            self.actions: list[str] = []
+
+        def reset(
+            self, *, seed: int | None = None, options: dict[str, Any] | None = None
+        ) -> tuple[str, dict[str, Any]]:
+            ready.wait(timeout=10)
+            return self.text, {}
+
+        def step(self, action: str) -> tuple[str, float, bool, bool, dict[str, Any]]:
+            self.actions.append(action)
+            return self.text, 1.0, True, False, {}
+
+        def close(self) -> None:
+            return None
+
+    class Wrapper(rlmesh.Model):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inner = rlmesh.Model(lambda observation: f"inner {observation}")
+
+        def predict_batch(self, observations: list[str]) -> list[str]:
+            return [self.inner.predict(observation) for observation in observations]
+
+    left, right = TextEnv("left"), TextEnv("right")
+    batching = rlmesh.BatchOptions(max_batch_size=2, batch_window_ms=1000)
+    with _served(Wrapper(), session_port, batching=batching) as address:
+        results = rlmesh.Model(address).run_routes([left, right])
+
+    assert all(isinstance(result, rlmesh.RunResult) for result in results), results
+    assert (left.actions, right.actions) == (["inner left"], ["inner right"])
+
+
+def test_a_framework_model_batches_only_observations_of_one_shape(
+    session_port: int,
+) -> None:
+    import numpy as np
+    import rlmesh
+    import rlmesh.numpy
+
+    ready = threading.Barrier(3)
+
+    class BoxEnv:
+        action_space = rlmesh.spaces.Box(-100.0, 100.0, (1,), np.float32)
+
+        def __init__(self, size: int) -> None:
+            self.observation_space = rlmesh.spaces.Box(-1.0, 1.0, (size,), np.float32)
+            self.size = size
+            self.actions: list[float] = []
+
+        def reset(
+            self, *, seed: int | None = None, options: dict[str, Any] | None = None
+        ) -> tuple[Any, dict[str, Any]]:
+            ready.wait(timeout=10)
+            return np.zeros(self.size, np.float32), {}
+
+        def step(self, action: Any) -> tuple[Any, float, bool, bool, dict[str, Any]]:
+            self.actions.append(float(action[0]))
+            return np.zeros(self.size, np.float32), 1.0, True, False, {}
+
+        def close(self) -> None:
+            return None
+
+    shapes: list[tuple[int, ...]] = []
+
+    class Width(rlmesh.numpy.Model):
+        def predict_batch(self, observations: Any) -> Any:
+            shapes.append(observations.shape)
+            width = observations.shape[1]
+            return np.full((observations.shape[0], 1), width, np.float32)
+
+    envs = [BoxEnv(4), BoxEnv(6), BoxEnv(4)]
+    batching = rlmesh.BatchOptions(max_batch_size=3, batch_window_ms=1000)
+    with _served(Width(), session_port, batching=batching) as address:
+        results = rlmesh.Model(address).run_routes(envs)
+
+    assert all(isinstance(result, rlmesh.RunResult) for result in results), results
+    assert [env.actions for env in envs] == [[4.0], [6.0], [4.0]]
+    assert sorted(shapes) == [(1, 6), (2, 4)], shapes

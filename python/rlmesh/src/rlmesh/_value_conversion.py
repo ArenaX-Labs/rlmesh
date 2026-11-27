@@ -22,7 +22,9 @@ class ValueBridge(Protocol):
 
     def tree_stack(self, trees: Sequence[object]) -> object: ...
 
-    def tree_unstack(self, value: object, n: int) -> list[object]: ...
+    def tree_unstack(
+        self, value: object, n: int, *, chunks: bool = False
+    ) -> list[object]: ...
 
     def supports_device(self) -> bool: ...
 
@@ -47,7 +49,9 @@ class IdentityBridge:
         # Opaque native Values can't be fused into a batched tensor.
         return list(trees)
 
-    def tree_unstack(self, value: object, n: int) -> list[object]:
+    def tree_unstack(
+        self, value: object, n: int, *, chunks: bool = False
+    ) -> list[object]:
         if isinstance(value, (list, tuple)):
             seq = cast("Sequence[object]", value)
             if len(seq) == n:
@@ -156,25 +160,54 @@ def tree_stack(
     return stack_leaf(list(trees))
 
 
+def _is_text(item: object) -> bool:
+    return isinstance(item, (str, bytes))
+
+
+def _text_rows(rows: list[object], *, chunks: bool) -> bool:
+    """Whether ``rows`` is a text leaf's per-lane list: strings, or string chunks."""
+    if not rows:
+        return False
+    if all(_is_text(row) for row in rows):
+        return True
+    return chunks and all(
+        isinstance(row, list)
+        and bool(cast("list[object]", row))
+        and all(_is_text(item) for item in cast("list[object]", row))
+        for row in rows
+    )
+
+
 def tree_unstack(
-    value: object, n: int, unstack_leaf: Callable[[object, int], list[object]]
+    value: object,
+    n: int,
+    unstack_leaf: Callable[[object, int], list[object]],
+    *,
+    chunks: bool = False,
 ) -> list[object]:
     """Split one batched tree back into N per-lane trees (inverse of tree_stack).
 
     Containers recurse; each batched leaf is split on its leading axis by
     ``unstack_leaf``. A batched action ``array[N, ...]`` becomes N ``array[...]``;
     a batched chunk ``array[N, horizon, ...]`` splits the batch axis only, leaving
-    each lane's chunk (``horizon``) axis intact.
+    each lane's chunk (``horizon``) axis intact. A text leaf batches as the
+    per-lane ``list`` of strings ``tree_stack`` builds, so such a list is a leaf;
+    with ``chunks``, so is a list of per-lane string chunks.
     """
+    if isinstance(value, list):
+        rows = cast("list[object]", value)
+        if _text_rows(rows, chunks=chunks):
+            return list(unstack_leaf(rows, n))
     if isinstance(value, dict):
         mapping = cast("Mapping[str, object]", value)
         cols = {
-            key: tree_unstack(item, n, unstack_leaf) for key, item in mapping.items()
+            key: tree_unstack(item, n, unstack_leaf, chunks=chunks)
+            for key, item in mapping.items()
         }
         return [{key: cols[key][i] for key in mapping} for i in range(n)]
     if isinstance(value, (list, tuple)):
         seq = cast("Sequence[object]", value)
-        cols = [tree_unstack(item, n, unstack_leaf) for item in seq]
+        cols = [tree_unstack(item, n, unstack_leaf, chunks=chunks) for item in seq]
         lanes: list[object] = []
         for i in range(n):
             lane: list[object] = [col[i] for col in cols]
@@ -308,9 +341,11 @@ class FrameworkBridge:
         self.ensure_available()
         return tree_stack(trees, self._stack_leaf)
 
-    def tree_unstack(self, value: object, n: int) -> list[object]:
+    def tree_unstack(
+        self, value: object, n: int, *, chunks: bool = False
+    ) -> list[object]:
         self.ensure_available()
-        return tree_unstack(value, n, self._unstack_leaf)
+        return tree_unstack(value, n, self._unstack_leaf, chunks=chunks)
 
     def supports_device(self) -> bool:
         return self._to_device_leaf is not None

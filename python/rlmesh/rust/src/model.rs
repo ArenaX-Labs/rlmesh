@@ -139,6 +139,244 @@ impl PyPredict {
             .map_err(|err| self.misfit("an action", space, &err))
     }
 
+    /// The fused bucket a spec-less group joins at `horizon`: `1` for the batched corner,
+    /// the horizon for the batched chunk corner, `None` when it has no batched corner or
+    /// has inner models, whose predicts are scoped to one episode.
+    fn spec_less_bucket(&self, horizon: u32) -> Option<u32> {
+        if self.nested.is_some() {
+            return None;
+        }
+        let horizon = horizon.max(1);
+        if horizon > 1 && (self.predict_chunk_fn.is_some() || self.predict_chunk_batch_fn.is_some())
+        {
+            self.predict_chunk_batch_fn.is_some().then_some(horizon)
+        } else {
+            self.predict_batch_fn.is_some().then_some(1)
+        }
+    }
+
+    /// Serve several spec-less groups' lanes in ONE batched corner call: `predict_batch`
+    /// without a horizon, `predict_chunk_batch` with one. Each group keeps its own
+    /// outcome; a corner failure fails every group in the call.
+    fn predict_spec_less_fused(
+        &self,
+        observations: Vec<ModelObservation>,
+        horizon: Option<u32>,
+    ) -> Vec<rlmesh::Result<PredictFrames>> {
+        if let Err(error) = rlmesh::binding::check_model_call() {
+            return observations.iter().map(|_| Err(error.clone())).collect();
+        }
+        let decoded: Vec<rlmesh::Result<Vec<SpaceValue>>> = observations
+            .iter()
+            .map(|observation| {
+                observation
+                    .decoded_lanes()
+                    .map_err(|err| RLMeshError::Internal(err.to_string()))
+            })
+            .collect();
+        Python::attach(|py| {
+            let mut outcomes: Vec<Option<rlmesh::Result<PredictFrames>>> =
+                (0..observations.len()).map(|_| None).collect();
+            let inputs = pyo3::types::PyList::empty(py);
+            let contexts = pyo3::types::PyList::empty(py);
+            let mut served: Vec<(usize, usize, &rlmesh_spaces::SpaceSpec)> = Vec::new();
+            for (index, (observation, lanes)) in observations.iter().zip(decoded).enumerate() {
+                let staged = lanes.and_then(|lanes| {
+                    self.stage_fused_lanes(py, observation, &lanes, &inputs, &contexts)
+                });
+                match staged {
+                    Ok((lanes, action_space)) => served.push((index, lanes, action_space)),
+                    Err(error) => outcomes[index] = Some(Err(error)),
+                }
+            }
+            if !served.is_empty() {
+                let total: usize = served.iter().map(|(_, lanes, _)| lanes).sum();
+                let called = match horizon {
+                    Some(h) => self
+                        .predict_chunk_batch_fn
+                        .as_ref()
+                        .expect("chunk bucket needs predict_chunk_batch")
+                        .call1(py, (inputs, h, contexts)),
+                    None => self
+                        .predict_batch_fn
+                        .as_ref()
+                        .expect("batch bucket needs predict_batch")
+                        .call1(py, (inputs, contexts)),
+                }
+                .and_then(|result| {
+                    result
+                        .bind(py)
+                        .try_iter()?
+                        .collect::<PyResult<Vec<Bound<'_, PyAny>>>>()
+                })
+                .map_err(|err| self.internal(err))
+                .and_then(|items| {
+                    let corner = if horizon.is_some() {
+                        "predict_chunk_batch"
+                    } else {
+                        "predict_batch"
+                    };
+                    if items.len() == total {
+                        Ok(items)
+                    } else {
+                        Err(RLMeshError::model(format!(
+                            "{corner} returned {} results for {total} lanes",
+                            items.len()
+                        )))
+                    }
+                });
+                match called {
+                    Ok(items) => {
+                        let mut items = items.into_iter();
+                        for (index, lanes, action_space) in served {
+                            let lane_items: Vec<_> = items.by_ref().take(lanes).collect();
+                            let observation = &observations[index];
+                            outcomes[index] = Some(match horizon {
+                                None => lane_items
+                                    .iter()
+                                    .map(|item| self.encode_action(py, item, action_space))
+                                    .collect::<rlmesh::Result<Vec<_>>>()
+                                    .map(|actions| PredictFrames {
+                                        actions,
+                                        replay: Vec::new(),
+                                    }),
+                                Some(h) => lane_items
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(lane, chunk)| {
+                                        self.chunk_frames(
+                                            py,
+                                            chunk,
+                                            action_space,
+                                            h as usize,
+                                            &short_chunk_key(observation, lane),
+                                        )
+                                    })
+                                    .collect::<rlmesh::Result<Vec<_>>>()
+                                    .and_then(PredictFrames::from_lane_frames),
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        for (index, _, _) in served {
+                            outcomes[index] = Some(Err(error.clone()));
+                        }
+                    }
+                }
+            }
+            outcomes
+                .into_iter()
+                .map(|outcome| {
+                    outcome.unwrap_or_else(|| {
+                        Err(RLMeshError::Internal(
+                            "fused spec-less predict left a group unserved".to_string(),
+                        ))
+                    })
+                })
+                .collect()
+        })
+    }
+
+    /// Append one spec-less group's lanes and per-row contexts to a fused call's lists,
+    /// returning its lane count and action space. Nothing is appended on failure.
+    fn stage_fused_lanes<'a>(
+        &self,
+        py: Python<'_>,
+        observation: &'a ModelObservation,
+        lanes: &[SpaceValue],
+        inputs: &Bound<'_, pyo3::types::PyList>,
+        contexts: &Bound<'_, pyo3::types::PyList>,
+    ) -> rlmesh::Result<(usize, &'a rlmesh_spaces::SpaceSpec)> {
+        let contract = observation.env_contract.as_deref();
+        let observation_space = required_space(
+            contract.and_then(|c| c.observation_space.as_ref()),
+            "observation",
+        )?;
+        let action_space =
+            required_space(contract.and_then(|c| c.action_space.as_ref()), "action")?;
+        let mut rows = Vec::with_capacity(lanes.len());
+        let staged = (|| -> PyResult<()> {
+            self.envs
+                .remember(py, &observation.route.env_id, contract)?;
+            for (lane, value) in lanes.iter().enumerate() {
+                let episode = observation.route.episodes.get(lane);
+                let context = episode_context_dict(py, episode, &self.envs)?;
+                if episode.is_none_or(|episode| episode.env_id.is_empty()) {
+                    let env_id = observation.route.env_id.as_str();
+                    context.set_item("env_id", env_id)?;
+                    context.set_item("env_contract", self.envs.get(py, env_id))?;
+                }
+                rows.push((
+                    space_value_to_py_neutral(py, value, observation_space)?,
+                    context,
+                ));
+            }
+            for (input, context) in rows {
+                inputs.append(input)?;
+                contexts.append(context)?;
+            }
+            Ok(())
+        })();
+        staged.map_err(|err| self.internal(err))?;
+        Ok((lanes.len(), action_space))
+    }
+
+    /// One lane's native chunk as its executed frames: checked against a declared
+    /// `native_chunk`, warned once per episode when short, cut to `horizon`.
+    fn chunk_frames(
+        &self,
+        py: Python<'_>,
+        chunk: &Bound<'_, PyAny>,
+        action_space: &rlmesh_spaces::SpaceSpec,
+        horizon: usize,
+        warn_key: &str,
+    ) -> rlmesh::Result<Vec<SpaceValue>> {
+        let frames_len = leading_axis_len(chunk).unwrap_or(horizon);
+        let frames = py_any_to_batched_space_values_with_backend(
+            py,
+            chunk,
+            action_space,
+            frames_len,
+            ValueBackend::Native,
+        )
+        .map_err(|err| self.misfit("an action chunk", action_space, &err))?;
+        if let Some(native) = self.native_chunk
+            && frames.len() != native as usize
+        {
+            return Err(RLMeshError::invalid_argument(format!(
+                "model declares native_chunk={native} but its chunk corner returned {} \
+                 frames at execution_horizon={horizon}: return the WHOLE native chunk and \
+                 let the runtime execute its prefix (do not slice to the horizon), or drop \
+                 the declaration",
+                frames.len()
+            )));
+        }
+        if self.native_chunk.is_none() && frames.len() < horizon {
+            let first = self
+                .short_warned
+                .lock()
+                .expect("short-chunk set poisoned")
+                .insert(warn_key.to_string());
+            if first {
+                let message = format!(
+                    "the model returned {} actions for execution_horizon={horizon}; \
+                     replaying what there is and re-planning early. Declare \
+                     Model.native_chunk so the horizon can be validated up front.",
+                    frames.len()
+                );
+                py.detach(|| {
+                    rlmesh::binding::emit_warning(rlmesh::WarningCategory::RuntimeWarning, message)
+                })?;
+            }
+        }
+        if frames.is_empty() {
+            return Err(RLMeshError::invalid_argument(
+                "predict_chunk returned an empty chunk; return at least one action",
+            ));
+        }
+        Ok(frames.into_iter().take(horizon).collect())
+    }
+
     fn fire(callback: &Option<Py<PyAny>>) -> rlmesh::Result<()> {
         let Some(callback) = callback else {
             return Ok(());
@@ -234,6 +472,16 @@ impl PredictFn for PyPredict {
     }
 
     fn predict_spec_less(&self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
+        if observation.num_envs > 1
+            && observation.observation.is_some()
+            && self.predict_batch_fn.is_some()
+        {
+            return self
+                .predict_spec_less_fused(vec![observation], None)
+                .pop()
+                .expect("one outcome per group")
+                .map(|frames| frames.actions);
+        }
         rlmesh::binding::check_model_call()?;
         let lanes = if observation.observation.is_some() {
             observation
@@ -252,39 +500,6 @@ impl PredictFn for PyPredict {
                 .env_contract
                 .as_ref()
                 .and_then(|contract| contract.observation_space.as_ref());
-            if lanes.len() > 1
-                && let (Some(batch_fn), Some(space)) =
-                    (self.predict_batch_fn.as_ref(), observation_space)
-            {
-                let action_space = observation
-                    .env_contract
-                    .as_ref()
-                    .and_then(|contract| contract.action_space.as_ref())
-                    .ok_or_else(|| {
-                        pyo3::exceptions::PyRuntimeError::new_err(
-                            "model worker requires action space metadata",
-                        )
-                    })?;
-                let inputs = pyo3::types::PyList::empty(py);
-                let contexts = pyo3::types::PyList::empty(py);
-                for (index, lane) in lanes.iter().enumerate() {
-                    inputs.append(space_value_to_py_neutral(py, lane, space)?)?;
-                    contexts.append(episode_context_dict(
-                        py,
-                        observation.route.episodes.get(index),
-                        &self.envs,
-                    )?)?;
-                }
-                let result = batch_fn.call1(py, (inputs, contexts))?;
-                let mut actions = Vec::with_capacity(lanes.len());
-                for item in result.bind(py).try_iter()? {
-                    match self.encode_action(py, &item?, action_space) {
-                        Ok(action) => actions.push(action),
-                        Err(misfit) => return Ok(Err(misfit)),
-                    }
-                }
-                return Ok(Ok(actions));
-            }
             let obs = match (observation_space, lanes.len()) {
                 (_, 0) => py.None().bind(py).clone(),
                 (Some(space), 1) => space_value_to_py_neutral(py, &lanes[0], space)?,
@@ -344,6 +559,52 @@ impl PredictFn for PyPredict {
         .map_err(|err| self.internal(err))?
     }
 
+    fn predict_spec_less_grouped(
+        &self,
+        groups: Vec<(ModelObservation, u32)>,
+    ) -> Vec<rlmesh::Result<PredictFrames>> {
+        let mut outcomes: Vec<Option<rlmesh::Result<PredictFrames>>> =
+            (0..groups.len()).map(|_| None).collect();
+        let mut buckets: Vec<SpecLessBucket> = Vec::new();
+        let mut single: Vec<(usize, ModelObservation, u32)> = Vec::new();
+        for (index, (observation, horizon)) in groups.into_iter().enumerate() {
+            match self.spec_less_bucket(horizon) {
+                Some(key) => join_bucket(&mut buckets, key, (index, observation, horizon)),
+                None => single.push((index, observation, horizon)),
+            }
+        }
+        for ((key, _), members) in buckets {
+            if members.len() == 1 {
+                single.extend(members);
+                continue;
+            }
+            let (indices, observations): (Vec<usize>, Vec<ModelObservation>) = members
+                .into_iter()
+                .map(|(index, observation, _)| (index, observation))
+                .unzip();
+            let horizon = (key > 1).then_some(key);
+            for (index, outcome) in indices
+                .into_iter()
+                .zip(self.predict_spec_less_fused(observations, horizon))
+            {
+                outcomes[index] = Some(outcome);
+            }
+        }
+        for (index, observation, horizon) in single {
+            outcomes[index] = Some(self.predict_spec_less_chunked(observation, horizon));
+        }
+        outcomes
+            .into_iter()
+            .map(|outcome| {
+                outcome.unwrap_or_else(|| {
+                    Err(RLMeshError::Internal(
+                        "spec-less grouped predict left a group unserved".to_string(),
+                    ))
+                })
+            })
+            .collect()
+    }
+
     fn predict_spec_less_chunked(
         &self,
         observation: ModelObservation,
@@ -351,6 +612,16 @@ impl PredictFn for PyPredict {
     ) -> rlmesh::Result<PredictFrames> {
         rlmesh::binding::check_model_call()?;
         let horizon = execution_horizon.max(1) as usize;
+        if horizon > 1
+            && observation.num_envs > 1
+            && self.predict_chunk_batch_fn.is_some()
+            && observation.observation.is_some()
+        {
+            return self
+                .predict_spec_less_fused(vec![observation], Some(horizon as u32))
+                .pop()
+                .expect("one outcome per group");
+        }
         if horizon <= 1 || self.predict_chunk_fn.is_none() || observation.num_envs != 1 {
             return Ok(PredictFrames {
                 actions: self.predict_spec_less(observation)?,
@@ -396,68 +667,22 @@ impl PredictFn for PyPredict {
             let chunk = crate::nested::scoped(self.nested.as_ref(), episode, contract, || {
                 predict_chunk_fn.call1(py, (obs, horizon as u32, context))
             })?;
-            let chunk = chunk.bind(py);
-            let frames_len = leading_axis_len(chunk).unwrap_or(horizon);
-            let frames = match py_any_to_batched_space_values_with_backend(
-                py,
-                chunk,
-                action_space,
-                frames_len,
-                ValueBackend::Native,
-            ) {
-                Ok(frames) => frames,
-                Err(err) => return Ok(Err(self.misfit("an action chunk", action_space, &err))),
-            };
-            if let Some(native) = self.native_chunk
-                && frames.len() != native as usize
-            {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "model declares native_chunk={native} but its chunk corner returned {} \
-                     frames at execution_horizon={horizon}: return the WHOLE native chunk and \
-                     let the runtime execute its prefix (do not slice to the horizon), or drop \
-                     the declaration",
-                    frames.len()
-                )));
-            }
-            if self.native_chunk.is_none() && frames.len() < horizon {
-                let key = observation
-                    .route
-                    .episodes
-                    .first()
-                    .map(|episode| episode.episode_id.clone())
-                    .filter(|id| !id.is_empty())
-                    .unwrap_or_else(|| format!("route:{}", observation.route.env_id));
-                let first = self
-                    .short_warned
-                    .lock()
-                    .expect("short-chunk set poisoned")
-                    .insert(key);
-                if first {
-                    let message = format!(
-                        "the model returned {} actions for execution_horizon={horizon}; \
-                         replaying what there is and re-planning early. Declare \
-                         Model.native_chunk so the horizon can be validated up front.",
-                        frames.len()
-                    );
-                    py.detach(|| {
-                        rlmesh::binding::emit_warning(
-                            rlmesh::WarningCategory::RuntimeWarning,
-                            message,
-                        )
-                    })
-                    .map_err(to_py_err)?;
-                }
-            }
-            let mut frames = frames.into_iter().take(horizon);
-            let first = frames.next().ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(
-                    "predict_chunk returned an empty chunk; return at least one action",
+            Ok(self
+                .chunk_frames(
+                    py,
+                    chunk.bind(py),
+                    action_space,
+                    horizon,
+                    &short_chunk_key(&observation, 0),
                 )
-            })?;
-            Ok(Ok(PredictFrames {
-                actions: vec![first],
-                replay: frames.map(|frame| vec![frame]).collect(),
-            }))
+                .map(|frames| {
+                    let mut frames = frames.into_iter();
+                    let first = frames.next().expect("chunk_frames returns a frame");
+                    PredictFrames {
+                        actions: vec![first],
+                        replay: frames.map(|frame| vec![frame]).collect(),
+                    }
+                }))
         })
         .map_err(|err| self.internal(err))?
     }
@@ -641,6 +866,41 @@ fn episode_context_dict<'py>(
     dict.set_item("env_id", env_id)?;
     dict.set_item("env_contract", envs.get(py, env_id))?;
     Ok(dict)
+}
+
+type SpecLessMember = (usize, ModelObservation, u32);
+type SpecLessBucket = ((u32, Option<rlmesh_spaces::SpaceSpec>), Vec<SpecLessMember>);
+
+/// Fused calls stack their inputs, so a bucket holds one horizon and one observation space.
+fn join_bucket(buckets: &mut Vec<SpecLessBucket>, horizon: u32, member: SpecLessMember) {
+    let space = member
+        .1
+        .env_contract
+        .as_ref()
+        .and_then(|contract| contract.observation_space.clone());
+    let key = (horizon, space);
+    match buckets.iter_mut().find(|(bucket, _)| *bucket == key) {
+        Some((_, members)) => members.push(member),
+        None => buckets.push((key, vec![member])),
+    }
+}
+
+fn required_space<'a>(
+    space: Option<&'a rlmesh_spaces::SpaceSpec>,
+    what: &str,
+) -> rlmesh::Result<&'a rlmesh_spaces::SpaceSpec> {
+    space
+        .ok_or_else(|| RLMeshError::Runtime(format!("model worker requires {what} space metadata")))
+}
+
+fn short_chunk_key(observation: &ModelObservation, lane: usize) -> String {
+    observation
+        .route
+        .episodes
+        .get(lane)
+        .map(|episode| episode.episode_id.clone())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| format!("route:{}", observation.route.env_id))
 }
 
 fn call_batched(

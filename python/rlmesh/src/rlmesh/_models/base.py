@@ -214,7 +214,7 @@ def _debatch(
             if takes_context and context is not None
             else (fused, horizon)
         )
-        return bridge.tree_unstack(batched_fn(*args), 1)[0]
+        return bridge.tree_unstack(batched_fn(*args), 1, chunks=True)[0]
 
     return derived_predict_chunk
 
@@ -475,7 +475,8 @@ class BatchOptions:
     ``batch_byte_budget`` observation bytes, or as soon as every route the
     model has resolved has a request in it; while the model is idle it also
     closes at the latest ``batch_window_ms`` after its first request, and while
-    a forward runs it stays open until that forward ends. A model that cannot
+    a forward runs it stays open until that forward ends and then up to
+    ``batch_window_ms`` more, for the routes it answered. A model that cannot
     fuse (``allow_fusion = False``, or no batched corner) is never batched.
 
     ``max_batch_size=1`` turns batching off. ``max_in_flight_batches=2`` lets
@@ -995,7 +996,8 @@ class ModelBase(Generic[ObsT, ActT]):
         (a NumPy/Torch/JAX array per leaf, stacked for this model's framework), not a
         list of N dicts. Return the batched action the same way: one value whose
         leaves carry the leading batch axis (e.g. ``array[N, action_dim]``); the
-        runtime splits it back per lane. The engine prefers this corner for a
+        runtime splits it back per lane. Text cannot stack, so a text leaf arrives
+        as a ``list`` of N strings and is returned as one. The engine prefers this corner for a
         vectorized route; the default raises and the route is driven per-lane through
         :meth:`predict`.
 
@@ -1267,7 +1269,7 @@ class ModelBase(Generic[ObsT, ActT]):
                     if chunk_batch_fn_takes_context
                     else chunk_batch_fn(fused, horizon)
                 )
-                parts = bridge.tree_unstack(chunks, len(observations))
+                parts = bridge.tree_unstack(chunks, len(observations), chunks=True)
                 return [bridge.encode(c) for c in parts]
 
             predict_chunk_batch_neutral = _predict_chunk_batch_neutral

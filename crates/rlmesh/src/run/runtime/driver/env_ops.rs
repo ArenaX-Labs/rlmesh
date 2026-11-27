@@ -397,6 +397,9 @@ where
                 autoreset_roll,
                 predict_ms: predict.as_secs_f64() * 1e3,
                 step_ms: rpc.as_secs_f64() * 1e3,
+                observation_space: Arc::clone(&self.observation_space),
+                observation: (!response.observation.is_empty())
+                    .then(|| response.observation.clone()),
             }
         );
 

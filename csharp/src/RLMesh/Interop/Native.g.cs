@@ -2321,6 +2321,9 @@ namespace RLMesh.Interop
 
         [NativeTypeName("const RLMeshRunContext *")]
         public RLMeshRunContext* context;
+
+        [NativeTypeName("const RLMeshValue *")]
+        public RLMeshValue* final_observation;
     }
 
     internal partial struct RLMeshRunHooksVtable

@@ -554,6 +554,7 @@ not covered means Python's default (its `_INIT` value). Every field at
 | `info: Mapping`                    | `pub info: InfoDict`                                                                                                                                         | `const RLMeshValue* info;` (DICT)                                                                                                                                       | `InfoDict info;`                                                          | `Metadata Info`                                                                                                                                                                           |
 | `predict_ms` / `step_ms: float`    | `pub predict_ms: f64`, `pub step_ms: f64`                                                                                                                    | `double predict_ms; double step_ms;`                                                                                                                                    | `double predict_ms, step_ms;`                                             | `double PredictMs`, `double StepMs`                                                                                                                                                       |
 | `read: Callable[[object], object]` | `pub read: ReadFn` (`pub type ReadFn = Arc<dyn Fn(&ReadItem) -> Result<Value> + Send + Sync>`) and `read(&self, item: impl Into<ReadItem>) -> Result<Value>` | `const RLMeshRunContext* context;` + `rlmesh_step_event_read(const RLMeshStepEvent*, const RLMeshReadItem*, RLMeshValue** out)` (reads `observation` through `context`) | `ReadFn read;` (shared callable class, below)                             | `ReadFn Read` (RUN-35): `e.Read.Invoke(item)`                                                                                                                                             |
+| `final_observation = None`         | `pub final_observation: Option<Value>`                                                                                                                       | `const RLMeshValue* final_observation;` (appended; NULL when none)                                                                                                      | `std::optional<Value> final_observation;`                                 | `Value? FinalObservation`                                                                                                                                                                 |
 | constructor, `__eq__`, `__repr__`  | struct literal; derived `Clone`; manual `Debug` (`read` as `<function>`) and `PartialEq` (`read` by `Arc::ptr_eq`); `Display`                                | caller fills from `RLMESH_STEP_EVENT_INIT`; `rlmesh_step_event_repr`, `rlmesh_step_event_equals` (status form, `context` by pointer; C block below)                     | aggregate; `operator==` (`read` by identity), `operator<<`, `to_string()` | `public sealed record StepEvent` with a constructor taking every field in Python's order; synthesized `Equals` (`Read` by identity), `ToString()` (Python's text, `Read` as `<function>`) |
 
 ```c
@@ -571,9 +572,10 @@ typedef struct RLMeshStepEvent {
   double predict_ms;
   double step_ms;
   const RLMeshRunContext* context;  /* NULL: rlmesh_step_event_read fails, RLMESH_ERR_INVALID_ARGUMENT */
+  const RLMeshValue* final_observation;  /* appended; NULL unless the step ended the episode */
 } RLMeshStepEvent;
 /* RLMESH_STEP_EVENT_INIT: {sizeof(RLMeshStepEvent), 0, false, 0, 0, NULL, NULL, 0.0, false, false,
-   NULL, 0.0, 0.0, NULL} */
+   NULL, 0.0, 0.0, NULL, NULL}; RLMESH_STEP_EVENT_MIN_SIZE: offsetof(RLMeshStepEvent, final_observation) */
 
 RLMeshStatus rlmesh_step_event_read(const RLMeshStepEvent*, const RLMeshReadItem* item,
                                     RLMeshValue** out);
@@ -581,6 +583,12 @@ RLMeshStatus rlmesh_step_event_equals(const RLMeshStepEvent* a, const RLMeshStep
                                       bool* out);   /* status form (R-10, ADP-29) */
 RLMeshStatus rlmesh_step_event_repr(const RLMeshStepEvent*, RLMeshBytes* out);
 ```
+
+`final_observation` is the observation the step returned when it ended the
+episode (`terminated` or `truncated`), the env's own value before any
+`transform_observation`: the episode's final observation, which no action
+follows. It is `None` (C: NULL) on every other step, and on a lane-served or
+vector env each lane's step event carries its own lane's.
 
 `rlmesh_step_event_equals` compares the values with `rlmesh_value_equals`
 and `context` by pointer. A NULL `observation`, `action` or `info` fails

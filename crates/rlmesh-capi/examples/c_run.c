@@ -114,6 +114,7 @@ static RLMeshStatus on_step(void* ud, const RLMeshStepEvent* event) {
   CHECK(rlmesh_value_kind(event->action) == RLMESH_VALUE_INT);
   CHECK(rlmesh_value_kind(event->info) == RLMESH_VALUE_DICT);
   CHECK(event->context != NULL);
+  CHECK(event->final_observation != NULL);
   bool equal = false;
   CHECK(rlmesh_step_event_equals(event, event, &equal) == RLMESH_OK && equal);
   if (s->abort_step) {

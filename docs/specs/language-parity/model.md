@@ -624,7 +624,8 @@ rules are Python's (`py/_models/base.py:1475-1500`,
   every route the model has resolved has a request in it; while the model
   is idle it also closes at the latest `batch_window_ms` (5) after its
   first request, and while a forward runs it stays open until that forward
-  ends.
+  ends and then up to `batch_window_ms` more, so the sessions it answered
+  can rejoin.
   `max_in_flight_batches` (2) lets the next batch assemble while one runs.
   `max_batch_size = 1` turns it off; a model that does not fuse is never
   batched. These defaults are defined by Rust's `BatchOptions::default()`. Each group keeps
