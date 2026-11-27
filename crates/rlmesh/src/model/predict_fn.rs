@@ -96,6 +96,20 @@ pub trait PredictFn: Send + Sync {
         })
     }
 
+    /// Several spec-less observations at execution horizon 1, each decoded with one row per
+    /// episode: every lane goes to ONE [`predict_batch`](Self::predict_batch) call, and each
+    /// observation gets back its own lanes' actions. The engine calls this only for a grouped
+    /// predict with fusion and the batched corner on; the default serves each one alone.
+    fn predict_spec_less_batch(
+        &self,
+        observations: Vec<ModelObservation>,
+    ) -> Vec<Result<super::handler::PredictFrames>> {
+        observations
+            .into_iter()
+            .map(|observation| self.predict_spec_less_chunked(observation, 1))
+            .collect()
+    }
+
     /// Whether this model permits the fused forward pass: a grouped predict may concatenate
     /// lanes from *different* routes into ONE batched corner call. Off by default; turn it on
     /// only when the batched corners are lane-independent.

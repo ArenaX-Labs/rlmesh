@@ -78,6 +78,14 @@ fn assembles_in_parallel(lanes: &[GroupLane]) -> bool {
     routed > 1
 }
 
+// Row alignment across the fused call needs one decoded lane per episode.
+fn spec_less_batchable(observation: &ModelObservation, horizon: u32) -> bool {
+    horizon <= 1
+        && observation.observation.is_some()
+        && observation.num_envs > 0
+        && observation.route.episodes.len() == observation.num_envs
+}
+
 fn charge_wall<T>(adapter_ns: &AtomicU64, section: impl FnOnce(&AtomicU64) -> T) -> T {
     let scratch = AtomicU64::new(0);
     let started = Instant::now();
@@ -152,10 +160,30 @@ pub(super) fn predict_grouped_fused(
             .collect()
     };
 
+    let batches_spec_less = predict.has_batch()
+        && staged
+            .iter()
+            .filter(|staged| match staged {
+                Staged::SpecLess {
+                    observation,
+                    horizon,
+                } => spec_less_batchable(observation, *horizon),
+                Staged::Routed { .. } => false,
+            })
+            .count()
+            > 1;
     let mut results: Vec<Option<Result<PredictFrames>>> = Vec::with_capacity(staged.len());
     let mut prepared: Vec<Prepared> = Vec::new();
+    let mut spec_less: Vec<(usize, ModelObservation)> = Vec::new();
     for (index, staged) in staged.into_iter().enumerate() {
         match staged {
+            Staged::SpecLess {
+                observation,
+                horizon,
+            } if batches_spec_less && spec_less_batchable(&observation, horizon) => {
+                results.push(None);
+                spec_less.push((index, observation));
+            }
             Staged::SpecLess {
                 observation,
                 horizon,
@@ -182,6 +210,17 @@ pub(super) fn predict_grouped_fused(
                 assembled: Err(error),
                 ..
             } => results.push(Some(Err(error))),
+        }
+    }
+
+    if !spec_less.is_empty() {
+        let (indices, observations): (Vec<usize>, Vec<ModelObservation>) =
+            spec_less.into_iter().unzip();
+        for (index, result) in indices
+            .into_iter()
+            .zip(predict.predict_spec_less_batch(observations))
+        {
+            results[index] = Some(result);
         }
     }
 

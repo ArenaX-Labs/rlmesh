@@ -355,6 +355,52 @@ impl ModelPredict {
 }
 
 impl ModelPredict {
+    fn spec_less_lanes(
+        &self,
+        observation: &ModelObservation,
+    ) -> Result<(Vec<Value>, Vec<Row>, crate::binding::spaces::SpaceSpec)> {
+        let contract = observation.env_contract.clone();
+        let observation_space = contract
+            .as_ref()
+            .and_then(|contract| contract.observation_space.clone())
+            .ok_or_else(|| {
+                Error::Runtime("model worker requires observation space metadata".to_string())
+            })?;
+        let action_space = contract
+            .as_ref()
+            .and_then(|contract| contract.action_space.clone())
+            .ok_or_else(|| {
+                Error::Runtime("model worker requires action space metadata".to_string())
+            })?;
+        let lanes: Vec<Value> = if observation.observation.is_some() {
+            observation
+                .decoded_lanes()?
+                .into_iter()
+                .map(|lane| crate::binding::value_from_space(&observation_space, lane))
+                .collect::<Result<_>>()?
+        } else {
+            Vec::new()
+        };
+        let route = &observation.route.env_id;
+        self.envs.remember(route, contract.as_deref());
+        let rows: Vec<Row> = observation
+            .route
+            .episodes
+            .iter()
+            .map(|episode| {
+                let mut row = Row::of(Some(episode));
+                if row.env_id.is_empty() {
+                    row.env_id = route.clone();
+                }
+                row.env = self.envs.get(&row.env_id);
+                row
+            })
+            .collect();
+        Ok((lanes, rows, action_space))
+    }
+}
+
+impl ModelPredict {
     fn input(&self, value: AdapterValue) -> Result<Value> {
         let value = from_adapter(value)?;
         Ok(match &self.shared.decl.spec {
@@ -454,49 +500,72 @@ impl PredictFn for ModelPredict {
         Ok(self.predict_spec_less_chunked(observation, 1)?.actions)
     }
 
+    fn predict_spec_less_batch(
+        &self,
+        observations: Vec<ModelObservation>,
+    ) -> Vec<Result<PredictFrames>> {
+        let mut results: Vec<Option<Result<PredictFrames>>> = Vec::new();
+        let (mut inputs, mut rows, mut fused) = (Vec::new(), Vec::new(), Vec::new());
+        for (index, observation) in observations.iter().enumerate() {
+            match self.spec_less_lanes(observation) {
+                Ok((lanes, lane_rows, action_space)) => {
+                    results.push(None);
+                    fused.push((index, lanes.len(), action_space));
+                    inputs.extend(lanes);
+                    rows.extend(lane_rows);
+                }
+                Err(error) => results.push(Some(Err(error))),
+            }
+        }
+        if !fused.is_empty() {
+            let total = inputs.len();
+            let actions = self
+                .shared
+                .call(move |core| core.predict_batch(inputs, &rows))
+                .and_then(|actions| {
+                    if actions.len() == total {
+                        Ok(actions)
+                    } else {
+                        Err(Error::model(format!(
+                            "predict_batch returned {} actions for {total} lanes",
+                            actions.len()
+                        )))
+                    }
+                });
+            match actions {
+                Ok(actions) => {
+                    let mut actions = actions.iter();
+                    for (index, count, action_space) in fused {
+                        results[index] = Some(
+                            actions
+                                .by_ref()
+                                .take(count)
+                                .map(|action| Self::encode_action(action, &action_space))
+                                .collect::<Result<_>>()
+                                .map(|actions| PredictFrames {
+                                    actions,
+                                    replay: Vec::new(),
+                                }),
+                        );
+                    }
+                }
+                Err(error) => {
+                    for (index, ..) in fused {
+                        results[index] = Some(Err(error.clone()));
+                    }
+                }
+            }
+        }
+        results.into_iter().flatten().collect()
+    }
+
     fn predict_spec_less_chunked(
         &self,
         observation: ModelObservation,
         execution_horizon: u32,
     ) -> Result<PredictFrames> {
-        let contract = observation.env_contract.clone();
-        let observation_space = contract
-            .as_ref()
-            .and_then(|contract| contract.observation_space.clone())
-            .ok_or_else(|| {
-                Error::Runtime("model worker requires observation space metadata".to_string())
-            })?;
-        let action_space = contract
-            .as_ref()
-            .and_then(|contract| contract.action_space.clone())
-            .ok_or_else(|| {
-                Error::Runtime("model worker requires action space metadata".to_string())
-            })?;
         let num_envs = observation.num_envs;
-        let lanes: Vec<Value> = if observation.observation.is_some() {
-            observation
-                .decoded_lanes()?
-                .into_iter()
-                .map(|lane| crate::binding::value_from_space(&observation_space, lane))
-                .collect::<Result<_>>()?
-        } else {
-            Vec::new()
-        };
-        let route = &observation.route.env_id;
-        self.envs.remember(route, contract.as_deref());
-        let rows: Vec<Row> = observation
-            .route
-            .episodes
-            .iter()
-            .map(|episode| {
-                let mut row = Row::of(Some(episode));
-                if row.env_id.is_empty() {
-                    row.env_id = route.clone();
-                }
-                row.env = self.envs.get(&row.env_id);
-                row
-            })
-            .collect();
+        let (lanes, rows, action_space) = self.spec_less_lanes(&observation)?;
         let horizon = execution_horizon.max(1);
         let encode = |value: &Value| Self::encode_action(value, &action_space);
 

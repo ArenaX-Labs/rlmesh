@@ -101,6 +101,12 @@ pub(crate) type LastPyError = Arc<std::sync::Mutex<Option<PyErr>>>;
 
 type RouteOutcomes = (Vec<Py<PyAny>>, Option<Py<PyAny>>);
 
+type SpecLessLanes<'py, 'o> = (
+    Vec<Bound<'py, PyAny>>,
+    Vec<Bound<'py, pyo3::types::PyDict>>,
+    &'o rlmesh_spaces::SpaceSpec,
+);
+
 struct ParsedRunOptions {
     options: rlmesh::RunOptions<'static>,
     default_horizon: Option<u32>,
@@ -137,6 +143,41 @@ impl PyPredict {
     ) -> rlmesh::Result<SpaceValue> {
         py_any_to_space_value_with_backend(py, action, space, ValueBackend::Native)
             .map_err(|err| self.misfit("an action", space, &err))
+    }
+
+    fn spec_less_lanes<'py, 'o>(
+        &self,
+        py: Python<'py>,
+        observation: &'o ModelObservation,
+    ) -> PyResult<SpecLessLanes<'py, 'o>> {
+        let contract = observation.env_contract.as_deref();
+        let missing = |what: &str| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "model worker requires {what} space metadata"
+            ))
+        };
+        let observation_space = contract
+            .and_then(|contract| contract.observation_space.as_ref())
+            .ok_or_else(|| missing("observation"))?;
+        let action_space = contract
+            .and_then(|contract| contract.action_space.as_ref())
+            .ok_or_else(|| missing("action"))?;
+        let lanes = observation
+            .decoded_lanes()
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+        self.envs
+            .remember(py, &observation.route.env_id, contract)?;
+        let inputs = lanes
+            .iter()
+            .map(|lane| space_value_to_py_neutral(py, lane, observation_space))
+            .collect::<PyResult<_>>()?;
+        let contexts = observation
+            .route
+            .episodes
+            .iter()
+            .map(|episode| episode_context_dict(py, Some(episode), &self.envs))
+            .collect::<PyResult<_>>()?;
+        Ok((inputs, contexts, action_space))
     }
 
     fn fire(callback: &Option<Py<PyAny>>) -> rlmesh::Result<()> {
@@ -231,6 +272,78 @@ impl PredictFn for PyPredict {
 
     fn native_chunk(&self) -> Option<u32> {
         self.native_chunk
+    }
+
+    fn predict_spec_less_batch(
+        &self,
+        observations: Vec<ModelObservation>,
+    ) -> Vec<rlmesh::Result<PredictFrames>> {
+        let Some(batch_fn) = self.predict_batch_fn.as_ref() else {
+            return observations
+                .into_iter()
+                .map(|observation| self.predict_spec_less_chunked(observation, 1))
+                .collect();
+        };
+        if let Err(error) = rlmesh::binding::check_model_call() {
+            return observations.iter().map(|_| Err(error.clone())).collect();
+        }
+        Python::attach(|py| {
+            let mut results: Vec<Option<rlmesh::Result<PredictFrames>>> = Vec::new();
+            let (mut inputs, mut contexts, mut fused) = (Vec::new(), Vec::new(), Vec::new());
+            for (index, observation) in observations.iter().enumerate() {
+                match self.spec_less_lanes(py, observation) {
+                    Ok((lane_inputs, lane_contexts, action_space)) => {
+                        results.push(None);
+                        fused.push((index, lane_inputs.len(), action_space));
+                        inputs.extend(lane_inputs);
+                        contexts.extend(lane_contexts);
+                    }
+                    Err(err) => results.push(Some(Err(self.internal(err)))),
+                }
+            }
+            if fused.is_empty() {
+                return results.into_iter().flatten().collect();
+            }
+            let total = inputs.len();
+            let returned = batch_fn
+                .call1(py, (inputs, contexts))
+                .and_then(|actions| actions.bind(py).try_iter()?.collect::<PyResult<Vec<_>>>())
+                .map_err(|err| self.internal(err))
+                .and_then(|actions| {
+                    if actions.len() == total {
+                        Ok(actions)
+                    } else {
+                        Err(RLMeshError::model(format!(
+                            "predict_batch returned {} actions for {total} lanes",
+                            actions.len()
+                        )))
+                    }
+                });
+            match returned {
+                Ok(actions) => {
+                    let mut actions = actions.iter();
+                    for (index, count, action_space) in fused {
+                        results[index] = Some(
+                            actions
+                                .by_ref()
+                                .take(count)
+                                .map(|action| self.encode_action(py, action, action_space))
+                                .collect::<rlmesh::Result<_>>()
+                                .map(|actions| PredictFrames {
+                                    actions,
+                                    replay: Vec::new(),
+                                }),
+                        );
+                    }
+                }
+                Err(error) => {
+                    for (index, ..) in fused {
+                        results[index] = Some(Err(error.clone()));
+                    }
+                }
+            }
+            results.into_iter().flatten().collect()
+        })
     }
 
     fn predict_spec_less(&self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
