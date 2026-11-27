@@ -15,7 +15,7 @@ use serde_json::{Map, Value, json};
 
 use super::is_image_space;
 use super::os;
-use super::schema::TrajectoryRecordSpec;
+use super::schema::{TrajectoryRecordSpec, TrajectoryStream};
 use crate::Result;
 
 #[derive(Debug, Default, Clone)]
@@ -36,6 +36,7 @@ pub(super) struct StepRow {
     pub(super) obs_perturbed: Option<StepValue>,
     pub(super) action_raw: Option<StepValue>,
     pub(super) action_perturbed: Option<StepValue>,
+    pub(super) final_obs: Option<StepValue>,
 }
 
 impl StepRow {
@@ -50,6 +51,7 @@ impl StepRow {
         }
         pair(self.obs_raw.as_ref(), self.obs_perturbed.as_ref())
             + pair(self.action_raw.as_ref(), self.action_perturbed.as_ref())
+            + pair(self.final_obs.as_ref(), None)
     }
 }
 
@@ -59,6 +61,7 @@ fn value_of(name: &str) -> fn(&StepRow) -> Option<&StepValue> {
         "obs_perturbed" => |row| row.obs_perturbed.as_ref(),
         "action_raw" => |row| row.action_raw.as_ref(),
         "action_perturbed" => |row| row.action_perturbed.as_ref(),
+        "final_obs" => |row| row.final_obs.as_ref(),
         _ => |_| None,
     }
 }
@@ -89,13 +92,22 @@ fn fields(rows: &[StepRow], spec: &TrajectoryRecordSpec) -> Vec<Field> {
         ("obs_perturbed", spec.obs.perturbed()),
         ("action_raw", spec.action.raw()),
         ("action_perturbed", spec.action.perturbed()),
+        ("final_obs", spec.obs != TrajectoryStream::None),
     ] {
         if !enabled {
             continue;
         }
         fields.push(Field::new(name, DataType::Binary, true));
         let get = value_of(name);
-        if rows.iter().any(|row| blob(row, get).is_some()) {
+        // The schema is fixed at the first flush, which may come before an episode's last row.
+        let final_obs_images = name == "final_obs"
+            && fields.iter().any(|field| {
+                matches!(
+                    field.name().as_str(),
+                    "obs_raw_images" | "obs_perturbed_images"
+                )
+            });
+        if final_obs_images || rows.iter().any(|row| blob(row, get).is_some()) {
             fields.push(Field::new(format!("{name}_images"), DataType::Binary, true));
         }
     }
@@ -467,12 +479,76 @@ mod tests {
         };
         assert_eq!(
             columns("with.parquet", &[row(Vec::new()), row(vec![7, 8])]),
-            ["step", "t_ns", "obs_raw", "obs_raw_images", "obs_perturbed"]
+            [
+                "step",
+                "t_ns",
+                "obs_raw",
+                "obs_raw_images",
+                "obs_perturbed",
+                "final_obs",
+                "final_obs_images"
+            ]
         );
         assert_eq!(
             columns("without.parquet", &[row(Vec::new())]),
-            ["step", "t_ns", "obs_raw", "obs_perturbed"]
+            ["step", "t_ns", "obs_raw", "obs_perturbed", "final_obs"]
         );
+    }
+
+    #[test]
+    fn final_observation_pixels_survive_a_flush_before_the_last_row() {
+        use arrow_array::Array;
+
+        let spec = TrajectoryRecordSpec {
+            obs: TrajectoryStream::Raw,
+            reward: false,
+            info: false,
+            step_timing: false,
+            ..TrajectoryRecordSpec::default()
+        };
+        let pixels = |byte: u8| StepValue {
+            json: b"{}".to_vec(),
+            images: vec![byte; 4].into(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("episode.parquet");
+        let mut writer = TrajectoryWriter::new(path.clone(), spec);
+        writer.push(StepRow {
+            obs_raw: Some(pixels(1)),
+            ..StepRow::default()
+        });
+        writer.flush().unwrap();
+        writer.push(StepRow {
+            step: 1,
+            obs_raw: Some(pixels(2)),
+            final_obs: Some(pixels(3)),
+            ..StepRow::default()
+        });
+        writer.finish(true).unwrap();
+        let batches: Vec<_> =
+            parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+                std::fs::File::open(&path).unwrap(),
+            )
+            .unwrap()
+            .build()
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        let finals: Vec<Option<Vec<u8>>> = batches
+            .iter()
+            .flat_map(|batch| {
+                let column = batch
+                    .column_by_name("final_obs_images")
+                    .expect("final_obs_images column")
+                    .as_any()
+                    .downcast_ref::<arrow_array::BinaryArray>()
+                    .unwrap()
+                    .clone();
+                (0..column.len())
+                    .map(move |row| (!column.is_null(row)).then(|| column.value(row).to_vec()))
+            })
+            .collect();
+        assert_eq!(finals, [None, Some(vec![3; 4])]);
     }
 
     #[test]

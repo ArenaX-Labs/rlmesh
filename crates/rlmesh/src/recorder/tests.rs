@@ -338,6 +338,7 @@ fn vector_capture_refusal_and_missing_frames_warning_never_aborts() {
         info: InfoDict::new(),
         predict_ms: 0.,
         step_ms: 0.,
+        final_observation: None,
         read: Arc::new(|_| Ok(Value::None)),
     };
     capture.on_step(&event).unwrap();

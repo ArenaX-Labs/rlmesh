@@ -354,6 +354,223 @@ impl ModelPredict {
     }
 }
 
+struct SpecLessLanes {
+    lanes: Vec<Value>,
+    rows: Vec<Row>,
+    action_space: crate::binding::spaces::SpaceSpec,
+    num_envs: usize,
+    route: String,
+}
+
+type SpecLessMember = (usize, ModelObservation, u32);
+type SpecLessBucket = (
+    (u32, Option<crate::binding::spaces::SpaceSpec>),
+    Vec<SpecLessMember>,
+);
+
+/// Fused calls stack their inputs, so a bucket holds one horizon and one observation space.
+fn join_bucket(buckets: &mut Vec<SpecLessBucket>, horizon: u32, member: SpecLessMember) {
+    let space = member
+        .1
+        .env_contract
+        .as_ref()
+        .and_then(|contract| contract.observation_space.clone());
+    let key = (horizon, space);
+    match buckets.iter_mut().find(|(bucket, _)| *bucket == key) {
+        Some((_, members)) => members.push(member),
+        None => buckets.push((key, vec![member])),
+    }
+}
+
+fn spec_less_warn_key(row: &Row, route: &str) -> String {
+    if row.episode_id.is_empty() {
+        format!("route:{route}")
+    } else {
+        row.episode_id.clone()
+    }
+}
+
+impl ModelPredict {
+    fn stage_spec_less(&self, observation: ModelObservation) -> Result<SpecLessLanes> {
+        let contract = observation.env_contract.clone();
+        let observation_space = contract
+            .as_ref()
+            .and_then(|contract| contract.observation_space.clone())
+            .ok_or_else(|| {
+                Error::Runtime("model worker requires observation space metadata".to_string())
+            })?;
+        let action_space = contract
+            .as_ref()
+            .and_then(|contract| contract.action_space.clone())
+            .ok_or_else(|| {
+                Error::Runtime("model worker requires action space metadata".to_string())
+            })?;
+        let lanes: Vec<Value> = if observation.observation.is_some() {
+            observation
+                .decoded_lanes()?
+                .into_iter()
+                .map(|lane| crate::binding::value_from_space(&observation_space, lane))
+                .collect::<Result<_>>()?
+        } else {
+            Vec::new()
+        };
+        let route = observation.route.env_id;
+        self.envs.remember(&route, contract.as_deref());
+        let rows = observation
+            .route
+            .episodes
+            .iter()
+            .map(|episode| {
+                let mut row = Row::of(Some(episode));
+                if row.env_id.is_empty() {
+                    row.env_id = route.clone();
+                }
+                row.env = self.envs.get(&row.env_id);
+                row
+            })
+            .collect();
+        Ok(SpecLessLanes {
+            lanes,
+            rows,
+            action_space,
+            num_envs: observation.num_envs,
+            route,
+        })
+    }
+
+    /// The fused bucket a spec-less group joins at `horizon`: `1` for the batched corner,
+    /// the horizon for the batched chunk corner, `None` when it has no batched corner.
+    fn spec_less_bucket(&self, horizon: u32) -> Option<u32> {
+        let horizon = horizon.max(1);
+        if horizon > 1 && self.shared.decl.has_chunk() {
+            self.corners()
+                .contains(Corners::PREDICT_CHUNK_BATCH)
+                .then_some(horizon)
+        } else {
+            self.corners().contains(Corners::PREDICT_BATCH).then_some(1)
+        }
+    }
+
+    /// Serve several spec-less groups' lanes in ONE batched corner call: `predict_batch`
+    /// without a horizon, `predict_chunk_batch` with one. Each group keeps its own
+    /// outcome; a corner failure fails every group in the call.
+    fn predict_spec_less_fused(
+        &self,
+        groups: Vec<SpecLessLanes>,
+        horizon: Option<u32>,
+    ) -> Vec<Result<PredictFrames>> {
+        let mut inputs = Vec::new();
+        let mut rows = Vec::new();
+        let mut split = Vec::with_capacity(groups.len());
+        for mut group in groups {
+            group.rows.resize_with(group.lanes.len(), || Row {
+                env_id: group.route.clone(),
+                env: self.envs.get(&group.route),
+                ..Row::default()
+            });
+            let keys: Vec<String> = group
+                .rows
+                .iter()
+                .map(|row| spec_less_warn_key(row, &group.route))
+                .collect();
+            inputs.extend(group.lanes);
+            rows.extend(group.rows);
+            split.push((keys, group.action_space));
+        }
+        let total = inputs.len();
+        let (corner, called) = match horizon {
+            Some(h) => (
+                "predict_chunk_batch",
+                self.shared
+                    .call(move |core| core.predict_chunk_batch(inputs, h, &rows)),
+            ),
+            None => (
+                "predict_batch",
+                self.shared
+                    .call(move |core| core.predict_batch(inputs, &rows)),
+            ),
+        };
+        let called = called.and_then(|items| {
+            if items.len() == total {
+                Ok(items)
+            } else {
+                Err(Error::model(format!(
+                    "{corner} returned {} results for {total} lanes",
+                    items.len()
+                )))
+            }
+        });
+        let mut items = match called {
+            Ok(items) => items.into_iter(),
+            Err(error) => {
+                return split.iter().map(|_| Err(error.clone())).collect();
+            }
+        };
+        split
+            .into_iter()
+            .map(|(keys, action_space)| {
+                let lane_items: Vec<Value> = items.by_ref().take(keys.len()).collect();
+                match horizon {
+                    None => Ok(PredictFrames {
+                        actions: lane_items
+                            .iter()
+                            .map(|action| Self::encode_action(action, &action_space))
+                            .collect::<Result<_>>()?,
+                        replay: Vec::new(),
+                    }),
+                    Some(h) => PredictFrames::from_lane_frames(
+                        lane_items
+                            .into_iter()
+                            .zip(&keys)
+                            .map(|(chunk, key)| self.chunk_lane(chunk, h, key, &action_space))
+                            .collect::<Result<Vec<_>>>()?,
+                    ),
+                }
+            })
+            .collect()
+    }
+
+    /// One lane's native chunk as its executed frames: checked against a declared
+    /// `native_chunk`, warned once per episode when short, cut to `horizon`.
+    fn chunk_lane(
+        &self,
+        chunk: Value,
+        horizon: u32,
+        warn_key: &str,
+        action_space: &crate::binding::spaces::SpaceSpec,
+    ) -> Result<Vec<SpaceValue>> {
+        let mut frames = split_frames(chunk)?;
+        match self.shared.decl.native_chunk {
+            Some(native) if frames.len() != native as usize => {
+                return Err(Error::invalid_argument(format!(
+                    "model declares native_chunk={native} but its chunk corner returned {} \
+                     frames at execution_horizon={horizon}: return the WHOLE native chunk and \
+                     let the runtime execute its prefix (do not slice to the horizon), or drop \
+                     the declaration",
+                    frames.len()
+                )));
+            }
+            None if frames.len() < horizon as usize && self.warned.first(warn_key) => {
+                crate::warnings::warn(
+                    crate::WarningCategory::RuntimeWarning,
+                    short_chunk_text(frames.len(), horizon),
+                )?;
+            }
+            _ => {}
+        }
+        frames.truncate(horizon as usize);
+        if frames.is_empty() {
+            return Err(Error::invalid_argument(
+                "a chunked model (execute_horizon>1) returned an empty action chunk",
+            ));
+        }
+        frames
+            .iter()
+            .map(|frame| Self::encode_action(frame, action_space))
+            .collect()
+    }
+}
+
 impl ModelPredict {
     fn input(&self, value: AdapterValue) -> Result<Value> {
         let value = from_adapter(value)?;
@@ -459,125 +676,120 @@ impl PredictFn for ModelPredict {
         observation: ModelObservation,
         execution_horizon: u32,
     ) -> Result<PredictFrames> {
-        let contract = observation.env_contract.clone();
-        let observation_space = contract
-            .as_ref()
-            .and_then(|contract| contract.observation_space.clone())
-            .ok_or_else(|| {
-                Error::Runtime("model worker requires observation space metadata".to_string())
-            })?;
-        let action_space = contract
-            .as_ref()
-            .and_then(|contract| contract.action_space.clone())
-            .ok_or_else(|| {
-                Error::Runtime("model worker requires action space metadata".to_string())
-            })?;
-        let num_envs = observation.num_envs;
-        let lanes: Vec<Value> = if observation.observation.is_some() {
-            observation
-                .decoded_lanes()?
-                .into_iter()
-                .map(|lane| crate::binding::value_from_space(&observation_space, lane))
-                .collect::<Result<_>>()?
-        } else {
-            Vec::new()
-        };
-        let route = &observation.route.env_id;
-        self.envs.remember(route, contract.as_deref());
-        let rows: Vec<Row> = observation
-            .route
-            .episodes
-            .iter()
-            .map(|episode| {
-                let mut row = Row::of(Some(episode));
-                if row.env_id.is_empty() {
-                    row.env_id = route.clone();
-                }
-                row.env = self.envs.get(&row.env_id);
-                row
-            })
-            .collect();
+        let staged = self.stage_spec_less(observation)?;
         let horizon = execution_horizon.max(1);
-        let encode = |value: &Value| Self::encode_action(value, &action_space);
-
-        if num_envs <= 1 || lanes.len() <= 1 {
+        if staged.num_envs <= 1 || staged.lanes.len() <= 1 {
+            let SpecLessLanes {
+                lanes,
+                rows,
+                action_space,
+                route,
+                ..
+            } = staged;
             let input = lanes.into_iter().next().unwrap_or(Value::None);
             let row = rows.into_iter().next().unwrap_or_default();
             if horizon > 1 && self.shared.decl.has_chunk() {
-                let warn_key = if row.episode_id.is_empty() {
-                    format!("route:{}", observation.route.env_id)
-                } else {
-                    row.episode_id.clone()
-                };
+                let warn_key = spec_less_warn_key(&row, &route);
                 let chunk = self
                     .shared
                     .call(move |core| core.predict_chunk(input, horizon, &row))?;
-                let mut frames = split_frames(chunk)?;
-                match self.shared.decl.native_chunk {
-                    Some(native) if frames.len() != native as usize => {
-                        return Err(Error::invalid_argument(format!(
-                            "model declares native_chunk={native} but its chunk corner returned \
-                             {} frames at execution_horizon={horizon}: return the WHOLE native \
-                             chunk and let the runtime execute its prefix (do not slice to the \
-                             horizon), or drop the declaration",
-                            frames.len()
-                        )));
-                    }
-                    None if frames.len() < horizon as usize && self.warned.first(&warn_key) => {
-                        crate::warnings::warn(
-                            crate::WarningCategory::RuntimeWarning,
-                            short_chunk_text(frames.len(), horizon),
-                        )?;
-                    }
-                    _ => {}
-                }
-                frames.truncate(horizon as usize);
-                if frames.is_empty() {
-                    return Err(Error::invalid_argument(
-                        "a chunked model (execute_horizon>1) returned an empty action chunk",
-                    ));
-                }
-                let mut encoded = frames.iter().map(encode).collect::<Result<Vec<_>>>()?;
-                let first = encoded.remove(0);
-                return Ok(PredictFrames {
-                    actions: vec![first],
-                    replay: encoded.into_iter().map(|frame| vec![frame]).collect(),
-                });
+                let frames = self.chunk_lane(chunk, horizon, &warn_key, &action_space)?;
+                return PredictFrames::from_lane_frames(vec![frames]);
             }
             let action = self.shared.call(move |core| core.predict(input, &row))?;
             return Ok(PredictFrames {
-                actions: vec![encode(&action)?],
+                actions: vec![Self::encode_action(&action, &action_space)?],
                 replay: Vec::new(),
             });
         }
-
-        if self.corners().contains(Corners::PREDICT_BATCH) {
-            let actions = self
-                .shared
-                .call(move |core| core.predict_batch(lanes, &rows))?;
-            if actions.len() != num_envs {
-                return Err(Error::model(format!(
-                    "predict_batch returned {} actions for {num_envs} lanes",
-                    actions.len()
-                )));
-            }
-            return Ok(PredictFrames {
-                actions: actions.iter().map(encode).collect::<Result<_>>()?,
-                replay: Vec::new(),
-            });
+        let bucket = self
+            .spec_less_bucket(horizon)
+            .or_else(|| self.corners().contains(Corners::PREDICT_BATCH).then_some(1));
+        if let Some(key) = bucket {
+            let horizon = (key > 1).then_some(key);
+            return self
+                .predict_spec_less_fused(vec![staged], horizon)
+                .pop()
+                .expect("one outcome per group");
         }
 
+        let SpecLessLanes {
+            lanes,
+            action_space,
+            num_envs,
+            route,
+            ..
+        } = staged;
         let batched = stack_values(lanes)?;
         let row = Row {
-            env: self.envs.get(&observation.route.env_id),
+            env: self.envs.get(&route),
             ..Row::default()
         };
         let action = self.shared.call(move |core| core.predict(batched, &row))?;
         let actions = unstack_value(action, num_envs)?;
         Ok(PredictFrames {
-            actions: actions.iter().map(encode).collect::<Result<_>>()?,
+            actions: actions
+                .iter()
+                .map(|action| Self::encode_action(action, &action_space))
+                .collect::<Result<_>>()?,
             replay: Vec::new(),
         })
+    }
+
+    fn predict_spec_less_grouped(
+        &self,
+        groups: Vec<(ModelObservation, u32)>,
+    ) -> Vec<Result<PredictFrames>> {
+        let mut outcomes: Vec<Option<Result<PredictFrames>>> =
+            (0..groups.len()).map(|_| None).collect();
+        let mut buckets: Vec<SpecLessBucket> = Vec::new();
+        let mut single: Vec<(usize, ModelObservation, u32)> = Vec::new();
+        for (index, (observation, horizon)) in groups.into_iter().enumerate() {
+            match self.spec_less_bucket(horizon) {
+                Some(key) => join_bucket(&mut buckets, key, (index, observation, horizon)),
+                None => single.push((index, observation, horizon)),
+            }
+        }
+        for ((key, _), members) in buckets {
+            if members.len() == 1 {
+                single.extend(members);
+                continue;
+            }
+            let mut indices = Vec::with_capacity(members.len());
+            let mut staged = Vec::with_capacity(members.len());
+            for (index, observation, _) in members {
+                match self.stage_spec_less(observation) {
+                    Ok(lanes) => {
+                        indices.push(index);
+                        staged.push(lanes);
+                    }
+                    Err(error) => outcomes[index] = Some(Err(error)),
+                }
+            }
+            if staged.is_empty() {
+                continue;
+            }
+            let horizon = (key > 1).then_some(key);
+            for (index, outcome) in indices
+                .into_iter()
+                .zip(self.predict_spec_less_fused(staged, horizon))
+            {
+                outcomes[index] = Some(outcome);
+            }
+        }
+        for (index, observation, horizon) in single {
+            outcomes[index] = Some(self.predict_spec_less_chunked(observation, horizon));
+        }
+        outcomes
+            .into_iter()
+            .map(|outcome| {
+                outcome.unwrap_or_else(|| {
+                    Err(Error::Internal(
+                        "spec-less grouped predict left a group unserved".to_string(),
+                    ))
+                })
+            })
+            .collect()
     }
 
     fn on_episode_end(&self, episode_id: &str) -> Result<()> {

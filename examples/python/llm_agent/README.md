@@ -120,6 +120,8 @@ docker build -f docker/env-v1.Dockerfile -t llm-env-tau2 \
   --build-arg ENV_ID=primeintellect/tau2-bench .
 ```
 
+One served harness answers many episodes at once. `LLMHarness` sets `concurrency = 32`, so up to 32 sessions' chat calls run at the same time, each on its own thread, and a step costs about one call however many sessions wait on it. `rlmesh bench llm-harness --env llm-env-v0` sweeps how many concurrent sessions that sustains.
+
 The tau2 image's user simulator needs `OPENAI_BASE_URL` and `OPENAI_API_KEY` at run time (`docker run -e`), which a sandbox doesn't pass through.
 
 `RUNTIME=subprocess` runs model-written code inside the env container as the server's user, so that code can read the container's credentials (`RLMESH_HOST_IDENTITY`); use it only locally.

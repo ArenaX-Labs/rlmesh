@@ -96,6 +96,8 @@ class LLMHarness(rlmesh.Model):
             (default ``$OPENAI_MAX_TOKENS``).
     """
 
+    concurrency = 32
+
     def __init__(
         self,
         model: str | None = None,

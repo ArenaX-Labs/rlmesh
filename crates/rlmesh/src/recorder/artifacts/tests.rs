@@ -273,7 +273,7 @@ fn a_recorded_run_writes_the_managed_episode_layout() {
     };
     assert_eq!(
         recording("raw"),
-        json!({"camera": "primary", "stream": "raw", "path": "episodes/ep000001/video/primary.raw.mp4", "frames": 4, "fps": 30, "width": 16, "height": 16})
+        json!({"camera": "primary", "stream": "raw", "path": "episodes/ep000001/video/primary.raw.mp4", "frames": 5, "fps": 30, "width": 16, "height": 16})
     );
     assert_eq!(
         recording("perturbed")["path"],
@@ -315,6 +315,8 @@ fn a_recorded_run_writes_the_managed_episode_layout() {
             ("obs_perturbed_images", DataType::Binary),
             ("action_raw", DataType::Binary),
             ("action_perturbed", DataType::Binary),
+            ("final_obs", DataType::Binary),
+            ("final_obs_images", DataType::Binary),
         ]
     );
     let batches = reader
@@ -345,6 +347,22 @@ fn a_recorded_run_writes_the_managed_episode_layout() {
     assert_eq!(column("obs_perturbed_images"), vec![255; 768]);
     let action: Json = serde_json::from_slice(&column("action_raw")).unwrap();
     assert_eq!(action, json!({"shape": [1], "data": [0.0]}));
+    let finals = rows
+        .column_by_name("final_obs")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<arrow_array::BinaryArray>()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (0..arrow_array::Array::len(&finals))
+            .map(|row| arrow_array::Array::is_valid(&finals, row))
+            .collect::<Vec<_>>(),
+        [false, false, false, true],
+        "only the step that ended the episode carries its final observation"
+    );
+    let last: Json = serde_json::from_slice(finals.value(3)).unwrap();
+    assert_eq!(last["eef"], obs["eef"]);
 
     let windows = std::fs::read_to_string(root.join("telemetry/windows.jsonl")).unwrap();
     let session = windows
@@ -451,7 +469,7 @@ fn lanes(count: usize) -> Value {
 fn a_next_step_autoreset_roll_is_not_a_trajectory_row() {
     let mut recorder = Recorder::new(RecorderOptions::default()).unwrap();
     let record: RecordSpec =
-        serde_json::from_value(json!({"trajectory": {"action": "raw"}})).unwrap();
+        serde_json::from_value(json!({"trajectory": {"action": "raw", "obs": "raw"}})).unwrap();
     let mut capture = recorder
         .capture(
             "policy",
@@ -499,9 +517,11 @@ fn a_next_step_autoreset_roll_is_not_a_trajectory_row() {
         .unwrap()
         .build()
         .unwrap();
-        let steps: Vec<i64> = reader
-            .flat_map(|batch| {
-                let batch = batch.unwrap();
+        let mut steps: Vec<i64> = Vec::new();
+        let mut finals: Vec<bool> = Vec::new();
+        for batch in reader {
+            let batch = batch.unwrap();
+            steps.extend(
                 batch
                     .column_by_name("step")
                     .unwrap()
@@ -509,9 +529,17 @@ fn a_next_step_autoreset_roll_is_not_a_trajectory_row() {
                     .downcast_ref::<arrow_array::Int64Array>()
                     .unwrap()
                     .values()
-                    .to_vec()
-            })
-            .collect();
+                    .iter(),
+            );
+            let column = batch.column_by_name("final_obs").unwrap();
+            finals.extend((0..column.len()).map(|row| column.is_valid(row)));
+        }
+        let mut last = vec![false; steps.len()];
+        *last.last_mut().unwrap() = true;
+        assert_eq!(
+            finals, last,
+            "only an episode's last row has its final observation"
+        );
         rows.insert((episode["envIndex"].as_i64().unwrap(), steps));
     }
     assert_eq!(

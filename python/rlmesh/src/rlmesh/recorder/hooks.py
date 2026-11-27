@@ -16,6 +16,8 @@ dropped, and the episode's outcome is still recorded -- capture never aborts the
 
 from __future__ import annotations
 
+import dataclasses
+import functools
 import json
 import os
 import warnings
@@ -217,6 +219,7 @@ class CaptureHooks(RunHooks):
             if isinstance(value, str) and value:
                 self._video_path = value
                 break
+        final = self._final_event(event)
         for camera in self._cameras:
             if camera in self._disabled:
                 continue
@@ -224,10 +227,30 @@ class CaptureHooks(RunHooks):
                 frame = self._read_source(event, camera)
                 if frame is not None:
                     self._write(camera, frame)
+                # A role frame is the observation before each step; the episode's
+                # last one comes back only on its final step. render() runs after it.
+                frame = None if final is None else self._read_final(final, camera)
+                if frame is not None:
+                    self._write(camera, frame)
             except Exception as exc:
                 _warn(f"recorder: disabling camera {camera!r} after an error: {exc}")
                 self._disabled.add(camera)
                 self._writers.pop(camera, None)
+
+    def _final_event(self, event: StepEvent) -> StepEvent | None:
+        final = event.final_observation
+        if final is None or self._binding is None:
+            return None
+        return dataclasses.replace(
+            event, observation=final, read=functools.partial(self._binding.read, final)
+        )
+
+    def _read_final(
+        self, event: StepEvent, camera: str
+    ) -> tuple[Any, int, int, int] | None:
+        if camera == self._render_camera and not self._explicit:
+            return None
+        return read_frame(event, camera)
 
     def _write(self, camera: str, frame: tuple[Any, int, int, int]) -> None:
         data, height, width, channels = frame

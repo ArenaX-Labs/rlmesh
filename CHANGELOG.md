@@ -6,13 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
-### Added
-
-- A signed, notarized universal macOS `rlmesh` CLI on each GitHub Release, installable with `brew install arenax-labs/tap/rlmesh`. The macOS wheels' `rlmesh`, `rlmeshd` and `docker-credential-rlmesh` run that binary, so macOS remembers Keychain access across upgrades instead of asking every Python interpreter. `rlmesh` started as `docker-credential-rlmesh` or `rlmeshd` acts as that command.
-
 ### Fixed
 
+- A served model without a `spec` (a text or LLM harness) that defines `predict_batch` or `predict_chunk_batch` now gets every coalesced session's rows in one call, each row with its own context, instead of one call per session. Each session keeps its own outcome: an action that does not fit fails only that session. This holds in Python and in Rust, and so in C, C++ and C#. A vector env served to such a model at `execution_horizon > 1` uses `predict_chunk_batch` too.
+- A served model's batches no longer alternate between sessions that fell out of step. After a forward ends, the next batch stays open up to `batch_window_ms` for the sessions that forward answered.
+- A NumPy, PyTorch or JAX model's `predict_batch` can return a text action as a list of one string per row, the shape its text observations arrive in.
 - On macOS, saving or deleting stored credentials no longer reads the Keychain secret first, so signing in, signing out and each token refresh read it once fewer.
+
+### Added
+
+- `StepEvent.final_observation` carries the observation returned by the step that ended an episode, which no action follows: a chat episode's closing tool results, a robot episode's terminal frame. It is the env's own value, and `None` on every other step. It is on every lane of a vector or lane-served env, whichever loop runs it, and in Rust (`Option<Value>`), C (`RLMeshStepEvent.final_observation`, appended, so a struct built against an older header still reads) and C++ (`std::optional<Value>`). Runners with their own runtime hooks get it on the step completion event.
+- The recorder keeps that final observation. Each image-role video gains the episode's last frame, and `trajectory.parquet` gains a `final_obs` column (with `final_obs_images` when observations carry images), filled on the row of the step that ended the episode.
+- A Python model can overlap its predicts, for a model that waits on an LLM or a remote API rather than computing. An `async def predict` runs up to 32 calls at once by default. A plain `predict` overlaps only when the model sets `concurrency = N` (or `Model(fn, concurrency=N)`), and then runs on N threads. The sessions a served model answers together run side by side; on a model without a `spec`, a predict that raises fails only its own session, while on a spec'd model it fails the round. A model with `predict_batch` or `predict_chunk_batch` batches instead and is refused `concurrency`, and so is a model that calls inner models. `concurrency` may be set on the class, the instance (in `__init__` or `load()`) or a wrapped policy. Python only for now.
+- The LLM agent example's harness sets `concurrency = 32`, so its sessions' chat calls run at the same time.
+- A signed, notarized universal macOS `rlmesh` CLI on each GitHub Release, installable with `brew install arenax-labs/tap/rlmesh`. The macOS wheels' `rlmesh`, `rlmeshd` and `docker-credential-rlmesh` run that binary, so macOS remembers Keychain access across upgrades instead of asking every Python interpreter. `rlmesh` started as `docker-credential-rlmesh` or `rlmeshd` acts as that command.
 
 ## [0.2.0-alpha.2] - 2026-11-25
 
