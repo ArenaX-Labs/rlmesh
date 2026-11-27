@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ### Removed
 
-- The `coding_agent`, `isaacsim`, `llm_agent` and `sandbox` Python examples. They live in [rlmesh-examples](https://github.com/ArenaX-Labs/rlmesh-examples/tree/main/python) as `coding-agent`, `isaacsim/franka-reach`, `llm-agent` and `sandbox`.
+- The examples that moved to [rlmesh-examples](https://github.com/ArenaX-Labs/rlmesh-examples/tree/main): `chrono` (now `cpp/chrono`), and the Python `byo_container`, `coding_agent`, `isaacsim`, `llm_agent`, `sandbox`, `v2/ur10e_mujoco` and `vla_adapters` (now `byo-container`, `coding-agent`, `isaacsim/franka-reach`, `llm-agent`, `sandbox`, `ur10e-mujoco` and `vla-adapters`).
 
 ## [0.2.0-alpha.2] - 2026-11-25
 

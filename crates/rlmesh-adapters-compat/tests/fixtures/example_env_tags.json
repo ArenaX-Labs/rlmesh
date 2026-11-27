@@ -1,63 +1,5 @@
 {
-  "examples/python/adapters/serve_and_run.py:ENV_TAGS": {
-    "action": {
-      "clip": [-1.0, 1.0],
-      "components": [
-        {
-          "binary": false,
-          "dim": 3,
-          "encoding": null,
-          "range": null,
-          "role": "action/delta_eef_pos"
-        },
-        {
-          "binary": false,
-          "dim": 3,
-          "encoding": "axis_angle",
-          "range": null,
-          "role": "action/delta_eef_rot"
-        },
-        {
-          "binary": false,
-          "dim": 1,
-          "encoding": null,
-          "range": [-1.0, 1.0],
-          "role": "action/gripper"
-        }
-      ]
-    },
-    "observation": {
-      "ee_pos": {
-        "encoding": null,
-        "range": null,
-        "role": "proprio/eef_pos",
-        "type": "state"
-      },
-      "ee_quat": {
-        "encoding": "quat_xyzw",
-        "range": null,
-        "role": "proprio/eef_rot",
-        "type": "state"
-      },
-      "goal": {
-        "role": "text/instruction",
-        "type": "text"
-      },
-      "grip": {
-        "encoding": null,
-        "range": null,
-        "role": "proprio/gripper",
-        "type": "state"
-      },
-      "wrist_rgb": {
-        "layout": "hwc",
-        "role": "image/primary",
-        "type": "image",
-        "upside_down": false
-      }
-    }
-  },
-  "examples/python/vla_adapters/envs/libero.py:TAGS": {
+  "crates/rlmesh-adapters-compat/example_tags.py:LIBERO": {
     "action": {
       "clip": [-1.0, 1.0],
       "components": [
@@ -121,7 +63,7 @@
       }
     }
   },
-  "examples/python/vla_adapters/envs/metaworld.py:TAGS": {
+  "crates/rlmesh-adapters-compat/example_tags.py:METAWORLD": {
     "action": {
       "clip": [-1.0, 1.0],
       "components": [
@@ -189,7 +131,7 @@
       }
     }
   },
-  "examples/python/vla_adapters/envs/simpler_bridge.py:TAGS": {
+  "crates/rlmesh-adapters-compat/example_tags.py:SIMPLER_BRIDGE": {
     "action": {
       "clip": [-1.0, 1.0],
       "components": [
@@ -246,6 +188,64 @@
       "task_instruction": {
         "role": "text/instruction",
         "type": "text"
+      }
+    }
+  },
+  "examples/python/adapters/serve_and_run.py:ENV_TAGS": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "ee_pos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      },
+      "ee_quat": {
+        "encoding": "quat_xyzw",
+        "range": null,
+        "role": "proprio/eef_rot",
+        "type": "state"
+      },
+      "goal": {
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "grip": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/gripper",
+        "type": "state"
+      },
+      "wrist_rgb": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
       }
     }
   }
