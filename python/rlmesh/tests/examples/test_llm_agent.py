@@ -40,32 +40,74 @@ def test_harness_solves_served_addition_task(
     assert json.loads(env_log.read_text())["rewards"] == {"correct": 1.0}
 
 
-def test_harness_batch_calls_the_llm_for_every_row_at_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_served_harness_calls_the_llm_for_every_session_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, session_port: int
 ) -> None:
     import threading
+    import time
+
+    import rlmesh
+    from rlmesh import spaces
 
     monkeypatch.setenv("RLMESH_OUTPUT_DIR", str(tmp_path))
     monkeypatch.syspath_prepend(str(EXAMPLES / "llm_agent"))
     from harness import LLMHarness
 
-    together = threading.Barrier(3, timeout=10)
+    lock = threading.Lock()
+    running = [0, 0]
 
     def chat(messages: list[Any], tools: list[Any]) -> tuple[Any, Any]:
-        together.wait()
+        with lock:
+            running[0] += 1
+            running[1] = max(running)
+        time.sleep(0.3)
+        with lock:
+            running[0] -= 1
         return {"role": "assistant", "content": messages[-1]["content"]}, {}
 
+    class Ask:
+        observation_space = spaces.Text(4096, min_length=0)
+        action_space = spaces.Text(4096, min_length=0)
+
+        def __init__(self) -> None:
+            self.replies: list[str] = []
+
+        def reset(self, *, seed: int | None = None, options: Any = None) -> Any:
+            message = {"role": "user", "content": f"q{seed}"}
+            return json.dumps({"messages": [message], "tools": []}), {}
+
+        def step(self, action: str) -> Any:
+            self.replies.append(json.loads(action)["content"])
+            return json.dumps({"messages": [], "tools": []}), 0.0, True, False, {}
+
+        def close(self) -> None:
+            return None
+
     harness = LLMHarness(model="fake", chat=chat, retries=0)
-    observations = [
-        json.dumps({"messages": [{"role": "user", "content": f"q{i}"}], "tools": []})
-        for i in range(3)
-    ]
-    contexts: list[Any] = [
-        {"episode_id": f"e{i}", "predict_index": 0, "state": {}} for i in range(3)
-    ]
-    replies = harness.predict_batch(observations, contexts)
-    assert [json.loads(reply)["content"] for reply in replies] == ["q0", "q1", "q2"]
-    assert [len(c["state"]["messages"]) for c in contexts] == [2, 2, 2]
+    session = f"127.0.0.1:{session_port}"
+    server = threading.Thread(
+        target=harness.serve, args=(session,), kwargs={"name": "h"}
+    )
+    server.start()
+    envs = [Ask() for _ in range(3)]
+    try:
+        clients = [
+            threading.Thread(
+                target=lambda env=env, seed=seed: rlmesh.Model(f"{session}/h").run(
+                    env, seeds=[seed]
+                )
+            )
+            for seed, env in enumerate(envs)
+        ]
+        for client in clients:
+            client.start()
+        for client in clients:
+            client.join(30)
+    finally:
+        harness.close()
+        server.join(10)
+    assert [env.replies for env in envs] == [["q0"], ["q1"], ["q2"]]
+    assert running[1] > 1, "the sessions' chat calls overlapped"
 
 
 class _Msg(SimpleNamespace):

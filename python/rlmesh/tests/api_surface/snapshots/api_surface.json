@@ -407,6 +407,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "concurrency": {
+            "kind": "attribute",
+            "signature": "concurrency: int | None"
+          },
           "describe": {
             "kind": "function",
             "signature": "describe() -> dict[str, Any]"
@@ -486,7 +490,7 @@
             "signature": "workflow_edition: str | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False, concurrency: int | None = None) -> None",
         "stability": "Stable"
       },
       "ModelException": {
@@ -2670,6 +2674,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "concurrency": {
+            "kind": "attribute",
+            "signature": "concurrency: int | None"
+          },
           "describe": {
             "kind": "function",
             "signature": "describe() -> dict[str, Any]"
@@ -2747,7 +2755,7 @@
             "signature": "workflow_edition: str | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False, concurrency: int | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteEnv": {
@@ -3403,6 +3411,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "concurrency": {
+            "kind": "attribute",
+            "signature": "concurrency: int | None"
+          },
           "describe": {
             "kind": "function",
             "signature": "describe() -> dict[str, Any]"
@@ -3482,7 +3494,7 @@
             "signature": "workflow_edition: str | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False, concurrency: int | None = None) -> None",
         "stability": "Stable"
       },
       "NumpyValue": {
@@ -6502,6 +6514,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "concurrency": {
+            "kind": "attribute",
+            "signature": "concurrency: int | None"
+          },
           "describe": {
             "kind": "function",
             "signature": "describe() -> dict[str, Any]"
@@ -6579,7 +6595,7 @@
             "signature": "workflow_edition: str | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False, concurrency: int | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteEnv": {

@@ -135,6 +135,9 @@ impl PyPredict {
         action: &Bound<'_, PyAny>,
         space: &rlmesh_spaces::SpaceSpec,
     ) -> rlmesh::Result<SpaceValue> {
+        if action.is_instance_of::<pyo3::exceptions::PyBaseException>() {
+            return Err(self.internal(PyErr::from_value(action.clone())));
+        }
         py_any_to_space_value_with_backend(py, action, space, ValueBackend::Native)
             .map_err(|err| self.misfit("an action", space, &err))
     }
@@ -925,7 +928,11 @@ fn call_batched(
         };
         let mut out = Vec::with_capacity(inputs.len());
         for item in result.bind(py).try_iter()? {
-            out.push(decode_value(&item?)?);
+            let item = item?;
+            if item.is_instance_of::<pyo3::exceptions::PyBaseException>() {
+                return Err(PyErr::from_value(item));
+            }
+            out.push(decode_value(&item)?);
         }
         Ok(out)
     })

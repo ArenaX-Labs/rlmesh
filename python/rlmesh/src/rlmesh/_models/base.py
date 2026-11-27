@@ -10,7 +10,7 @@ import functools
 import inspect
 import os
 import weakref
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -27,6 +27,7 @@ from .._upgrade import model_session, removed
 from .._value_conversion import ValueBridge, identity_bridge, tree_map
 from ..types import EnvTarget, LocalEnvTarget, Value, ViewArg
 from ._calls import ModelCalls
+from ._concurrency import Concurrency, is_async, resolve_limit
 from ._episodes import EpisodeStore
 from ._instruction import text_placements, tree_set
 
@@ -559,9 +560,56 @@ class ModelBase(Generic[ObsT, ActT]):
     #: undeclared; declaring it makes the runtime refuse an ``execution_horizon`` above K and
     #: fail a predict whose chunk is not exactly K long.
     native_chunk: int | None = None
+    #: How many :meth:`predict` calls may run at once, for a model that waits on I/O (an
+    #: LLM or a remote API) rather than computing. An ``async def predict`` overlaps up to
+    #: 32 by default; a plain ``predict`` runs one at a time unless this is set, and then
+    #: runs on that many threads, so it must be safe to call from several at once. Calls
+    #: for one episode never overlap, so its ``context.state`` needs no lock. A model with
+    #: ``predict_batch`` or ``predict_chunk_batch`` batches instead and cannot set it.
+    concurrency: int | None = None
 
     #: A checkpoint may set this in load(); Rust selects and validates it.
     execution_horizon: int | None = None
+
+    def _overlap(
+        self,
+        predict: Corner | None,
+        predict_chunk: Corner | None,
+        predict_batch: Corner | None,
+        predict_chunk_batch: Corner | None,
+        declared: object,
+    ) -> Corner | None:
+        """Set up overlapping predicts; returns ``predict`` as a blocking call."""
+        owner = type(self).__name__ if type(self) is not ModelBase else "Model"
+        for name, corner in (
+            ("predict_chunk", predict_chunk),
+            ("predict_batch", predict_batch),
+            ("predict_chunk_batch", predict_chunk_batch),
+        ):
+            if corner is not None and is_async(corner):
+                raise TypeError(f"{owner}.{name} cannot be async: only predict can")
+        asynchronous = predict is not None and is_async(predict)
+        limit = resolve_limit(declared, asynchronous=asynchronous, owner=owner)
+        #: Runs overlapping predicts; ``None`` for a model that predicts one at a time.
+        self._concurrency: Concurrency | None = None
+        if limit == 1 and not asynchronous:
+            return predict
+        if predict is None:
+            raise TypeError(f"{owner}: concurrency overlaps predict(); define one")
+        if limit > 1 and (predict_batch is not None or predict_chunk_batch is not None):
+            raise TypeError(
+                f"{owner}: concurrency overlaps predict() calls, and a model with "
+                "predict_batch or predict_chunk_batch batches them instead; "
+                "define one or the other"
+            )
+        self._concurrency = Concurrency(limit, asynchronous=asynchronous, name=owner)
+        #: The authored predict, before episode state and the call gate.
+        self._row_predict: Corner = predict
+        if not asynchronous:
+            return predict
+        return self._concurrency.sync(
+            cast("Callable[..., Coroutine[Any, Any, Any]]", predict)
+        )
 
     def _served(self, address: str) -> Callable[[object], object]:
         """Take ``address`` as a served model's; the predict stand-in it returns refuses."""
@@ -632,6 +680,7 @@ class ModelBase(Generic[ObsT, ActT]):
         on_episode_end: LifecycleCallback | None = None,
         on_close: LifecycleCallback | None = None,
         trust_entrypoints: bool = False,
+        concurrency: int | None = None,
     ) -> None: ...
     @overload
     def __init__(
@@ -642,6 +691,7 @@ class ModelBase(Generic[ObsT, ActT]):
         on_episode_end: LifecycleCallback | None = None,
         on_close: LifecycleCallback | None = None,
         trust_entrypoints: bool = False,
+        concurrency: int | None = None,
     ) -> None: ...
     @overload
     def __init__(
@@ -652,6 +702,7 @@ class ModelBase(Generic[ObsT, ActT]):
         on_episode_end: LifecycleCallback | None = None,
         on_close: LifecycleCallback | None = None,
         trust_entrypoints: bool = False,
+        concurrency: int | None = None,
     ) -> None: ...
     def __init__(
         self,
@@ -661,6 +712,7 @@ class ModelBase(Generic[ObsT, ActT]):
         on_episode_end: LifecycleCallback | None = None,
         on_close: LifecycleCallback | None = None,
         trust_entrypoints: bool = False,
+        concurrency: int | None = None,
     ) -> None:
         """Build the model from ``source`` (see the class docstring for the modes).
 
@@ -740,6 +792,13 @@ class ModelBase(Generic[ObsT, ActT]):
             coerced_on_close = coerced.on_close
             policy = coerced.policy
 
+        raw_predict = self._overlap(
+            raw_predict,
+            raw_predict_chunk,
+            raw_predict_batch,
+            raw_predict_chunk_batch,
+            concurrency if concurrency is not None else type(self).concurrency,
+        )
         raw_predict_chunk = _normalize_chunk(raw_predict_chunk)
         raw_predict_chunk_batch = _normalize_chunk(raw_predict_chunk_batch)
 
@@ -1109,6 +1168,54 @@ class ModelBase(Generic[ObsT, ActT]):
             return
         self._close_with(None)
 
+    def _overlapping_predicts(
+        self, concurrency: Concurrency, observe: Callable[[Value], Any]
+    ) -> Callable[[list[Value], list[Mapping[str, Any]]], list[Value]]:
+        """A batched corner that runs one :meth:`predict` per row, overlapping.
+
+        A row whose predict raised returns its exception in its place, and the
+        native worker fails only that row's request.
+        """
+        predict = self._row_predict
+        bridge = self._bridge
+        episodes = self._episodes
+        takes_context = accepts_context(predict, 1)
+
+        def args(row: tuple[Any, Any] | Exception) -> tuple[Any, ...]:
+            if isinstance(row, Exception):
+                raise row
+            observation, context = row
+            return (observation, context) if context is not None else (observation,)
+
+        async def awaited(row: tuple[Any, Any] | Exception) -> Value:
+            coroutine = cast("Coroutine[Any, Any, object]", predict(*args(row)))
+            return bridge.encode(await coroutine)
+
+        def called(row: tuple[Any, Any] | Exception) -> Value:
+            return bridge.encode(predict(*args(row)))
+
+        call: Callable[[Any], Any] = awaited if concurrency.asynchronous else called
+
+        def predict_rows(
+            observations: list[Value], context: list[Mapping[str, Any]]
+        ) -> list[Value]:
+            def row(index: int, observation: Value) -> tuple[Any, Any] | Exception:
+                try:
+                    return (
+                        observe(observation),
+                        episodes.context(context[index])
+                        if takes_context and index < len(context)
+                        else None,
+                    )
+                except Exception as error:
+                    return error
+
+            return concurrency.map(
+                call, [row(*item) for item in enumerate(observations)]
+            )
+
+        return predict_rows
+
     def _close_with(self, authored: Callable[[], object] | None) -> None:
         """The one terminal close; ``authored`` is a subclass's own close body."""
         calls = self._calls
@@ -1120,6 +1227,8 @@ class ModelBase(Generic[ObsT, ActT]):
                 calls.run_close_hook(hook)
         finally:
             calls.finish_close()
+            if self._concurrency is not None:
+                self._concurrency.close()
             # The native worker's callbacks close over self through a
             # class the cycle collector cannot traverse.
             self._worker = None
@@ -1247,6 +1356,12 @@ class ModelBase(Generic[ObsT, ActT]):
                 return [bridge.encode(a) for a in parts]
 
             predict_batch_neutral = _predict_batch_neutral
+
+        concurrency = self._concurrency
+        if concurrency is not None and concurrency.limit > 1:
+            predict_batch_neutral = self._calls.gated(
+                self._overlapping_predicts(concurrency, observe)
+            )
 
         raw_predict_chunk_batch = self._raw_predict_chunk_batch
         predict_chunk_batch_neutral: (

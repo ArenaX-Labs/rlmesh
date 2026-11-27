@@ -2131,12 +2131,13 @@ params = {}
 ["rlmesh:Model"]
 area = "model"
 rule = ["R-4"]
-parameters = { "source" = { "default" = "None" }, "spec" = { "default" = "None" }, "on_episode_end" = { "default" = "None" }, "on_close" = { "default" = "None" }, "trust_entrypoints" = { "default" = "False" } }
+parameters = { "source" = { "default" = "None" }, "spec" = { "default" = "None" }, "on_episode_end" = { "default" = "None" }, "on_close" = { "default" = "None" }, "trust_entrypoints" = { "default" = "False" }, "concurrency" = { "default" = "None" } }
 
 ["rlmesh:Model".rust]
 status = "present"
 path = "rlmesh::Model"
 params = { "source" = "rlmesh::Model::new#source", "spec" = "rlmesh::ModelOptions#spec", "on_episode_end" = "rlmesh::ModelOptions#on_episode_end", "on_close" = "rlmesh::ModelOptions#on_close", "trust_entrypoints" = "rlmesh::ModelOptions#trust_entrypoints" }
+refused = { concurrency = ["D-48"] }
 also = [
   "rlmesh::Corners",
   "rlmesh::Corners::Clone",
@@ -2294,6 +2295,7 @@ default_skip = { "source" = "Positional or authored callable parameter, not a da
 status = "present"
 path = "RLMeshModel"
 params = { "source" = "rlmesh_model_new#vtable", "spec" = "RLMeshModelOptions#spec", "on_episode_end" = "RLMeshModelOptions#on_episode_end", "on_close" = "RLMeshModelOptions#on_close", "trust_entrypoints" = "RLMeshModelOptions#trust_entrypoints" }
+refused = { concurrency = ["D-48"] }
 translations = { "source" = ["MDL-1"] }
 also = [
   "rlmesh_model_from_address",
@@ -2387,6 +2389,7 @@ also_rules = { "rlmesh_model_from_address" = [
 status = "present"
 path = "rlmesh::Model"
 params = { "source" = "rlmesh::Model::Model#source", "spec" = "rlmesh::ModelOptions#spec", "on_episode_end" = "rlmesh::ModelOptions#on_episode_end", "on_close" = "rlmesh::ModelOptions#on_close", "trust_entrypoints" = "rlmesh::ModelOptions#trust_entrypoints" }
+refused = { concurrency = ["D-48"] }
 also = [
   "rlmesh::Model::from_address",
   "rlmesh::Model::Model",
@@ -2501,6 +2504,23 @@ params = {}
 status = "present"
 path = "rlmesh::Model::close"
 params = {}
+
+["rlmesh:Model.concurrency"]
+area = "model"
+rule = ["R-4"]
+parameters = {}
+
+["rlmesh:Model.concurrency".rust]
+status = "exempt"
+rule = ["D-48"]
+
+["rlmesh:Model.concurrency".c]
+status = "exempt"
+rule = ["D-48"]
+
+["rlmesh:Model.concurrency".cpp]
+status = "exempt"
+rule = ["D-48"]
 
 ["rlmesh:Model.describe"]
 area = "model"
@@ -14178,7 +14198,7 @@ status = "bridge"
 ["rlmesh.numpy:Model"]
 area = "model"
 rule = ["R-24"]
-parameters = { "source" = { "default" = "None" }, "spec" = { "default" = "None" }, "on_episode_end" = { "default" = "None" }, "on_close" = { "default" = "None" }, "trust_entrypoints" = { "default" = "False" } }
+parameters = { "source" = { "default" = "None" }, "spec" = { "default" = "None" }, "on_episode_end" = { "default" = "None" }, "on_close" = { "default" = "None" }, "trust_entrypoints" = { "default" = "False" }, "concurrency" = { "default" = "None" } }
 
 ["rlmesh.numpy:Model".rust]
 status = "bridge"
@@ -14229,6 +14249,20 @@ status = "bridge"
 status = "bridge"
 
 ["rlmesh.numpy:Model.close".cpp]
+status = "bridge"
+
+["rlmesh.numpy:Model.concurrency"]
+area = "model"
+rule = ["R-24"]
+parameters = {}
+
+["rlmesh.numpy:Model.concurrency".rust]
+status = "bridge"
+
+["rlmesh.numpy:Model.concurrency".c]
+status = "bridge"
+
+["rlmesh.numpy:Model.concurrency".cpp]
 status = "bridge"
 
 ["rlmesh.numpy:Model.describe"]
