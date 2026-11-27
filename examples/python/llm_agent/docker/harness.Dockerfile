@@ -5,7 +5,7 @@ ARG BASE=python:3.11-slim
 FROM ${BASE}
 
 # A base that already has this rlmesh keeps it.
-ARG RLMESH_VERSION=0.2.0a1
+ARG RLMESH_VERSION=0.2.0a2
 RUN pip install --no-cache-dir "rlmesh==${RLMESH_VERSION}" openai
 
 WORKDIR /app

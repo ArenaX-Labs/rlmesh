@@ -27,28 +27,96 @@ DEFAULT_MAX_TOKENS = 8192
 STEP_BUDGET_S = 240.0
 
 
-def openai_chat(model: str, max_tokens: int = DEFAULT_MAX_TOKENS) -> Chat:
-    """Chat through the OpenAI-compatible server at ``$OPENAI_BASE_URL``."""
+def resolve_llm(llm: str) -> tuple[str, str, str]:
+    """Split a models.dev ``provider/model`` (``$RLMESH_LLM``) into the model id
+    to send and the OpenAI-compatible base URL and key to send it to.
+
+    The provider ends at the first ``/``; the model id may hold more. Anthropic
+    is called at its OpenAI-compatible ``/v1`` with ``$ANTHROPIC_API_KEY``; every
+    other provider at ``$OPENAI_BASE_URL`` with ``$OPENAI_API_KEY``, which RLMesh
+    Managed sets from the run's API key connection.
+    """
+    provider, _, model = llm.partition("/")
+    if not provider or not model:
+        raise ValueError(f"llm {llm!r} is not provider/model")
+    if provider == "anthropic":
+        base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+        return model, base.rstrip("/") + "/v1", os.environ.get("ANTHROPIC_API_KEY", "")
+    return (
+        model,
+        os.environ.get("OPENAI_BASE_URL", DEFAULT_BASE_URL),
+        os.environ.get("OPENAI_API_KEY", ""),
+    )
+
+
+def with_backoff(
+    create: Callable[[float], Any], budget_s: float = STEP_BUDGET_S
+) -> Any:
+    """Call ``create(timeout)``, retrying a rate limit or server error until
+    ``budget_s`` runs out; a ``retry-after`` header sets the wait."""
+    deadline = time.monotonic() + budget_s
+    delay = 1.0
+    while True:
+        try:
+            return create(deadline - time.monotonic())
+        except Exception as exc:
+            status = getattr(exc, "status_code", 0)
+            if status != 429 and status < 500:
+                raise
+            response = getattr(exc, "response", None)
+            header = (
+                response.headers.get("retry-after") if response is not None else None
+            )
+            try:
+                wait = float(header) if header else delay
+            except ValueError:
+                wait = delay
+            if time.monotonic() + wait >= deadline:
+                raise
+            time.sleep(wait)
+            delay = min(delay * 2, 30.0)
+
+
+def openai_chat(
+    model: str,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    provider: str = "",
+) -> Chat:
+    """Chat through an OpenAI-compatible server, by default ``$OPENAI_BASE_URL``.
+
+    ``provider`` is the models.dev provider id; without one the server is taken
+    to be a local Ollama.
+    """
     from openai import OpenAI, omit
 
     # Messages and tools pass through as plain JSON, not the SDK's TypedDicts.
     client: Any = OpenAI(
-        base_url=os.environ.get("OPENAI_BASE_URL", DEFAULT_BASE_URL),
-        api_key=os.environ.get("OPENAI_API_KEY", "ollama"),
+        base_url=base_url or os.environ.get("OPENAI_BASE_URL", DEFAULT_BASE_URL),
+        api_key=api_key or os.environ.get("OPENAI_API_KEY", "ollama"),
         timeout=STEP_BUDGET_S,
         max_retries=0,
     )
+    # OpenAI's reasoning models refuse max_tokens.
+    budget = {
+        "max_completion_tokens" if provider == "openai" else "max_tokens": max_tokens
+    }
+    # Ollama's thinking switch: reasoning moves out of content.
+    extra = None if provider else {"think": False}
 
     def chat(
         messages: list[Message], tools: list[dict[str, Any]]
     ) -> tuple[Message, dict[str, Any] | None]:
-        completion = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            # Ollama's thinking switch: reasoning moves out of content; other servers ignore it.
-            extra_body={"think": False},
-            tools=tools or omit,
+        completion = with_backoff(
+            lambda timeout: client.chat.completions.create(
+                model=model,
+                messages=messages,
+                extra_body=extra,
+                tools=tools or omit,
+                timeout=timeout,
+                **budget,
+            )
         )
         message = completion.choices[0].message.model_dump(exclude_none=True)
         reply: Message = {"role": "assistant", "content": message.get("content")}
@@ -89,7 +157,9 @@ class LLMHarness(rlmesh.Model):
     """Answer each observation with the LLM's next assistant message.
 
     Args:
-        model: The model name sent to the chat server (default ``$OPENAI_MODEL``).
+        model: The model name sent to the chat server. Without one, the
+            ``provider/model`` in ``$RLMESH_LLM`` picks the model and its
+            endpoint (see :func:`resolve_llm`), else ``$OPENAI_MODEL``.
         chat: The chat function; defaults to :func:`openai_chat` for ``model``.
         retries: Extra calls allowed in one step when a reply is empty.
         max_tokens: The completion budget of each call, reasoning included
@@ -105,10 +175,16 @@ class LLMHarness(rlmesh.Model):
         retries: int = 2,
         max_tokens: int | None = None,
     ) -> None:
-        model = model or os.environ.get("OPENAI_MODEL", DEFAULT_MODEL)
         max_tokens = max_tokens or int(
             os.environ.get("OPENAI_MAX_TOKENS") or DEFAULT_MAX_TOKENS
         )
+        llm = "" if model else os.environ.get("RLMESH_LLM", "")
+        if llm:
+            model, base_url, api_key = resolve_llm(llm)
+            chat = chat or openai_chat(
+                model, max_tokens, base_url, api_key, llm.partition("/")[0]
+            )
+        model = model or os.environ.get("OPENAI_MODEL", DEFAULT_MODEL)
         self.model_name = model
         self.chat = chat or openai_chat(model, max_tokens)
         self.retries = retries

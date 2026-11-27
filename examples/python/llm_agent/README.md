@@ -22,7 +22,7 @@ ollama pull gemma3:4b         # color-codeword (images)
 ollama serve
 ```
 
-The harness reads `OPENAI_BASE_URL` (default `http://localhost:11434/v1`) and `OPENAI_API_KEY` (default `ollama`), so any OpenAI-compatible server works. It needs `rlmesh` and `openai`:
+The harness reads `OPENAI_BASE_URL` (default `http://localhost:11434/v1`) and `OPENAI_API_KEY` (default `ollama`), so any OpenAI-compatible server works. On RLMesh Managed, a harness entry's `llm` reaches the container as `RLMESH_LLM`, a [models.dev](https://models.dev) `provider/model` such as `anthropic/claude-sonnet-5-5` or `nebius/Qwen/Qwen3-235B-A22B-Instruct-2507`; it takes precedence over `OPENAI_MODEL`. The harness sends the part after the first `/` as the model, calls Anthropic at its OpenAI-compatible endpoint with `ANTHROPIC_API_KEY` and every other provider at `OPENAI_BASE_URL` with `OPENAI_API_KEY` (the run's API key connection sets both), and retries rate limits and server errors within the step's budget. It needs `rlmesh` and `openai`:
 
 ```bash
 uv pip install --pre "rlmesh>=0.2.0a2" openai

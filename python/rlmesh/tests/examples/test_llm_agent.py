@@ -521,3 +521,78 @@ def test_tictactoe_scores_both_seats(
 
     _, info = play("1", "2", "3", "5", "4", "6", "8", "7", "9")
     assert info["rewards"] == {"X": 0.0, "O": 0.0} and info["winner"] == "draw"
+
+
+@pytest.mark.parametrize(
+    ("llm", "env", "want"),
+    [
+        (
+            "anthropic/claude-sonnet-5-5",
+            {"ANTHROPIC_API_KEY": "ak"},
+            ("claude-sonnet-5-5", "https://api.anthropic.com/v1", "ak"),
+        ),
+        (
+            "nebius/Qwen/Qwen3-235B-A22B-Instruct-2507",
+            {"OPENAI_BASE_URL": "https://nebius/v1/", "OPENAI_API_KEY": "nk"},
+            ("Qwen/Qwen3-235B-A22B-Instruct-2507", "https://nebius/v1/", "nk"),
+        ),
+        ("claude-sonnet-5-5", {}, None),
+    ],
+)
+def test_resolve_llm_splits_provider_at_the_first_slash(
+    llm: str, env: dict[str, str], want: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(str(EXAMPLES / "llm_agent"))
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    from harness import resolve_llm
+
+    if want is None:
+        with pytest.raises(ValueError):
+            resolve_llm(llm)
+    else:
+        assert resolve_llm(llm) == want
+
+
+class _StatusError(Exception):
+    def __init__(self, status: int, retry_after: str | None = None) -> None:
+        self.status_code = status
+        self.response = SimpleNamespace(
+            headers={"retry-after": retry_after} if retry_after else {}
+        )
+
+
+@pytest.mark.parametrize(
+    ("errors", "budget", "want_sleeps", "succeeds"),
+    [
+        ([_StatusError(429, "3"), _StatusError(503)], 60.0, [3.0, 2.0], True),
+        ([_StatusError(400)], 60.0, [], False),
+        ([_StatusError(429, "30")], 10.0, [], False),
+    ],
+)
+def test_with_backoff_retries_rate_limits_within_the_budget(
+    errors: list[Exception],
+    budget: float,
+    want_sleeps: list[float],
+    succeeds: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.syspath_prepend(str(EXAMPLES / "llm_agent"))
+    import harness
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(harness.time, "sleep", sleeps.append)
+    pending = list(errors)
+
+    def create(timeout: float) -> str:
+        assert 0 < timeout <= budget
+        if pending:
+            raise pending.pop(0)
+        return "reply"
+
+    if succeeds:
+        assert harness.with_backoff(create, budget) == "reply"
+    else:
+        with pytest.raises(_StatusError):
+            harness.with_backoff(create, budget)
+    assert sleeps == want_sleeps
