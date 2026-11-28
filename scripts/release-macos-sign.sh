@@ -10,7 +10,16 @@ paths=("$@")
 evidence="$(dirname "${paths[0]}")"
 identifier=()
 if [[ -n "${RLMESH_CODESIGN_IDENTIFIER:-}" ]]; then identifier=(--identifier "$RLMESH_CODESIGN_IDENTIFIER"); fi
+search_list="$RUNNER_TEMP/rlmesh-keychain-search-list"
 if [[ "$mode" == cleanup ]]; then
+  if [[ -f "$search_list" ]]; then
+    keychains=()
+    while IFS= read -r line; do
+      if [[ -n "$line" ]]; then keychains+=("$line"); fi
+    done < "$search_list"
+    security list-keychains -d user -s ${keychains[@]+"${keychains[@]}"} || true
+    rm -f "$search_list"
+  fi
   security delete-keychain "$keychain" 2>/dev/null || true
   rm -f "$RUNNER_TEMP/rlmesh-signing.p12" "$RUNNER_TEMP/rlmesh-notary.p8" "$RUNNER_TEMP/rlmesh-notary.zip"
   exit 0
@@ -62,6 +71,27 @@ PY
   security unlock-keychain -p "$keychain_password" "$keychain"
   security import "$RUNNER_TEMP/rlmesh-signing.p12" -k "$keychain" \
     -P "$APPLE_DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign
+  # The .p12 carries only the leaf; find-identity -v and codesign need the issuing
+  # intermediate from a keychain on the search list to validate the chain.
+  # Apple's Developer ID G2 CA, SHA-256 F16CD3C54C7F83CEA4BF1A3E6A0819C8AAA8E4A1528FD144715F350643D2DF3A
+  intermediate="$(dirname "${BASH_SOURCE[0]}")/apple/DeveloperIDG2CA.cer"
+  INTERMEDIATE="$intermediate" python - <<'PY'
+import hashlib
+import os
+from pathlib import Path
+expected = "f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a"
+if hashlib.sha256(Path(os.environ["INTERMEDIATE"]).read_bytes()).hexdigest() != expected:
+    raise SystemExit("DeveloperIDG2CA.cer does not match its pinned SHA-256")
+PY
+  security import "$intermediate" -k "$keychain"
+  if [[ ! -f "$search_list" ]]; then
+    security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//' > "$search_list"
+  fi
+  keychains=()
+  while IFS= read -r line; do
+    if [[ -n "$line" && "$line" != "$keychain" ]]; then keychains+=("$line"); fi
+  done < "$search_list"
+  security list-keychains -d user -s "$keychain" ${keychains[@]+"${keychains[@]}"}
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" >/dev/null
   identity="$(security find-identity -v -p codesigning "$keychain" | sed -n "s/.*\"\(Developer ID Application: .* ($APPLE_TEAM_ID)\)\".*/\1/p")"
   [[ -n "$identity" && "$identity" != *$'\n'* ]] || { echo 'expected one Developer ID Application identity for APPLE_TEAM_ID' >&2; exit 1; }

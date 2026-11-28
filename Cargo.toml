@@ -15,7 +15,7 @@ members = ["crates/*", "javascript/rlmesh/native", "javascript/rlmesh/wasm", "py
 resolver = "3"
 
 [workspace.package]
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 authors = ["ArenaX Labs, Inc. <research@competesai.com>", "Josh Blayone <josh@arenaxlabs.com>"]
 edition = "2024"
 rust-version = "1.99"
@@ -28,16 +28,16 @@ keywords = ["rl", "evaluation", "runtime", "gymnasium"]
 publish = true
 
 [workspace.dependencies]
-rlmesh = { version = "=0.2.0-alpha.2", path = "crates/rlmesh" }
-rlmesh-adapters = { version = "=0.2.0-alpha.2", path = "crates/rlmesh-adapters" }
-rlmesh-cli = { version = "=0.2.0-alpha.2", path = "crates/rlmesh-cli" }
-rlmesh-cockpit = { version = "=0.2.0-alpha.2", path = "crates/rlmesh-cockpit" }
-rlmesh-proto = { version = "=0.2.0-alpha.2", path = "crates/rlmesh-proto" }
-rlmesh-session = { version = "=0.2.0-alpha.2", path = "crates/rlmesh-session", default-features = false }
-rlmesh-session-core = { version = "=0.2.0-alpha.2", path = "crates/rlmesh-session-core" }
-rlmesh-spaces = { version = "=0.2.0-alpha.2", path = "crates/rlmesh-spaces" }
-rlmesh-tether = { version = "=0.2.0-alpha.2", path = "crates/rlmesh-tether" }
-rlmesh-wasm = { version = "=0.2.0-alpha.2", path = "javascript/rlmesh/wasm" }
+rlmesh = { version = "=0.2.0-alpha.3", path = "crates/rlmesh" }
+rlmesh-adapters = { version = "=0.2.0-alpha.3", path = "crates/rlmesh-adapters" }
+rlmesh-cli = { version = "=0.2.0-alpha.3", path = "crates/rlmesh-cli" }
+rlmesh-cockpit = { version = "=0.2.0-alpha.3", path = "crates/rlmesh-cockpit" }
+rlmesh-proto = { version = "=0.2.0-alpha.3", path = "crates/rlmesh-proto" }
+rlmesh-session = { version = "=0.2.0-alpha.3", path = "crates/rlmesh-session", default-features = false }
+rlmesh-session-core = { version = "=0.2.0-alpha.3", path = "crates/rlmesh-session-core" }
+rlmesh-spaces = { version = "=0.2.0-alpha.3", path = "crates/rlmesh-spaces" }
+rlmesh-tether = { version = "=0.2.0-alpha.3", path = "crates/rlmesh-tether" }
+rlmesh-wasm = { version = "=0.2.0-alpha.3", path = "javascript/rlmesh/wasm" }
 
 rayon = "1.10"
 prost = "0.14"

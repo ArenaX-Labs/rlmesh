@@ -76,7 +76,7 @@ id = "pypi:rlmesh"
 ecosystem = "pypi"
 name = "rlmesh"
 manifest = "python/rlmesh/pyproject.toml"
-version = "0.2.0a2"
+version = "0.2.0a3"
 role = "core"
 publish = true
 
@@ -85,7 +85,7 @@ id = "cargo:rlmesh"
 ecosystem = "cargo"
 name = "rlmesh"
 manifest = "crates/rlmesh/Cargo.toml"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 role = "core"
 publish = true
 
@@ -94,7 +94,7 @@ id = "cargo:rlmesh-adapters"
 ecosystem = "cargo"
 name = "rlmesh-adapters"
 manifest = "crates/rlmesh-adapters/Cargo.toml"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 role = "core"
 publish = true
 
@@ -103,7 +103,7 @@ id = "cargo:rlmesh-cli"
 ecosystem = "cargo"
 name = "rlmesh-cli"
 manifest = "crates/rlmesh-cli/Cargo.toml"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 role = "core"
 publish = true
 
@@ -112,7 +112,7 @@ id = "cargo:rlmesh-cockpit"
 ecosystem = "cargo"
 name = "rlmesh-cockpit"
 manifest = "crates/rlmesh-cockpit/Cargo.toml"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 role = "internal"
 publish = true
 
@@ -121,7 +121,7 @@ id = "cargo:rlmesh-proto"
 ecosystem = "cargo"
 name = "rlmesh-proto"
 manifest = "crates/rlmesh-proto/Cargo.toml"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 role = "internal"
 publish = true
 
@@ -130,7 +130,7 @@ id = "cargo:rlmesh-session-core"
 ecosystem = "cargo"
 name = "rlmesh-session-core"
 manifest = "crates/rlmesh-session-core/Cargo.toml"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 role = "core"
 publish = true
 
@@ -139,7 +139,7 @@ id = "cargo:rlmesh-session"
 ecosystem = "cargo"
 name = "rlmesh-session"
 manifest = "crates/rlmesh-session/Cargo.toml"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 role = "core"
 publish = true
 
@@ -148,7 +148,7 @@ id = "cargo:rlmesh-spaces"
 ecosystem = "cargo"
 name = "rlmesh-spaces"
 manifest = "crates/rlmesh-spaces/Cargo.toml"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 role = "core"
 publish = true
 
@@ -157,7 +157,7 @@ id = "cargo:rlmesh-tether"
 ecosystem = "cargo"
 name = "rlmesh-tether"
 manifest = "crates/rlmesh-tether/Cargo.toml"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 role = "core"
 publish = true
 

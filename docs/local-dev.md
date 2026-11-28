@@ -106,7 +106,7 @@ mise run build:python:docker
 
 ### Dev Builds
 
-A build from this checkout is a **dev build**: `crates/rlmesh-proto/build.rs` stamps it with its 12-character HEAD commit, which `rlmesh.build_info()` reports as `git`, with `build_source == "git"`. `RLMESH_RELEASE_BUILD=1` makes a release build instead. `rlmesh --version` says which kind you have: `rlmesh 0.2.0-alpha.2 (dev build of 1a2b3c4d5e6f) · edition 2026.10 · session wire 2`. Every build reports the same bare workflow edition, and any two builds talk when their session wire revisions match, whatever their kind or commit.
+A build from this checkout is a **dev build**: `crates/rlmesh-proto/build.rs` stamps it with its 12-character HEAD commit, which `rlmesh.build_info()` reports as `git`, with `build_source == "git"`. `RLMESH_RELEASE_BUILD=1` makes a release build instead. `rlmesh --version` says which kind you have: `rlmesh 0.2.0-alpha.3 (dev build of 1a2b3c4d5e6f) · edition 2026.10 · session wire 2`. Every build reports the same bare workflow edition, and any two builds talk when their session wire revisions match, whatever their kind or commit.
 
 ## Docs
 
