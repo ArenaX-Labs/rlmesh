@@ -115,7 +115,7 @@ Leave the variable at `1` to publish npm with every release, or delete it (`gh v
 Every release gets a GitHub Release built from its tag and curated changelog.
 For 0.2, the published distributions are the Python wheels, the nine Rust
 crates above once `RLMESH_PUBLISH_CRATES` is on, and the six npm packages once
-`RLMESH_PUBLISH_NPM` is on (0.2.0-alpha.2 ships the wheels only). npm attaches
+`RLMESH_PUBLISH_NPM` is on (0.2.0-alpha.3 ships the wheels only). npm attaches
 nothing to the Release. C/C++, C#, Unity, Unreal and board-library release assets are
 fenced; their code and existing CI build/test coverage remain in the tree.
 C ABI 7 is cut only when the native bindings ship.

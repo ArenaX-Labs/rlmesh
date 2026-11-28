@@ -5406,7 +5406,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -5432,10 +5432,10 @@ dependencies = [
  "rayon",
  "re_mp4",
  "reqwest",
- "rlmesh-adapters 0.2.0-alpha.2",
+ "rlmesh-adapters 0.2.0-alpha.3",
  "rlmesh-proto",
  "rlmesh-session",
- "rlmesh-spaces 0.2.0-alpha.2",
+ "rlmesh-spaces 0.2.0-alpha.3",
  "rustls",
  "scoped-tls-hkt",
  "security-framework",
@@ -5470,12 +5470,12 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-adapters"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "image",
  "jpeg-encoder",
  "rlmesh-session-core",
- "rlmesh-spaces 0.2.0-alpha.2",
+ "rlmesh-spaces 0.2.0-alpha.3",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -5483,30 +5483,30 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-adapters-compat"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "rlmesh-adapters 0.1.0",
- "rlmesh-adapters 0.2.0-alpha.2",
+ "rlmesh-adapters 0.2.0-alpha.3",
  "rlmesh-spaces 0.1.0",
- "rlmesh-spaces 0.2.0-alpha.2",
+ "rlmesh-spaces 0.2.0-alpha.3",
  "serde_json",
 ]
 
 [[package]]
 name = "rlmesh-capi"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "async-trait",
  "libc",
  "rlmesh",
- "rlmesh-spaces 0.2.0-alpha.2",
+ "rlmesh-spaces 0.2.0-alpha.3",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
 name = "rlmesh-cli"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -5533,7 +5533,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-cockpit"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "bytes",
  "clap",
@@ -5552,7 +5552,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-device"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "bytes",
  "rlmesh-session",
@@ -5566,7 +5566,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-node"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "bytes",
  "napi",
@@ -5579,7 +5579,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-proto"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "prost",
  "tonic-prost-build",
@@ -5587,7 +5587,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-python"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5600,11 +5600,11 @@ dependencies = [
  "pyo3-stub-gen-derive",
  "rand 0.10.1",
  "rlmesh",
- "rlmesh-adapters 0.2.0-alpha.2",
+ "rlmesh-adapters 0.2.0-alpha.3",
  "rlmesh-cli",
  "rlmesh-proto",
  "rlmesh-session",
- "rlmesh-spaces 0.2.0-alpha.2",
+ "rlmesh-spaces 0.2.0-alpha.3",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -5620,7 +5620,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-session"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "axum",
  "blake3",
@@ -5656,7 +5656,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-session-core"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "blake2",
  "blake3",
@@ -5693,7 +5693,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-spaces"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "bytes",
  "chacha20 0.10.2",
@@ -5706,14 +5706,14 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-tether"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "rlmesh-wasm"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "bytes",
  "console_error_panic_hook",
