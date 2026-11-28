@@ -16,7 +16,10 @@
 #include <Print.h>
 #include <Stream.h>
 
+#include <cstring>
+
 #include "rlmesh_device.h"
+#include "rlmesh_map.h"
 
 // The transport (rlmesh_zenoh.h): opaque here, so a sketch never sees
 // zenoh-pico's headers.
@@ -96,6 +99,18 @@ class Robot {
   // "default" on the record's first address), using the stored robot name.
   // False when not provisioned.
   bool begin(const Provisioning& provisioning, const char* robotJson, uint32_t heartbeatMs = 50);
+  // Adds a part to the robot's map, before begin(): a Gripper, a
+  // Joints<N>. Returns its handle.
+  template <typename P>
+  Part<typename P::Value> add(const char* path, const P& part) {
+    detail::write(map_, path, part);
+    return Part<typename P::Value>(*this, path);
+  }
+  // Joins the home host as begin(provisioning, robotJson) does, with the
+  // parts given to add().
+  bool begin(const Provisioning& provisioning, uint32_t heartbeatMs = 50) {
+    return begin(provisioning, map_.json().c_str(), heartbeatMs);
+  }
   // Runs the robot: call it every loop().
   void poll();
   void end();
@@ -188,9 +203,33 @@ class Robot {
   bool mdns_ = false;
   char mdnsName_[40] = {0};
 
+  detail::MapWriter map_;
   rlmesh_device_robot_t* robot_ = nullptr;
   struct rlmesh_zenoh_t* zenoh_ = nullptr;
 };
+
+template <typename T>
+int Part<T>::index() {
+  if (index_ < 0) index_ = robot_->part(path_);
+  return index_;
+}
+
+template <typename T>
+std::optional<T> Part<T>::due() {
+  safe_ = false;
+  rlmesh_device_tick_t tick;
+  if (index() < 0 || robot_->tick(index_, tick) != TickResult::Ready) return std::nullopt;
+  safe_ = tick.safe != nullptr;
+  if (!tick.has_action || tick.value_len != sizeof(T)) return std::nullopt;
+  T value;
+  memcpy(&value, tick.value, sizeof value);
+  return value;
+}
+
+template <typename T>
+bool Part<T>::publish(const T& value) {
+  return index() >= 0 && robot_->publish(index_, &value, sizeof value) == RLMESH_DEVICE_OK;
+}
 
 }  // namespace rlmesh
 
