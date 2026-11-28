@@ -6,10 +6,8 @@ cd "$repo_root"
 
 so="python/rlmesh/src/rlmesh/_rlmesh.abi3.so"
 
-if [ ! -f "$so" ]; then
-  echo "rlmesh: _rlmesh extension missing — building…"
-  exec mise run build:python:develop
-fi
+# A fresh clone or worktree has no build yet; setup and the test tasks make one.
+[ -f "$so" ] || exit 0
 
 stale="$(
   find crates python/rlmesh/rust Cargo.toml Cargo.lock proto 2>/dev/null \
