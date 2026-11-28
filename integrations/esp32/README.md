@@ -56,35 +56,40 @@ Keep `partitions.csv` when copying an example into another sketch folder.
 
 ## The sketch
 
-After Wi-Fi starts, call `provisioning.begin()` and then
-`robot.begin(provisioning, kMap)`. The stored record supplies the robot name;
-no name is compiled into the provisioned path.
+A sketch describes its parts with `robot.add()` before it begins: a
+`Gripper`, a `Joints<N>`, or a `Custom<T>` of your own kind. After Wi-Fi
+starts, call `provisioning.begin()` and then `robot.begin(provisioning)`. The
+stored record supplies the robot name; no name is compiled into the
+provisioned path.
 
 ```cpp
 #include <RLMesh.h>
 
 rlmesh::Robot robot;
+auto eyes = robot.add("eyes", rlmesh::Joints<2>{
+                                  .names = {"pan", "tilt"},
+                                  .hz = 50,
+                                  .command = rlmesh::Command::Position,
+                                  .safe = rlmesh::Safe::Hold,
+                                  .limits = {{-0.6, 0.6}, {-0.4, 0.4}},
+                              });
 // After Wi-Fi starts, begin provisioning and the robot as in examples/Robot.
 // Call robot.poll() every loop; at the part's control rate:
-void controlTick(int eyes) {
-  rlmesh_device_tick_t tick;
-  switch (robot.tick(eyes, tick)) {
-    case rlmesh::TickResult::Ready:
-      // tick.has_action: dispatch tick.value in the part's dense layout.
-      // tick.safe: run the declared safe behaviour; Robot declares "hold".
-      // tick.handover: switch control modes, then call handoverDone(eyes).
-      break;
-    case rlmesh::TickResult::Idle:
-    case rlmesh::TickResult::NotReady:
-    case rlmesh::TickResult::InvalidArgument:
-      break;
-  }
+void controlTick(std::array<float, 2>& target) {
+  if (auto command = eyes.due()) target = *command;
+  // eyes.safe(): run the declared safe behaviour; "hold" keeps the target.
+  eyes.publish(target);
 }
 ```
 
-`publish()` returns `RLMESH_DEVICE_ERR_NOT_READY` until the robot runs and its
-stream key arrives. `robot.status()` reports the phase, fault, mode, accepted
-and refused chunks, and heartbeat echoes; `robot.lastRefusal()` says why the
+`robot.begin(provisioning, robotJson)` takes a hand-written map instead;
+`robot.part()`, `robot.tick()` and `robot.publish()` then address its parts
+by index, and a tick's `handover` asks for `handoverDone()`.
+
+A part's `publish()` returns false, and `robot.publish()`
+`RLMESH_DEVICE_ERR_NOT_READY`, until the robot runs and its stream key
+arrives. `robot.status()` reports the phase, fault, mode, accepted and refused
+chunks, and heartbeat echoes; `robot.lastRefusal()` says why the
 last chunk was refused. `examples/Timing` measures the crypto costs on the
 board; build sizes and a host test do not establish real-board timing.
 
