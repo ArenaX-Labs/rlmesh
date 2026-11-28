@@ -7,7 +7,7 @@ namespace RLMesh.Unity.Verification
 {
     public sealed class SmokeBootstrap : MonoBehaviour
     {
-        private RLMeshReachTargetBehaviour env;
+        private Agent env;
         private string completionFile;
         private int episodes;
         private float started;
@@ -17,7 +17,10 @@ namespace RLMesh.Unity.Verification
             completionFile = Argument("--rlmesh-complete-file", "");
             episodes = int.Parse(Argument("--rlmesh-episodes", "3"));
             started = Time.realtimeSinceStartup;
-            env = gameObject.AddComponent<RLMeshReachTargetBehaviour>();
+            var goal = new GameObject("target");
+            goal.transform.position = Vector3.right * 5f;
+            env = gameObject.AddComponent<Agent>();
+            env.target = goal.transform;
             env.Address = ":0/env";
             env.EnvId = "Unity-ReachTarget-v0";
         }
@@ -36,7 +39,7 @@ namespace RLMesh.Unity.Verification
                 if (File.ReadAllText(completionFile).Trim() != episodes.ToString()) throw new Exception("wrong episode count");
                 Debug.Log("Unity IL2CPP smoke OK: " + episodes + " episodes");
                 finishRequested = true;
-                Application.Quit(0); // wantsToQuit runs the asynchronous terminal preflight.
+                Application.Quit(0);
             }
         }
         private static string Argument(string key, string fallback)

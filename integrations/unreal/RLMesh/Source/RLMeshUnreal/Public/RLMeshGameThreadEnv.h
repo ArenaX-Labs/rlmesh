@@ -10,6 +10,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include "RLMeshIncludes.h"
@@ -30,7 +31,15 @@ public:
 		{
 			try
 			{
-				Promise->set_value(Function());
+				if constexpr (std::is_void_v<Result>)
+				{
+					Function();
+					Promise->set_value();
+				}
+				else
+				{
+					Promise->set_value(Function());
+				}
 			}
 			catch (...)
 			{

@@ -60,6 +60,21 @@ try
 	EXPECT(result.total_steps() == 6);
 	EXPECT(every_call_on_game_thread);
 
+	bool pumped = false;
+	auto queued = std::async(std::launch::async,
+							 [&]
+							 {
+								 thread->Call(
+									 [&]
+									 {
+										 pumped = std::this_thread::get_id() == game_thread;
+									 });
+							 });
+	while (queued.wait_for(std::chrono::milliseconds(1)) != std::future_status::ready)
+		thread->Pump();
+	queued.get();
+	EXPECT(pumped);
+
 	auto blocked = std::async(std::launch::async,
 							  [&]
 							  {

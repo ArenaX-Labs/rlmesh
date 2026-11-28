@@ -55,22 +55,6 @@ def main() -> None:
         )
     for name in ("package.json", "package.json.meta", "README.md", "README.md.meta"):
         shutil.copyfile(PACKAGE / name, integration / name)
-    sample = PROJECT / "Assets/ReachTarget"
-    if sample.exists():
-        shutil.rmtree(sample)
-    shutil.copytree(PACKAGE / "Samples~/ReachTarget", sample)
-    (sample / "ReachTarget.asmdef").write_text(
-        json.dumps(
-            {
-                "name": "RLMesh.Unity.ReachTarget",
-                "references": ["RLMesh.Unity"],
-                "overrideReferences": True,
-                "precompiledReferences": ["RLMesh.dll"],
-            },
-            indent=2,
-        )
-        + "\n"
-    )
     settings = PROJECT / "ProjectSettings"
     settings.mkdir(exist_ok=True)
     shutil.copyfile(PACKAGE / "ProjectVersion.txt", settings / "ProjectVersion.txt")

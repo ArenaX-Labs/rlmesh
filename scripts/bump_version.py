@@ -192,6 +192,11 @@ def bump(old: str, new: str) -> None:
     ):
         sub_file(ROOT / npm, [(rf'"version": "{o}"', f'"version": "{new}"')])
 
+    sub_file(
+        ROOT / "integrations/unity/package.json",
+        [(rf'"(version|com\.rlmesh\.rlmesh)": "{o}"', rf'"\g<1>": "{new}"')],
+    )
+
     rlmesh_toml = ROOT / "rlmesh.toml"
     sub_file(rlmesh_toml, [(rf'version = "{o}"', f'version = "{new}"')])
     text = rlmesh_toml.read_text()

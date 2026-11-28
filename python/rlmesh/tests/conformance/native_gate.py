@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -27,7 +28,8 @@ from test_gym_conformance import (
     sampled,
 )
 
-COMMAND = shlex.split(os.environ.get("RLMESH_NATIVE_GATE", ""))
+GATE = os.environ.get("RLMESH_NATIVE_GATE", "")
+COMMAND = [GATE] if shutil.which(GATE) else shlex.split(GATE)
 if not COMMAND:
     pytest.skip("RLMESH_NATIVE_GATE names no gate program", allow_module_level=True)
 
