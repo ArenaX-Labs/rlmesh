@@ -19,9 +19,19 @@ fi
 if [[ "$mode" == sign ]]; then
   rm -f "$evidence/notarization.json" "$evidence/notarization-log.json"
   missing=false
-  for secret in APPLE_DEVELOPER_ID_P12 APPLE_DEVELOPER_ID_P12_PASSWORD APPLE_TEAM_ID APPLE_NOTARY_KEY APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID; do
+  for secret in APPLE_DEVELOPER_ID_P12 APPLE_DEVELOPER_ID_P12_PASSWORD APPLE_TEAM_ID; do
     if [[ -z "${!secret:-}" ]]; then missing=true; fi
   done
+  notary=0
+  for secret in APPLE_NOTARY_KEY APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID; do
+    if [[ -n "${!secret:-}" ]]; then notary=$((notary + 1)); fi
+  done
+  notarize=true
+  if [[ "$notary" -eq 0 && "${RLMESH_MACOS_NOTARIZE:-}" == optional ]]; then
+    notarize=false
+  elif [[ "$notary" -ne 3 ]]; then
+    missing=true
+  fi
   if [[ "$missing" == true ]]; then
     if [[ "${GITHUB_REF:-}" == refs/tags/v* && "${RLMESH_ALLOW_UNSIGNED_MACOS:-}" != true ]]; then
       echo '::error::Apple signing/notarization secrets are incomplete; tag releases require them unless RLMESH_ALLOW_UNSIGNED_MACOS is explicitly true.' >&2
@@ -30,7 +40,7 @@ if [[ "$mode" == sign ]]; then
     echo '::warning::Apple secrets are incomplete; explicitly allowing ad-hoc signed macOS binaries without notarization.'
     codesign --force --sign - ${identifier[@]+"${identifier[@]}"} "${paths[@]}"
     codesign --verify --strict --verbose=2 "${paths[@]}"
-    if [[ -n "${GITHUB_OUTPUT:-}" ]]; then echo 'notarize=false' >> "$GITHUB_OUTPUT"; fi
+    if [[ -n "${GITHUB_OUTPUT:-}" ]]; then printf 'signed=false\nnotarize=false\n' >> "$GITHUB_OUTPUT"; fi
     exit 0
   fi
   python - <<'PY'
@@ -38,8 +48,10 @@ import base64
 import os
 from pathlib import Path
 root = Path(os.environ["RUNNER_TEMP"])
-for name, contents in (("rlmesh-signing.p12", base64.b64decode("".join(os.environ["APPLE_DEVELOPER_ID_P12"].split()), validate=True)),
-                       ("rlmesh-notary.p8", os.environ["APPLE_NOTARY_KEY"].encode())):
+files = [("rlmesh-signing.p12", base64.b64decode("".join(os.environ["APPLE_DEVELOPER_ID_P12"].split()), validate=True))]
+if os.environ.get("APPLE_NOTARY_KEY"):
+    files.append(("rlmesh-notary.p8", os.environ["APPLE_NOTARY_KEY"].encode()))
+for name, contents in files:
     descriptor = os.open(root / name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     with os.fdopen(descriptor, "wb") as file:
         file.write(contents)
@@ -55,7 +67,7 @@ PY
   [[ -n "$identity" && "$identity" != *$'\n'* ]] || { echo 'expected one Developer ID Application identity for APPLE_TEAM_ID' >&2; exit 1; }
   codesign --keychain "$keychain" --force --sign "$identity" --options runtime --timestamp ${identifier[@]+"${identifier[@]}"} "${paths[@]}"
   codesign --verify --strict --verbose=2 "${paths[@]}"
-  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then echo 'notarize=true' >> "$GITHUB_OUTPUT"; fi
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then printf 'signed=true\nnotarize=%s\n' "$notarize" >> "$GITHUB_OUTPUT"; fi
 elif [[ "$mode" == notarize ]]; then
   [[ ${#paths[@]} -eq 1 ]] || { echo 'notarize takes one file or directory' >&2; exit 2; }
   rm -f "$RUNNER_TEMP/rlmesh-notary.zip"

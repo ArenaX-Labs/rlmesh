@@ -2,17 +2,9 @@
 
 Command-line entrypoint for RLMesh authentication, profile management, registry access, and distribution inspection.
 
-This crate publishes the `rlmesh` binary and is also embedded in the Python package as the `python -m rlmesh` entrypoint; macOS wheels run the signed standalone binary instead. Named profiles keep platform configuration separate, while credentials are stored in the operating system keychain when one is available.
+This crate publishes the `rlmesh` binary and is also embedded in the Python package as the `python -m rlmesh` entrypoint; macOS wheels run the signed standalone binary they bundle instead. Named profiles keep platform configuration separate, while credentials are stored in the operating system keychain when one is available.
 
 ## Installation
-
-On macOS, the signed and notarized binary installs with Homebrew:
-
-```bash
-brew install arenax-labs/tap/rlmesh
-```
-
-It also comes with the Python package (`pip install rlmesh`), or build it with Cargo:
 
 ```bash
 cargo install rlmesh-cli --version 0.2.0-alpha.2

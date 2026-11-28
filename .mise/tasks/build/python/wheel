@@ -68,6 +68,9 @@ if [ "$require_darwin" = 1 ] && [ -n "${RLMESH_MACOS_CLI:-}" ]; then
   lipo -thin "$arch" "$RLMESH_MACOS_CLI" -output "$bundled/rlmesh"
   chmod 755 "$bundled/rlmesh"
   codesign --verify --strict "$bundled/rlmesh"
+  if [ "$arch" = "$(uname -m)" ]; then
+    "$bundled/rlmesh" version
+  fi
 fi
 
 cd python/rlmesh

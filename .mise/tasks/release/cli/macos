@@ -1,51 +1,19 @@
 #!/usr/bin/env bash
-#MISE description="On macOS, build the universal rlmesh CLI into target/macos-cli (build), or tar the signed binary into target/cli-pkg and smoke-test it (package)"
+#MISE description="On macOS, build the universal rlmesh CLI (with the cockpit) into target/macos-cli"
 #MISE dir="{{ config_root }}"
-#USAGE arg "<step>" help="build or package" {
-#USAGE   choices "build" "package"
-#USAGE }
 
 set -euo pipefail
-step="${usage_step:?usage: release:cli:macos <build|package>}"
-[ "$(uname -s)" = Darwin ] || { echo 'release:cli:macos requires a macOS host (lipo, codesign)' >&2; exit 1; }
+[ "$(uname -s)" = Darwin ] || { echo 'release:cli:macos requires a macOS host (lipo)' >&2; exit 1; }
 
 binary=target/macos-cli/rlmesh
-version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-name="rlmesh-cli-${version}-universal-apple-darwin"
-
-if [ "$step" = build ]; then
-  export MACOSX_DEPLOYMENT_TARGET=11.0
-  rustup target add aarch64-apple-darwin x86_64-apple-darwin
-  for triple in aarch64-apple-darwin x86_64-apple-darwin; do
-    cargo build -p rlmesh-cli --release --locked --bin rlmesh --features cockpit --target "$triple"
-  done
-  mkdir -p target/macos-cli
-  rm -f target/macos-cli/*
-  lipo -create target/aarch64-apple-darwin/release/rlmesh target/x86_64-apple-darwin/release/rlmesh -output "$binary"
-  lipo -verify_arch arm64 x86_64 "$binary"
-  exit 0
-fi
-
-# Signing and notarization happen before packaging; never mutate the signed binary here.
-codesign --verify --strict --verbose=2 "$binary"
-lipo -verify_arch arm64 x86_64 "$binary"
-out=target/cli-pkg
-rm -rf "${out:?}/$name" "$out/$name.tar.gz"
-mkdir -p "$out/$name"
-cp "$binary" LICENSE-APACHE LICENSE-MIT python/rlmesh/THIRD_PARTY_NOTICES.md "$out/$name/"
-COPYFILE_DISABLE=1 tar -C "$out" -czf "$out/$name.tar.gz" "$name"
-rm -rf "${out:?}/$name"
-
-smoke="$(mktemp -d)"
-trap 'rm -rf "$smoke"' EXIT
-tar -C "$smoke" -xzf "$out/$name.tar.gz"
-codesign --verify --strict "$smoke/$name/rlmesh"
-cmp "$binary" "$smoke/$name/rlmesh"
-ln -s rlmesh "$smoke/$name/rlmeshd"
-ln -s rlmesh "$smoke/$name/docker-credential-rlmesh"
-"$smoke/$name/rlmesh" version | grep -F "$version"
-"$smoke/$name/rlmeshd" --help > "$smoke/help"
-grep -q 'rlmesh host' "$smoke/help"
-"$smoke/$name/docker-credential-rlmesh" --help > "$smoke/help"
-grep -q 'credential-helper' "$smoke/help"
-echo "packaged $out/$name.tar.gz"
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+  cargo build -p rlmesh-cli --release --locked --bin rlmesh --features cockpit --target "$triple"
+done
+mkdir -p target/macos-cli
+rm -f target/macos-cli/*
+lipo -create target/aarch64-apple-darwin/release/rlmesh target/x86_64-apple-darwin/release/rlmesh -output "$binary"
+# One arch per call: lipo wants the input before the flag, and some versions refuse a list.
+for arch in arm64 x86_64; do
+  lipo "$binary" -verify_arch "$arch"
+done
