@@ -9,9 +9,14 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use rlmesh_session::SessionAddress;
-use rlmesh_session::address::{AddressKey, DEFAULT_SESSION, TENANT, session_id};
+#[cfg(unix)]
+use rlmesh_session::address::AddressKey;
+use rlmesh_session::address::{DEFAULT_SESSION, TENANT, session_id};
+#[cfg(unix)]
 use rlmesh_session::auth::Credential;
+#[cfg(unix)]
 use rlmesh_session::auth::address::base32;
+#[cfg(unix)]
 use rlmesh_session::crypto::StaticKeypair;
 use rlmesh_session::media::synthetic_frame;
 use rlmesh_session::record::{Recorded, read};
@@ -598,11 +603,13 @@ async fn a_declared_ur10e_and_a_bound_policy_meet_through_a_host_process() {
     );
 }
 
+#[cfg(unix)]
 struct Daemon {
     child: Child,
     base: std::net::SocketAddr,
 }
 
+#[cfg(unix)]
 impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -610,6 +617,7 @@ impl Drop for Daemon {
     }
 }
 
+#[cfg(unix)]
 impl Daemon {
     fn spawn(state: &std::path::Path, base: Option<std::net::SocketAddr>) -> Self {
         for _ in 0..16 {
@@ -756,6 +764,7 @@ fn the_host_keeps_its_identity_across_a_restart_with_no_key_flag() {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn rlmeshd_keeps_its_identity_admits_its_table_over_the_lan_and_revokes_at_once() {
     use std::os::unix::fs::PermissionsExt;
@@ -829,6 +838,7 @@ async fn rlmeshd_keeps_its_identity_admits_its_table_over_the_lan_and_revokes_at
     .expect("detached");
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_machine_pairs_by_the_code_typed_on_the_robot_and_attaches_at_its_cap() {
     use std::os::unix::fs::PermissionsExt;

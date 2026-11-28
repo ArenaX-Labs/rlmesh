@@ -142,9 +142,12 @@ rlmesh::Value observation = rlmesh::Metadata{
     {"camera", rlmesh::Tensor(pixels.data(), pixels.size(), {2, 2, 3}, rlmesh::DType::Uint8)},
     {"step", 3}};
 int64_t step = observation.as_dict().at("step").as_int();
+
+rlmesh::Value offset = rlmesh::ext::from_vector<float>({0.5f, -1.f}, {2});  // float32, shape (2,)
+std::vector<float> xy = rlmesh::ext::to_vector<float>(offset.as_tensor());  // TypeError unless float32
 ```
 
-`rlmesh::Tensor` exchanges data with other libraries through DLPack: `to_dlpack` exports a versioned DLPack tensor as an `ext::DlpackPtr`, and `from_dlpack` imports one.
+`rlmesh::ext::from_vector` and `to_vector` copy between a `std::vector<T>` and a tensor whose dtype follows `T` (`ext::dtype_of<T>()`). `T` must match exactly: `bool`, `intN_t`/`uintN_t`, `float` or `double`; plain `char` is not `int8_t`, `long long` is not `int64_t` on glibc x86-64 (Unreal's `int64`), and there is no float16. `rlmesh::Tensor` exchanges data with other libraries through DLPack: `to_dlpack` exports a versioned DLPack tensor as an `ext::DlpackPtr`, and `from_dlpack` imports one.
 
 ### Environments and servers
 

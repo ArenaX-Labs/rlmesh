@@ -6,12 +6,12 @@ This crate is an internal component of `rlmesh`. The Rust API exposed here is un
 
 ## Run it
 
-Start a session, for example the UR10e demo with its host in its own terminal:
+Start a session, for example the [UR10e demo](https://github.com/ArenaX-Labs/rlmesh-examples/tree/main/python/ur10e-mujoco) from a checkout of `rlmesh-examples`, with its host in its own terminal:
 
 ```sh
-uv run python examples/python/v2/ur10e_mujoco/demo.py robot --seconds 120 --camera off
+uv run --directory python/ur10e-mujoco run.py robot --seconds 120 --camera off
 # session: 127.0.0.1:41000/local/01a15b0a-...      (printed on stderr)
-uv run python examples/python/v2/ur10e_mujoco/demo.py policy --address ADDR
+uv run --directory python/ur10e-mujoco run.py policy --address ADDR
 ```
 
 Then open the cockpit on the printed address:

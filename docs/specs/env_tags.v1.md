@@ -181,7 +181,7 @@ When a model resolves against published tags (the read side), unknown bare field
 
 ## Example
 
-The Project Chrono reach env (`examples/chrono/src/reach_env.cpp`) serves this observation `Dict` and a 3-D action `Box(-1, 1)`:
+The Project Chrono reach env ([`cpp/chrono/src/reach_env.cpp`](https://github.com/ArenaX-Labs/rlmesh-examples/tree/main/cpp/chrono/src/reach_env.cpp) in rlmesh-examples) serves this observation `Dict` and a 3-D action `Box(-1, 1)`:
 
 | Key            | Space                   |
 | -------------- | ----------------------- |

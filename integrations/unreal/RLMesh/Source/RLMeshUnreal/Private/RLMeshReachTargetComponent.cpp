@@ -1,12 +1,13 @@
 #include "RLMeshReachTargetComponent.h"
 
+#include "GameFramework/Actor.h"
+
 #include <limits>
 
 void URLMeshReachTargetComponent::BeginPlay()
 {
 	// Remember the start before Super::BeginPlay starts serving.
 	Start = GetOwner()->GetActorLocation();
-	Random.GenerateNewSeed();
 	Super::BeginPlay();
 }
 
@@ -21,13 +22,9 @@ rlmesh::spaces::Space URLMeshReachTargetComponent::ActionSpace() const
 	return rlmesh::spaces::Discrete(3);
 }
 
-rlmesh::ResetResult URLMeshReachTargetComponent::ResetEnv(std::optional<int64_t> Seed,
+rlmesh::ResetResult URLMeshReachTargetComponent::ResetEnv(std::optional<int64_t>,
 														  const std::optional<rlmesh::InfoDict>&)
 {
-	if (Seed)
-	{
-		Random.Initialize(static_cast<int32>(*Seed));
-	}
 	GetOwner()->SetActorLocation(Start);
 	Target = Random.FRandRange(-TargetRange, TargetRange);
 	Steps = 0;

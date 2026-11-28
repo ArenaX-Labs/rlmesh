@@ -11,18 +11,3 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "ci(deps)"
-
-  - package-ecosystem: docker
-    directories:
-      - /examples/python/byo_container/env
-      - /examples/python/byo_container/model
-      - /examples/python/isaacsim
-    schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
-    groups:
-      base-images:
-        patterns: ["*"]
-    commit-message:
-      prefix: "build(deps)"

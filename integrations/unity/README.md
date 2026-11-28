@@ -16,41 +16,20 @@ This integration does not build or distribute that package.
 
 Install the matching **core** UPM artifact first: in Package Manager choose
 **Install package from tarball** and select `com.rlmesh.rlmesh` from the same
-RLMesh release. A directory install also works: its `package.json` must be at
-the package root, beside `Runtime/RLMesh.dll` and `Runtime/Plugins/`.
+RLMesh release (local build: `target/csharp-pkg/com.rlmesh.rlmesh-*.tgz`, or
+**Install package from disk** on `target/csharp-pkg/com.rlmesh.rlmesh/package.json`). A
+directory install needs `package.json` at the package root, beside
+`Runtime/RLMesh.dll` and `Runtime/Plugins/`.
 
-Then choose **Install package from git URL**:
+Then **Install package from disk** on `integrations/unity/package.json`, or
+**Install package from tarball** on the `com.rlmesh.unity` tarball that
+`python integrations/unity/tools/package.py` writes to `target/csharp-pkg/`.
 
-```text
-https://github.com/ArenaX-Labs/rlmesh.git?path=/integrations/unity#csharp/unity
-```
-
-Pin a release tag or commit instead of the development branch for a reproducible
-install. Both packages must have matching versions (currently `0.1.0`). The core
+Both packages must have matching versions. The core
 native plugins must be enabled for the Editor and the matching Standalone OS.
 Only desktop 64-bit targets are in scope: Linux x64, Windows x64 and macOS
 (universal). Mobile and WebGL are unsupported. A platform's release gate must
 pass before support for it is claimed; the supplied player gate targets Linux.
-
-## Try Reach Target
-
-Import **Reach Target** from this package's Samples tab. Attach
-`RLMeshReachTargetBehaviour` to a GameObject, then press Play. The log shows
-`Serving Unity-v0 on 127.0.0.1:7447/env` (set `EnvId` to change the label): the env
-`env` in a session the player hosts on port 7447.
-
-The observation is a float32 tensor of shape `[1]`: the offset along world X to
-a target chosen on reset. `Discrete(3)` actions move backward, stay, or move
-forward. Reward is minus the remaining distance; reaching within half a step
-terminates, and `MaxSteps` truncates. This follows the Unreal Reach Target
-example's spaces and motion; Unity reports distance directly as requested,
-where Unreal normalizes its reward by `TargetRange`.
-
-```python
-import rlmesh
-
-print(rlmesh.run(rlmesh.RANDOM_SAMPLE, "127.0.0.1:7447", episodes=3))
-```
 
 ## Serve your own environment
 

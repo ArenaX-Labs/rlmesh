@@ -9,11 +9,25 @@ repo_root="$PWD"
 inc="$repo_root/crates/rlmesh-capi/include"
 target="target/debug"
 
+windows_host=0
+host_triple="$(rustc -vV | sed -n 's/host: //p')"
+case "$host_triple" in
+  *-windows-msvc) windows_host=1 ;;
+  *-windows-*)
+    echo "test:cxx on Windows needs the MSVC Rust host (x86_64-pc-windows-msvc), not $host_triple" >&2
+    exit 1
+    ;;
+esac
+
 c_compilers=("${CC:-zig cc}")
-if [ -z "${CC:-}" ] && command -v gcc >/dev/null; then c_compilers+=(gcc); fi
+if [ -z "${CC:-}" ] && [ "$windows_host" != 1 ] && command -v gcc >/dev/null; then
+  c_compilers+=(gcc)
+fi
 CC="${c_compilers[0]}"
 compilers=("${CXX:-zig c++}")
-if [ -z "${CXX:-}" ] && command -v g++ >/dev/null; then compilers+=(g++); fi
+if [ -z "${CXX:-}" ] && [ "$windows_host" != 1 ] && command -v g++ >/dev/null; then
+  compilers+=(g++)
+fi
 CXX="${compilers[0]}"
 echo "==> CC='$CC'  CXX='$CXX'"
 
@@ -22,6 +36,11 @@ cc_quiet=()
 cxx_quiet=()
 case "$CC" in *zig*) cc_quiet=(-Wno-unused-command-line-argument) ;; esac
 case "$CXX" in *zig*) cxx_quiet=(-Wno-unused-command-line-argument -Wno-nullability-completeness) ;; esac
+# Windows stdint.h uses ULL in UINT64_MAX; C++98 -pedantic -Werror rejects that.
+cxx98_extra=()
+if [ "$windows_host" = 1 ]; then
+  cxx98_extra=(-Wno-c++11-long-long -Wno-long-long)
+fi
 
 export TMPDIR="${TMPDIR:-$repo_root/target/cxx-tmp}"
 mkdir -p "$TMPDIR"
@@ -42,7 +61,7 @@ for signal in INT TERM HUP; do
   trap "exit $((128 + $(kill -l "$signal")))" "$signal"
 done
 
-cores="$(getconf _NPROCESSORS_ONLN)"
+cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-1}")"
 max_jobs=$((cores < 8 ? cores : 8))
 pids=()
 bg() {
@@ -70,7 +89,8 @@ for c_compiler in "${c_compilers[@]:1}"; do
 done
 echo "==> C header stays warning-free in C++98"
 printf '#include <rlmesh.h>\n' |
-  $CXX -std=c++98 "${warn[@]}" -pedantic "${cxx_quiet[@]}" -I "$inc" -c -x c++ - -o "$tmp/header_cxx98.o"
+  $CXX -std=c++98 "${warn[@]}" -pedantic "${cxx_quiet[@]}" "${cxx98_extra[@]}" -I "$inc" -c -x c++ - \
+    -o "$tmp/header_cxx98.o"
 echo "==> vendored DLPack v1.0 is verbatim and accepts either include order"
 python - "$inc/rlmesh.h" "$tmp/dlpack.h" <<'PY'
 import hashlib
@@ -120,7 +140,14 @@ case "$CC" in *zig*)
   done
 ;; esac
 
-link=(-L "$target" -lrlmesh_capi -Wl,-rpath,"$repo_root/$target" -lpthread -ldl -lm)
+if [ "$windows_host" = 1 ]; then
+  cp -f "$target/rlmesh_capi.dll.lib" "$tmp/rlmesh_capi.lib"
+  link=(-L "$tmp" -lrlmesh_capi)
+  # The loader finds rlmesh_capi.dll on PATH.
+  export PATH="$repo_root/$target:$PATH"
+else
+  link=(-L "$target" -lrlmesh_capi -Wl,-rpath,"$repo_root/$target" -lpthread -ldl -lm)
+fi
 mkdir -p "$tmp/parity"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   tests/parity/c_runner.c "${link[@]}" -o "$tmp/parity/c"
@@ -154,10 +181,12 @@ $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_factory.c "${link[@]}" -o "$tmp/c_factory"
 "$tmp/c_factory"
 echo "==> factory start lifetime/failures, host envelopes and model signal options"
-$CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
-  crates/rlmesh-capi/examples/c_serving.c "${link[@]}" -o "$tmp/c_serving"
-"$tmp/c_serving"
-uv run --no-sync python crates/rlmesh-capi/examples/c_serving.py "$tmp/c_serving"
+if [ "$windows_host" != 1 ]; then
+  $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+    crates/rlmesh-capi/examples/c_serving.c "${link[@]}" -o "$tmp/c_serving"
+  "$tmp/c_serving"
+  uv run --no-sync python crates/rlmesh-capi/examples/c_serving.py "$tmp/c_serving"
+fi
 echo "==> C ABI typed adapters, transforms, ownership and model integration"
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
   crates/rlmesh-capi/examples/c_adapters.c "${link[@]}" -o "$target/c_adapters_smoke"
@@ -194,6 +223,32 @@ $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
 echo "==> C model end-to-end vs a live env"
 "$target/e2e_harness" "$target/c_model_smoke" "run report: episodes=3 steps=6"
 
+if [ "$windows_host" = 1 ]; then
+  # The full C++ matrix's links race on the MSVC import library (LLD FileBusy).
+  echo "==> Windows: Unreal game-thread env + native gates (full C++ matrix is Unix CI)"
+  flags=(-std=c++17 "${warn[@]}" -pedantic-errors "${cxx_quiet[@]}" -I "$inc")
+  printf '#include <rlmesh.hpp>\n' >"$tmp/header_cxx17.cpp"
+  $CXX "${flags[@]}" -c "$tmp/header_cxx17.cpp" -o "$tmp/header_cxx17.o"
+  $CXX "${flags[@]}" -Wshadow -Wconversion -Wsign-conversion -fno-rtti \
+    -I integrations/unreal/RLMesh/Source/RLMeshUnreal/Public \
+    integrations/unreal/RLMesh/Tests/game_thread_env_test.cpp "${link[@]}" \
+    -o "$tmp/unreal_game_thread_env"
+  "$tmp/unreal_game_thread_env"
+  $CXX "${flags[@]}" crates/rlmesh-capi/examples/cpp_gate.cpp "${link[@]}" -o "$tmp/cpp_gate"
+  $CXX "${flags[@]}" -Wshadow -Wconversion -Wsign-conversion -fno-rtti \
+    -I integrations/unreal/RLMesh/Source/RLMeshUnreal/Public \
+    -I crates/rlmesh-capi/examples integrations/unreal/RLMesh/Tests/game_thread_gate.cpp \
+    "${link[@]}" -o "$tmp/unreal_gate"
+  echo "==> C++ on sessions: the Gymnasium gate's rows against Python 0.2 ($CXX)"
+  RLMESH_NATIVE_GATE="$(cygpath -am "$tmp/cpp_gate")" uv run --no-sync pytest -q -p no:cacheprovider \
+    python/rlmesh/tests/conformance/native_gate.py
+  echo "==> The Unreal plugin's game-thread env on sessions: the same rows ($CXX)"
+  RLMESH_NATIVE_GATE="$(cygpath -am "$tmp/unreal_gate")" uv run --no-sync pytest -q -p no:cacheprovider \
+    python/rlmesh/tests/conformance/native_gate.py
+  echo "==> test:cxx OK (Windows Unreal subset)"
+  exit 0
+fi
+
 for compiler in "${compilers[@]}"; do
   compiler_quiet=()
   case "$compiler" in *zig*) compiler_quiet=(-Wno-unused-command-line-argument -Wno-nullability-completeness) ;; esac
@@ -211,7 +266,7 @@ for compiler in "${compilers[@]}"; do
       -c crates/rlmesh-capi/examples/cpp_review.cpp -o "$tmp/cpp_review.o"
     bg $compiler "${flags[@]}" -c crates/rlmesh-capi/examples/cpp_surface.cpp -o "$tmp/cpp_surface.o"
     bg $compiler "${flags[@]}" -c crates/rlmesh-capi/examples/cpp_options.cpp -o "$tmp/cpp_options.o"
-    bg $compiler "${flags[@]}" -c examples/chrono/src/scripted_model.cpp -o "$tmp/chrono_scripted_model.o"
+    bg $compiler "${flags[@]}" -c crates/rlmesh-capi/examples/cpp_dict_model.cpp -o "$tmp/cpp_dict_model.o"
     examples=(cpp_core cpp_errors cpp_cancel cpp_runtime cpp_spaces cpp_parity cpp_box_cleanup cpp_output_cleanup cpp_constants cpp_span cpp_review)
     for example in "${examples[@]}" cpp_model cpp_env; do
       bg $compiler "${flags[@]}" "crates/rlmesh-capi/examples/$example.cpp" "${link[@]}" -o "$tmp/$example"

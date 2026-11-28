@@ -4,9 +4,12 @@
 
 #include "Components/ActorComponent.h"
 #include "CoreMinimal.h"
+#include "Math/RandomStream.h"
 #include "RLMeshGameThreadEnv.h"
 
 #include "RLMeshEnvComponent.generated.h"
+
+RLMESHUNREAL_API DECLARE_LOG_CATEGORY_EXTERN(LogRLMesh, Log, All);
 
 UCLASS(Abstract)
 class RLMESHUNREAL_API URLMeshEnvComponent : public UActorComponent
@@ -23,6 +26,10 @@ public:
 	/** Env id reported to clients. */
 	UPROPERTY(EditAnywhere, Category = "RLMesh")
 	FString EnvId = TEXT("Unreal-v0");
+
+	/** Make the owner's root Movable at BeginPlay. Turn off for envs that only observe a static scene. */
+	UPROPERTY(EditAnywhere, Category = "RLMesh")
+	bool bMakeOwnerMovable = true;
 
 	/** The address the env is served on, or empty when it is not serving. */
 	UFUNCTION(BlueprintCallable, Category = "RLMesh")
@@ -43,6 +50,9 @@ protected:
 		PURE_VIRTUAL(URLMeshEnvComponent::ResetEnv, return rlmesh::ResetResult(););
 	virtual rlmesh::StepResult StepEnv(const std::optional<rlmesh::Value>& Action)
 		PURE_VIRTUAL(URLMeshEnvComponent::StepEnv, return rlmesh::StepResult(););
+
+	/** Reseeded from each seeded reset before ResetEnv runs; an unseeded reset continues it. */
+	FRandomStream Random;
 
 private:
 	std::shared_ptr<FRLMeshGameThread> GameThread;

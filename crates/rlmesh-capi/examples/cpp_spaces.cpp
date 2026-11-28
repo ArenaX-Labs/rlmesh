@@ -104,6 +104,36 @@ int main() {
   CHECK(reinterpret_cast<const float*>(retained->buffer().data())[0] == 1.25f &&
         reinterpret_cast<const float*>(retained->buffer().data())[1] == -3.5f);
 
+  rlmesh::Value typed = rlmesh::ext::from_vector<float>({1.25f, -3.5f, 0.f, 2.f}, {2, 2});
+  CHECK(typed.as_tensor().dtype() == rlmesh::DType::Float32);
+  CHECK(typed.as_tensor().shape() == (std::vector<size_t>{2, 2}));
+  CHECK(rlmesh::ext::to_vector<float>(typed.as_tensor()) ==
+        (std::vector<float>{1.25f, -3.5f, 0.f, 2.f}));
+  auto flags = rlmesh::ext::from_vector<bool>({true, false, true}, {3});
+  CHECK(flags.dtype() == rlmesh::DType::Bool);
+  CHECK(rlmesh::ext::to_vector<bool>(flags) == (std::vector<bool>{true, false, true}));
+  bool wrong_type = false;
+  try {
+    rlmesh::ext::to_vector<double>(typed.as_tensor());
+  } catch (const rlmesh::TypeError&) {
+    wrong_type = true;
+  }
+  CHECK(wrong_type);
+  bool same_width = false;
+  try {
+    rlmesh::ext::to_vector<int32_t>(typed.as_tensor());
+  } catch (const rlmesh::TypeError&) {
+    same_width = true;
+  }
+  CHECK(same_width);
+  bool short_data = false;
+  try {
+    rlmesh::ext::from_vector<int32_t>({1, 2, 3}, {2, 2});
+  } catch (const rlmesh::ValueError&) {
+    short_data = true;
+  }
+  CHECK(short_data);
+
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;

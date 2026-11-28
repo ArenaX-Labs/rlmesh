@@ -184,7 +184,7 @@ Both sides of every session run this tree, built as a release build
 manylinux wheel (`build:python:docker`, rebuilt unless it was made from this
 tree state; `--rebuild` forces it). It builds env, model and failing-env
 images from the wheel and the
-[bring-your-own examples](../examples/python/byo_container), then runs
+env and model entrypoints in [`python/rlmesh/tests/docker/images`](../python/rlmesh/tests/docker/images), then runs
 `python/rlmesh/tests/docker` (pytest marker `docker`, which other runs leave
 out):
 
