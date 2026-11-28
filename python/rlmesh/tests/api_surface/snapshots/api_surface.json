@@ -407,6 +407,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "concurrency": {
+            "kind": "attribute",
+            "signature": "concurrency: int | None"
+          },
           "describe": {
             "kind": "function",
             "signature": "describe() -> dict[str, Any]"
@@ -486,7 +490,7 @@
             "signature": "workflow_edition: str | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False, concurrency: int | None = None) -> None",
         "stability": "Stable"
       },
       "ModelException": {
@@ -1158,6 +1162,10 @@
             "kind": "attribute",
             "signature": "episode: int"
           },
+          "final_observation": {
+            "kind": "attribute",
+            "signature": "final_observation: Any"
+          },
           "info": {
             "kind": "attribute",
             "signature": "info: Mapping[str, Any]"
@@ -1199,7 +1207,7 @@
             "signature": "truncated: bool"
           }
         },
-        "signature": "StepEvent(episode: int, seed: int | None, step: int, observation: Any, action: Any, reward: float, terminated: bool, truncated: bool, info: Mapping[str, Any], predict_ms: float, step_ms: float, read: Callable[[object], object])",
+        "signature": "StepEvent(episode: int, seed: int | None, step: int, observation: Any, action: Any, reward: float, terminated: bool, truncated: bool, info: Mapping[str, Any], predict_ms: float, step_ms: float, read: Callable[[object], object], final_observation: Any = None)",
         "stability": "Stable"
       },
       "TelemetryRow": {
@@ -2666,6 +2674,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "concurrency": {
+            "kind": "attribute",
+            "signature": "concurrency: int | None"
+          },
           "describe": {
             "kind": "function",
             "signature": "describe() -> dict[str, Any]"
@@ -2743,7 +2755,7 @@
             "signature": "workflow_edition: str | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False, concurrency: int | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteEnv": {
@@ -3399,6 +3411,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "concurrency": {
+            "kind": "attribute",
+            "signature": "concurrency: int | None"
+          },
           "describe": {
             "kind": "function",
             "signature": "describe() -> dict[str, Any]"
@@ -3478,7 +3494,7 @@
             "signature": "workflow_edition: str | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False, concurrency: int | None = None) -> None",
         "stability": "Stable"
       },
       "NumpyValue": {
@@ -6498,6 +6514,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "concurrency": {
+            "kind": "attribute",
+            "signature": "concurrency: int | None"
+          },
           "describe": {
             "kind": "function",
             "signature": "describe() -> dict[str, Any]"
@@ -6575,7 +6595,7 @@
             "signature": "workflow_edition: str | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False, concurrency: int | None = None) -> None",
         "stability": "Experimental"
       },
       "RemoteEnv": {

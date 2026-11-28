@@ -710,6 +710,43 @@ async fn a_batchs_inference_time_is_split_across_its_requests() {
     assert_eq!(slow.0.calls(), vec![2], "one handler call for both");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_route_answered_by_the_last_forward_joins_the_batch_that_waited_on_it() {
+    let slow = Slow::default();
+    let service = batched(
+        slow.clone(),
+        rlmesh::BatchOptions {
+            batch_window_ms: 100,
+            ..Default::default()
+        },
+    );
+    service.answer(resolve("a", 1)).await;
+    service.answer(resolve("b", 1)).await;
+    let a = tokio::spawn({
+        let service = Arc::clone(&service);
+        async move {
+            for v in [1.0, 2.0] {
+                let (reply, _) = service
+                    .answer(ModelRequest::Predict(vec![group("a", &[v])]))
+                    .await;
+                assert!(matches!(reply, ModelReply::Predicted(o) if o[0].is_ok()));
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let (reply, _) = service
+        .answer(ModelRequest::Predict(vec![group("b", &[3.0])]))
+        .await;
+    assert!(matches!(reply, ModelReply::Predicted(o) if o[0].is_ok()));
+    a.await.unwrap();
+    assert_eq!(
+        slow.0.calls(),
+        vec![1, 2],
+        "b, queued behind a's forward, waits for a's next request"
+    );
+}
+
 #[derive(Default)]
 struct Proxy(Option<rlmesh_proto::EndpointPhases>);
 

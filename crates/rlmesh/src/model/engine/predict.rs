@@ -78,6 +78,13 @@ fn assembles_in_parallel(lanes: &[GroupLane]) -> bool {
     routed > 1
 }
 
+// A fused call's context rows line up with its inputs only when every lane has its episode.
+fn fuses_spec_less(observation: &ModelObservation) -> bool {
+    observation.observation.is_some()
+        && observation.num_envs > 0
+        && observation.route.episodes.len() == observation.num_envs
+}
+
 fn charge_wall<T>(adapter_ns: &AtomicU64, section: impl FnOnce(&AtomicU64) -> T) -> T {
     let scratch = AtomicU64::new(0);
     let started = Instant::now();
@@ -154,14 +161,24 @@ pub(super) fn predict_grouped_fused(
 
     let mut results: Vec<Option<Result<PredictFrames>>> = Vec::with_capacity(staged.len());
     let mut prepared: Vec<Prepared> = Vec::new();
+    let mut spec_less_indices: Vec<usize> = Vec::new();
+    let mut spec_less: Vec<(ModelObservation, u32)> = Vec::new();
     for (index, staged) in staged.into_iter().enumerate() {
         match staged {
             Staged::SpecLess {
                 observation,
                 horizon,
-            } => results.push(Some(
+            } if !fuses_spec_less(&observation) => results.push(Some(
                 predict.predict_spec_less_chunked(observation, horizon),
             )),
+            Staged::SpecLess {
+                observation,
+                horizon,
+            } => {
+                results.push(None);
+                spec_less_indices.push(index);
+                spec_less.push((observation, horizon));
+            }
             Staged::Routed {
                 assembled: Ok((inputs, config)),
                 episodes,
@@ -182,6 +199,24 @@ pub(super) fn predict_grouped_fused(
                 assembled: Err(error),
                 ..
             } => results.push(Some(Err(error))),
+        }
+    }
+
+    if !spec_less.is_empty() {
+        let served = predict.predict_spec_less_grouped(spec_less);
+        if served.len() == spec_less_indices.len() {
+            for (index, result) in spec_less_indices.into_iter().zip(served) {
+                results[index] = Some(result);
+            }
+        } else {
+            let error = Error::Internal(format!(
+                "spec-less grouped predict returned {} outcomes for {} groups",
+                served.len(),
+                spec_less_indices.len()
+            ));
+            for index in spec_less_indices {
+                results[index] = Some(Err(error.clone()));
+            }
         }
     }
 

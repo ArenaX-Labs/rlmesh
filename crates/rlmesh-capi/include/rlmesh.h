@@ -398,7 +398,7 @@ static inline int rlmesh_abi_check(void) { return RLMESH_ABI_VERSION == rlmesh_a
 
 /* This header's package version, in SemVer. rlmesh_build_info() reports the linked
  * library's. */
-#define RLMESH_VERSION "0.2.0-alpha.1"
+#define RLMESH_VERSION "0.2.0-alpha.2"
 
 /* Signals: creating a model or env handle sets SIGPIPE to ignored (POSIX), unless
  * the host already installed a handler for it. The transport's socket writes
@@ -3425,10 +3425,27 @@ typedef struct RLMeshStepEvent {
   double predict_ms;
   double step_ms;
   const RLMeshRunContext* context;
+  /* The observation the step returned when it ended the episode (terminated or truncated):
+   * the episode's final observation, which no action follows. NULL on every other step. */
+  const RLMeshValue* final_observation;
 } RLMeshStepEvent;
-#define RLMESH_STEP_EVENT_MIN_SIZE sizeof(RLMeshStepEvent)
+#define RLMESH_STEP_EVENT_MIN_SIZE offsetof(RLMeshStepEvent, final_observation)
 #define RLMESH_STEP_EVENT_INIT \
-  {sizeof(RLMeshStepEvent), 0, false, 0, 0, NULL, NULL, 0.0, false, false, NULL, 0.0, 0.0, NULL}
+  {sizeof(RLMeshStepEvent),    \
+   0,                          \
+   false,                      \
+   0,                          \
+   0,                          \
+   NULL,                       \
+   NULL,                       \
+   0.0,                        \
+   false,                      \
+   false,                      \
+   NULL,                       \
+   0.0,                        \
+   0.0,                        \
+   NULL,                       \
+   NULL}
 RLMESH_API RLMeshStatus rlmesh_step_event_equals(const RLMeshStepEvent* a, const RLMeshStepEvent* b,
                                                  bool* out);
 RLMESH_API RLMeshStatus rlmesh_step_event_repr(const RLMeshStepEvent* step_event, RLMeshBytes* out);

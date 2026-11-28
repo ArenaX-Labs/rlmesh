@@ -134,6 +134,8 @@ class FacadeHookRelay:
         )
         data["observation"] = self.context._decode(data["observation"])
         data["action"] = self.context._decode(data["action"])
+        if data["final_observation"] is not None:
+            data["final_observation"] = self.context._decode(data["final_observation"])
         if self.hooks is not None:
             with self.context._dispatch():
                 self.hooks.on_step(

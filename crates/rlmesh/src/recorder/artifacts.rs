@@ -95,6 +95,7 @@ struct Episode {
     info_seed: Option<i64>,
     trial_index: Option<u64>,
     observed: bool,
+    ended: bool,
     started_at: DateTime<Utc>,
     dir: PathBuf,
     rel: String,
@@ -197,6 +198,7 @@ impl EpisodeArtifacts {
                 info_seed: None,
                 trial_index: event.trial_index,
                 observed: false,
+                ended: false,
                 started_at: Utc::now(),
                 dir,
                 rel,
@@ -254,6 +256,9 @@ impl EpisodeArtifacts {
             let Some(episode) = self.episodes.get_mut(record_id) else {
                 continue;
             };
+            if episode.ended {
+                continue;
+            }
             let reset = !std::mem::replace(&mut episode.observed, true);
             if reset && reset_seed.is_some() {
                 episode.info_seed = reset_seed;
@@ -387,6 +392,7 @@ impl EpisodeArtifacts {
                 env_id,
             });
         }
+        let space = self.space("obs", &event.observation_space)?;
         let trajectory = &self.options.record.trajectory;
         let info_value = event.infos.as_ref().map(meta_map_to_json);
         let info = trajectory
@@ -394,6 +400,18 @@ impl EpisodeArtifacts {
             .then(|| info_value.as_ref().map(Json::to_string))
             .flatten();
         let lanes = event.rewards.len().max(1);
+        let ended = |lane: usize| {
+            !event.autoreset_roll.get(lane).copied().unwrap_or(false)
+                && (event.terminated.get(lane).copied().unwrap_or(false)
+                    || event.truncated.get(lane).copied().unwrap_or(false))
+        };
+        let finals = match &event.observation {
+            Some(leaves) if (0..lanes).any(ended) => Some(
+                decode_batched_partial_values(Some(&leaves_value(leaves.clone())), &space, lanes)
+                    .map_err(os)?,
+            ),
+            _ => None,
+        };
         for lane in 0..lanes {
             let env_index = if lanes == 1 {
                 event.env_index
@@ -414,9 +432,21 @@ impl EpisodeArtifacts {
             if let Some(info) = &info_value {
                 episode.invariants.step_info(info);
             }
+            let last = finals
+                .as_ref()
+                .filter(|_| ended(lane))
+                .and_then(|values| values.get(lane));
+            episode.ended |= last.is_some();
+            if let (Some(value), Some(video)) = (last, episode.video.as_mut()) {
+                self.video
+                    .observe(video, &episode.dir, &space, (value, value), true)?;
+            }
             let Some(mut row) = episode.open.take() else {
                 continue;
             };
+            if trajectory.obs != TrajectoryStream::None {
+                row.final_obs = last.map(|value| step_value(value, &space, trajectory.obs_images));
+            }
             episode.steps += 1;
             row.step = episode.steps;
             row.reward = trajectory

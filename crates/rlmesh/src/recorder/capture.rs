@@ -248,13 +248,31 @@ impl RunHooks for Capture {
                 break;
             }
         }
+        let final_read = event
+            .final_observation
+            .clone()
+            .zip(self.context.clone())
+            .map(|(observation, context)| crate::run::read::read_fn(context, observation));
         for camera in self.cameras.clone().unwrap_or_default() {
             if self.disabled.contains(&camera) {
                 continue;
             }
-            if let Some(frame) = self.read(event, &camera)
-                && let Err(err) = self.write_frame(&camera, frame)
-            {
+            // A role frame is the observation before each step; the episode's last one
+            // comes back only on its final step. render() runs after it.
+            let last = final_read.as_ref().filter(|_| {
+                self.explicit || Some(camera.as_str()) != self.render_camera.as_deref()
+            });
+            let written = match self.read(event, &camera) {
+                Some(frame) => self.write_frame(&camera, frame),
+                None => Ok(()),
+            }
+            .and_then(|()| {
+                match last.and_then(|read| crate::view::read_frame(read, &camera)) {
+                    Some(frame) => self.write_frame(&camera, frame),
+                    None => Ok(()),
+                }
+            });
+            if let Err(err) = written {
                 self.disabled.insert(camera.clone());
                 self.writers.remove(&camera);
                 warn(format!(

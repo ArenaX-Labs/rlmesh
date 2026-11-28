@@ -41,10 +41,15 @@ class ModelCalls:
         self._refuse = False
         self._serves: dict[int, Callable[[], None]] = {}
         self._next_serve = 0
+        self._inside: Callable[[], bool] = lambda: False
+
+    def also_inside(self, check: Callable[[], bool]) -> None:
+        """Count threads ``check`` claims, the model's own predict threads, as inside a call."""
+        self._inside = check
 
     def in_call(self) -> bool:
         """Whether the current thread is inside one of this model's calls."""
-        return self._owner == threading.get_ident()
+        return self._owner == threading.get_ident() or self._inside()
 
     def check_not_reentrant(self, what: str) -> None:
         """Refuse ``what`` from inside this model's own corner or hook."""

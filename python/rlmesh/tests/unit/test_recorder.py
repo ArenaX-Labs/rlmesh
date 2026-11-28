@@ -330,7 +330,7 @@ def test_capture_smoke_with_a_real_run(tmp_path: Path, path: str) -> None:
     assert len(media) == 1
     ref = media[0]
     assert ref.camera == adapt.IMAGE_PRIMARY
-    assert ref.frame_count == 2 and ref.fps == 12.0
+    assert ref.frame_count == 3 and ref.fps == 12.0, "the reset, a step and the end"
     assert (ref.width, ref.height) == (16, 16)
     out = rec.export(tmp_path / "bundle")
     assert (out / ref.path).read_bytes()[4:8] == b"ftyp"
