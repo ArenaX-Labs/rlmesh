@@ -2,7 +2,7 @@
 
 Command-line entrypoint for RLMesh authentication, profile management, registry access, and distribution inspection.
 
-This crate publishes the `rlmesh` binary and is also embedded in the Python package as the `python -m rlmesh` entrypoint. Named profiles keep platform configuration separate, while credentials are stored in the operating system keychain when one is available.
+This crate publishes the `rlmesh` binary and is also embedded in the Python package as the `python -m rlmesh` entrypoint; macOS wheels run the signed standalone binary they bundle instead. Named profiles keep platform configuration separate, while credentials are stored in the operating system keychain when one is available.
 
 ## Installation
 

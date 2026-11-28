@@ -489,7 +489,7 @@ run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set l
 
 [tasks."release:python:check:macos"]
 description = "Strictly validate the macOS release wheel matrix"
-run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set macos"
+run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set macos ${RLMESH_MACOS_CLI:+--require-bundled-cli}"
 
 [tasks."release:rust:package"]
 description = "Verify Rust crate packages without publishing"

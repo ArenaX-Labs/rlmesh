@@ -30,6 +30,14 @@ def _load_extension_cli() -> Callable[[list[str]], int]:
     return run_cli
 
 
+def _bundled_cli() -> str | None:
+    """The signed standalone CLI a macOS wheel ships, when it has one."""
+    if sys.platform != "darwin":
+        return None
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_bin", "rlmesh")
+    return path if os.access(path, os.X_OK) else None
+
+
 def main(argv: list[str] | None = None) -> int:
     """Forward the Python entrypoint directly to the Rust CLI."""
     argv = sys.argv[1:] if argv is None else argv
@@ -39,6 +47,13 @@ def main(argv: list[str] | None = None) -> int:
         "python-source" if repo_root is not None else "python-wheel",
     )
     os.environ.setdefault(_PYTHON_ENV, sys.executable)
+
+    # macOS ties keychain approval to the signed binary's identity, never to this interpreter's.
+    bundled = _bundled_cli() if repo_root is None else None
+    if bundled is not None:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.execv(bundled, [bundled, *argv])
 
     try:
         run_cli = _load_extension_cli()

@@ -112,7 +112,50 @@ jobs:
         with:
           python: "true"
 
+      - name: Build the universal macOS CLI
+        timeout-minutes: 40
+        run: mise run --skip-tools release:cli:macos
+
+      - name: Sign the universal macOS CLI
+        id: macos-cli-sign
+        timeout-minutes: 5
+        env:
+          RLMESH_CODESIGN_IDENTIFIER: dev.rlmesh.cli
+          RLMESH_MACOS_NOTARIZE: optional
+          RLMESH_ALLOW_UNSIGNED_MACOS: ${{ vars.RLMESH_ALLOW_UNSIGNED_MACOS }}
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/release-macos-sign.sh sign target/macos-cli/rlmesh
+
+      - name: Notarize the universal macOS CLI
+        if: steps.macos-cli-sign.outputs.notarize == 'true'
+        timeout-minutes: 17
+        env:
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/release-macos-sign.sh notarize target/macos-cli/rlmesh
+
+      - name: Upload macOS CLI notarization evidence
+        if: ${{ !cancelled() && steps.macos-cli-sign.outputs.notarize == 'true' }}
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-cli-notarization
+          path: target/macos-cli/notarization*.json
+          if-no-files-found: warn
+
+      - name: Delete the temporary CLI signing keychain
+        if: ${{ always() }}
+        timeout-minutes: 2
+        run: bash scripts/release-macos-sign.sh cleanup
+
       - name: Build macOS release wheels
+        env:
+          RLMESH_MACOS_CLI: ${{ steps.macos-cli-sign.outputs.signed == 'true' && 'target/macos-cli/rlmesh' || '' }}
         run: mise run --skip-tools release:python:wheels:macos
 
       - name: System tests against built wheels

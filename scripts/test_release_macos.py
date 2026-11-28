@@ -48,9 +48,9 @@ esac
 """)
             path.chmod(0o700)
 
-    def invoke(self, mode="sign"):
+    def invoke(self, mode="sign", *paths):
         return subprocess.run(
-            ["bash", str(ROOT / "scripts/release-macos-sign.sh"), mode],
+            ["bash", str(ROOT / "scripts/release-macos-sign.sh"), mode, *paths],
             cwd=self.root,
             env=self.env,
             text=True,
@@ -78,7 +78,9 @@ esac
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("::warning::", result.stdout)
         self.assertIn("codesign --force --sign -", (self.root / "commands").read_text())
-        self.assertIn("notarize=false", (self.root / "output").read_text())
+        self.assertEqual(
+            (self.root / "output").read_text(), "signed=false\nnotarize=false\n"
+        )
 
     def test_keys_are_exclusive_private_and_invalid_submission_gets_log(self):
         self.credentials()
@@ -99,6 +101,69 @@ esac
         )
         self.assertEqual(self.invoke("cleanup").returncode, 0)
         self.assertFalse((self.root / "rlmesh-notary.p8").exists())
+
+    def test_named_binaries_sign_with_the_identifier_and_keep_their_evidence(self):
+        self.credentials()
+        (self.root / "target/macos-cli").mkdir(parents=True)
+        self.env["RLMESH_CODESIGN_IDENTIFIER"] = "dev.rlmesh.cli"
+        result = self.invoke("sign", "target/macos-cli/rlmesh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (self.root / "commands").read_text()
+        self.assertIn(
+            "--options runtime --timestamp --identifier dev.rlmesh.cli target/macos-cli/rlmesh",
+            calls,
+        )
+        self.assertEqual(
+            (self.root / "output").read_text(), "signed=true\nnotarize=true\n"
+        )
+        self.assertNotEqual(self.invoke("notarize").returncode, 0)
+        self.assertNotEqual(self.invoke("notarize", "a", "b").returncode, 0)
+        result = self.invoke("notarize", "target/macos-cli/rlmesh")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "ditto -c -k --keepParent target/macos-cli/rlmesh",
+            (self.root / "commands").read_text(),
+        )
+        self.assertTrue((self.root / "target/macos-cli/notarization-log.json").exists())
+
+    def test_optional_notarization_signs_with_the_certificate_alone(self):
+        self.credentials()
+        for secret in SECRETS[3:]:
+            self.env[secret] = ""
+        self.env["RLMESH_MACOS_NOTARIZE"] = "optional"
+        result = self.invoke("sign", "target/macos-cli/rlmesh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            (self.root / "output").read_text(), "signed=true\nnotarize=false\n"
+        )
+        self.assertIn(
+            "--sign Developer ID Application: Fixture (TEAM) --options runtime",
+            (self.root / "commands").read_text(),
+        )
+        self.assertTrue((self.root / "rlmesh-signing.p12").exists())
+        self.assertFalse((self.root / "rlmesh-notary.p8").exists())
+
+    def test_optional_notarization_refuses_a_partial_notary_key(self):
+        self.env["RLMESH_MACOS_NOTARIZE"] = "optional"
+        for secret in SECRETS[3:]:
+            self.credentials()
+            self.env[secret] = ""
+            result = self.invoke("sign", "target/macos-cli/rlmesh")
+            self.assertNotEqual(result.returncode, 0, secret)
+            self.assertIn("::error::", result.stderr)
+        self.assertFalse((self.root / "commands").exists())
+
+    def test_optional_notarization_still_requires_the_certificate(self):
+        self.env["RLMESH_MACOS_NOTARIZE"] = "optional"
+        for secret in SECRETS[:3]:
+            self.credentials()
+            for notary in SECRETS[3:]:
+                self.env[notary] = ""
+            self.env[secret] = ""
+            result = self.invoke("sign", "target/macos-cli/rlmesh")
+            self.assertNotEqual(result.returncode, 0, secret)
+            self.assertIn("::error::", result.stderr)
+        self.assertFalse((self.root / "commands").exists())
 
 
 if __name__ == "__main__":

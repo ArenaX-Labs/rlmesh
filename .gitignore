@@ -16,6 +16,7 @@ mise.local.toml
 
 # Bindings
 *.so
+python/rlmesh/src/rlmesh/_bin/
 
 # Python
 .venv*/

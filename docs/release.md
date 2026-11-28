@@ -186,6 +186,16 @@ The action returns a temporary key used only by the push step; do not print it,
 turn on shell tracing, or store it as a repository secret. Reruns skip existing
 package and symbol versions. Until configured, use GitHub's nupkg as a local feed.
 
+### Signed macOS CLI in the wheels
+
+On a tag, `wheels-macos` builds a universal `rlmesh` (`mise run release:cli:macos`, with the cockpit) and signs it as `dev.rlmesh.cli` with the Developer ID identity and hardened runtime, using the script and secrets described below. The macOS wheels then carry its thinned slice as `rlmesh/_bin/rlmesh`, and `rlmesh`, `rlmeshd`, `docker-credential-rlmesh` and `python -m rlmesh` exec it, so the process that touches the Keychain is the signed binary rather than the Python interpreter. Keychain approvals attach to that signature's designated requirement (identifier plus team), so they survive upgrades.
+
+`docker-credential-rlmesh` and `rlmeshd` are the same binary under another name: `rlmesh` dispatches on `argv[0]`.
+
+This step needs only the three certificate secrets (`APPLE_DEVELOPER_ID_P12`, `APPLE_DEVELOPER_ID_P12_PASSWORD`, `APPLE_TEAM_ID`). Notarization is optional here and runs when all three `APPLE_NOTARY_*` secrets are set: Gatekeeper consults notarization only for quarantined files, pip and uv do not quarantine what they install, and a bare Mach-O cannot carry a stapled ticket. A partial set of notary secrets fails the tag.
+
+With `RLMESH_ALLOW_UNSIGNED_MACOS=true` and no certificate secrets, the wheels carry no binary and behave as before.
+
 ### macOS signing and notarization
 
 The retained native macOS steps belong to the tag-only `wheels-macos` job. It builds

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#MISE description="On macOS, build the universal rlmesh CLI (with the cockpit) into target/macos-cli"
+#MISE dir="{{ config_root }}"
+
+set -euo pipefail
+[ "$(uname -s)" = Darwin ] || { echo 'release:cli:macos requires a macOS host (lipo)' >&2; exit 1; }
+
+binary=target/macos-cli/rlmesh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+  cargo build -p rlmesh-cli --release --locked --bin rlmesh --features cockpit --target "$triple"
+done
+mkdir -p target/macos-cli
+rm -f target/macos-cli/*
+lipo -create target/aarch64-apple-darwin/release/rlmesh target/x86_64-apple-darwin/release/rlmesh -output "$binary"
+# One arch per call: lipo wants the input before the flag, and some versions refuse a list.
+for arch in arm64 x86_64; do
+  lipo "$binary" -verify_arch "$arch"
+done
