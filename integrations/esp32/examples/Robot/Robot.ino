@@ -8,11 +8,6 @@
 const char* kSsid = "your-wifi";
 const char* kPassword = "your-password";
 
-const char kMap[] =
-    "{\"eyes\":{\"kind\":\"joints\",\"names\":[\"pan\",\"tilt\"],\"fields\":[\"pos\"],"
-    "\"hz\":50,\"command\":\"position\",\"safe\":\"hold\","
-    "\"limits\":{\"pos\":[[-0.6,0.6],[-0.4,0.4]]}}}";
-
 const int kPanPin = 18;
 const int kTiltPin = 19;
 const int kEstopPin = -1;
@@ -42,9 +37,15 @@ const char* const kFaults[] = {
 
 rlmesh::Provisioning provisioning;
 rlmesh::Robot robot;
-int eyes = -1;
+auto eyes = robot.add("eyes", rlmesh::Joints<2>{
+                                  .names = {"pan", "tilt"},
+                                  .hz = 50,
+                                  .command = rlmesh::Command::Position,
+                                  .safe = rlmesh::Safe::Hold,
+                                  .limits = {{-0.6, 0.6}, {-0.4, 0.4}},
+                              });
 uint32_t bootHeldSince = 0;
-float target[2] = {0, 0};
+std::array<float, 2> target = {0, 0};
 uint8_t lastPhase = 255;
 uint32_t lastReport = 0;
 uint8_t lastRefusal = 0;
@@ -85,12 +86,11 @@ void setup() {
 
 void join() {
   bool latched = robot.estopLatched();
-  bool ok = robot.begin(provisioning, kMap);
+  bool ok = robot.begin(provisioning);
   if (latched) robot.estop("e-stop latched before a new home");
   if (!ok) {
     Serial.println("not provisioned: rlmesh devices provision --port <this port> --name eye-3");
   }
-  eyes = robot.part("eyes");
 }
 
 void report() {
@@ -135,7 +135,7 @@ void report() {
     robot.viewCounts(sealed, signedViews, droppedViews);
     Serial.printf("  views: %llu sealed, %llu signed, %llu dropped\n", (unsigned long long)sealed,
                   (unsigned long long)signedViews, (unsigned long long)droppedViews);
-    robot.printChunkTiming(Serial, eyes);
+    robot.printChunkTiming(Serial, robot.part("eyes"));
     robot.printDatagram(Serial);
   }
 }
@@ -171,13 +171,12 @@ void loop() {
   estopButton();
   report();
   uint64_t now = rlmesh::esp32::nowUs();
-  if (eyes < 0 || !robot.running() || now < nextTick) return;
+  if (!robot.running() || now < nextTick) return;
   nextTick = now + kPeriodUs;
-  rlmesh_device_tick_t t;
-  if (robot.tick(eyes, t) == rlmesh::TickResult::Ready && t.has_action && t.value_len == sizeof target) {
-    memcpy(target, t.value, sizeof target);
+  if (auto command = eyes.due()) {
+    target = *command;
     writeServo(kPanPin, target[0]);
     writeServo(kTiltPin, target[1]);
   }
-  robot.publish(eyes, target);
+  eyes.publish(target);
 }
