@@ -19,10 +19,10 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 # Not `workspace = true`: that entry keeps the default features (std).
-rlmesh-session-core = { version = "=0.2.0-alpha.2", path = "../rlmesh-session-core", default-features = false, features = [
+rlmesh-session-core = { version = "=0.2.0-alpha.3", path = "../rlmesh-session-core", default-features = false, features = [
   "fleet",
 ] }
-rlmesh-tether = { version = "=0.2.0-alpha.2", path = "../rlmesh-tether" }
+rlmesh-tether = { version = "=0.2.0-alpha.3", path = "../rlmesh-tether" }
 zeroize = { version = "1", default-features = false }
 bytes = { version = "1.9", default-features = false }
 

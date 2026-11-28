@@ -7,7 +7,7 @@ This crate publishes the `rlmesh` binary and is also embedded in the Python pack
 ## Installation
 
 ```bash
-cargo install rlmesh-cli --version 0.2.0-alpha.2
+cargo install rlmesh-cli --version 0.2.0-alpha.3
 ```
 
 ## Commands

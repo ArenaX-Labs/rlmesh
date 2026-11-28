@@ -225,6 +225,7 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
     errors.extend(_validate_doc_versions(repo_root, workspace_version))
     errors.extend(_validate_rust_version(repo_root))
     errors.extend(_validate_capi_version(repo_root, workspace_version))
+    errors.extend(_validate_binding_versions(repo_root, workspace_version))
 
     return errors
 
@@ -993,6 +994,36 @@ def _check_capi_version(header_text: str, workspace_version: str) -> list[str]:
             f"version is {workspace_version!r}; scripts/bump_version.py keeps them equal"
         ]
     return []
+
+
+BINDING_VERSIONS = (
+    (Path("javascript/rlmesh/package.json"), r'^  "version": "([^"]*)"'),
+    (Path("integrations/unity/package.json"), r'^  "version": "([^"]*)"'),
+    (Path("integrations/unity/package.json"), r'^    "com\.rlmesh\.rlmesh": "([^"]*)"'),
+    (Path("csharp/src/RLMesh/RLMesh.csproj"), r"<Version>([^<]*)</Version>"),
+)
+
+
+def _validate_binding_versions(
+    repo_root: Path, workspace_version: str | None
+) -> list[str]:
+    """Binding manifests that scripts/bump_version.py rewrites carry the workspace version."""
+    if workspace_version is None:
+        return []
+    errors: list[str] = []
+    for path, pattern in BINDING_VERSIONS:
+        manifest = repo_root / path
+        if not manifest.is_file():
+            continue
+        match = re.search(pattern, manifest.read_text(encoding="utf-8"), re.MULTILINE)
+        if match is None:
+            errors.append(f"{path}: no version matching {pattern!r}")
+        elif match.group(1) != workspace_version:
+            errors.append(
+                f"{path} has {match.group(1)!r} but the workspace version is "
+                f"{workspace_version!r}; scripts/bump_version.py keeps them equal"
+            )
+    return errors
 
 
 def _check_rust_version(mise_rust: Any, rust_version: Any) -> list[str]:

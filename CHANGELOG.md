@@ -6,12 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 
 ## [Unreleased]
 
-### Fixed
+## [0.2.0-alpha.3] - 2026-11-27
 
-- A served model without a `spec` (a text or LLM harness) that defines `predict_batch` or `predict_chunk_batch` now gets every coalesced session's rows in one call, each row with its own context, instead of one call per session. Each session keeps its own outcome: an action that does not fit fails only that session. This holds in Python and in Rust, and so in C, C++ and C#. A vector env served to such a model at `execution_horizon > 1` uses `predict_chunk_batch` too.
-- A served model's batches no longer alternate between sessions that fell out of step. After a forward ends, the next batch stays open up to `batch_window_ms` for the sessions that forward answered.
-- A NumPy, PyTorch or JAX model's `predict_batch` can return a text action as a list of one string per row, the shape its text observations arrive in.
-- On macOS, saving or deleting stored credentials no longer reads the Keychain secret first, so signing in, signing out and each token refresh read it once fewer.
+A served model answers many sessions in one call even without a `spec`, a Python model can overlap its predicts, every step that ends an episode carries its final observation, and on macOS the CLI is one signed binary whose Keychain approval sticks. This release is wire revision 2, as 0.2.0-alpha.2 is: the two talk to each other, and images built on 0.2.0-alpha.2 need no rebuild.
 
 ### Added
 
@@ -19,11 +16,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/),
 - The recorder keeps that final observation. Each image-role video gains the episode's last frame, and `trajectory.parquet` gains a `final_obs` column (with `final_obs_images` when observations carry images), filled on the row of the step that ended the episode.
 - A Python model can overlap its predicts, for a model that waits on an LLM or a remote API rather than computing. An `async def predict` runs up to 32 calls at once by default. A plain `predict` overlaps only when the model sets `concurrency = N` (or `Model(fn, concurrency=N)`), and then runs on N threads. The sessions a served model answers together run side by side; on a model without a `spec`, a predict that raises fails only its own session, while on a spec'd model it fails the round. A model with `predict_batch` or `predict_chunk_batch` batches instead and is refused `concurrency`, and so is a model that calls inner models. `concurrency` may be set on the class, the instance (in `__init__` or `load()`) or a wrapped policy. Python only for now.
 - C++: `rlmesh::ext::from_vector` and `to_vector` copy between a `std::vector<T>` and a tensor whose dtype follows `T` (`ext::dtype_of<T>()`), so an env builds an observation or reads an action without byte sizes, dtype checks or casts.
-- The macOS wheels bundle a Developer ID-signed `rlmesh` binary, and `rlmesh`, `rlmeshd`, `docker-credential-rlmesh` and `python -m rlmesh` run it. macOS then remembers Keychain access for that one signature, across upgrades, instead of asking again for each Python interpreter. `rlmesh` started as `docker-credential-rlmesh` or `rlmeshd` acts as that command.
+- macOS: the macOS wheels carry one Developer ID-signed `rlmesh` binary, and `rlmesh`, `rlmeshd`, `docker-credential-rlmesh` and `python -m rlmesh` all run it, so macOS asks once for Keychain access and keeps that approval across upgrades, instead of asking again for each Python interpreter. The binary is signed, not notarized. `rlmesh` started as `docker-credential-rlmesh` or `rlmeshd` acts as that command.
+
+### Changed
+
+#### Other bindings (not published)
+
+- Unreal: the plugin's build rules, `mise run test:cxx` and `mise run release:cxx:package` support a native Windows (MSVC) host, and the build fails with a clear error when the unpacked RLMesh libraries are missing. `URLMeshEnvComponent` makes its owner's root Movable at BeginPlay (turn off **Make Owner Movable** for an env that only observes a static scene, to keep its baked lighting), gives each env a `Random` stream that a seeded reset reseeds before `ResetEnv` runs, and exports `LogRLMesh` to env components in other modules. Built and tested on Linux only: the plugin has not yet been built on Windows or run in the Unreal Editor.
+- Unity: the package targets Unity 6 (`RLMeshEnvBehaviour` no longer clashes with `UnityEngine.Space`, and the reload preflight reads the Enter Play Mode options from `EditorSettings`), and its version and its core dependency follow the RLMesh release. It no longer ships the Reach Target sample. Only its core runtime is compiled and tested, on Linux; it has not yet been run in the Unity Editor, and Unity is not supported until its [release gates](docs/unity-release-checklist.md) pass.
 
 ### Removed
 
 - The examples that moved to [rlmesh-examples](https://github.com/ArenaX-Labs/rlmesh-examples/tree/main): `chrono` (now `cpp/chrono`), and the Python `byo_container`, `coding_agent`, `isaacsim`, `llm_agent`, `sandbox`, `v2/ur10e_mujoco` and `vla_adapters` (now `byo-container`, `coding-agent`, `isaacsim/franka-reach`, `llm-agent`, `sandbox`, `ur10e-mujoco` and `vla-adapters`).
+
+### Fixed
+
+- A served model without a `spec` (a text or LLM harness) that defines `predict_batch` or `predict_chunk_batch` now gets every coalesced session's rows in one call, each row with its own context, instead of one call per session. Each session keeps its own outcome: an action that does not fit fails only that session. This holds in Python and in Rust, and so in C, C++ and C#. A vector env served to such a model at `execution_horizon > 1` uses `predict_chunk_batch` too.
+- A served model's batches no longer alternate between sessions that fell out of step. After a forward ends, the next batch stays open up to `batch_window_ms` for the sessions that forward answered.
+- A NumPy, PyTorch or JAX model's `predict_batch` can return a text action as a list of one string per row, the shape its text observations arrive in.
+- On macOS, saving or deleting stored credentials no longer reads the Keychain secret first, so signing in, signing out and each token refresh read it once fewer.
 
 ## [0.2.0-alpha.2] - 2026-11-25
 
@@ -448,7 +459,8 @@ RLMesh connects models to environments across process, dependency, and machine b
 - The describe envelope's `runtime` block advertises the edition handshake under the wire's names: `protocol_generation`, `supported_workflow_editions`, and `preferred_workflow_edition`, and `rlmesh.build_info().supported_workflow_editions` lists the editions a build can drive.
 - `python -m rlmesh.serve` warns at startup when the served model declares no `spec`: automated input synthesis requires a `ModelSpec`.
 
-[Unreleased]: https://github.com/ArenaX-Labs/rlmesh/compare/v0.2.0-alpha.2...HEAD
+[Unreleased]: https://github.com/ArenaX-Labs/rlmesh/compare/v0.2.0-alpha.3...HEAD
+[0.2.0-alpha.3]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.2.0-alpha.3
 [0.2.0-alpha.2]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.2.0-alpha.2
 [0.2.0-alpha.1]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.2.0-alpha.1
 [0.1.0]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0

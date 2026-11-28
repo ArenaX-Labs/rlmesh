@@ -42,6 +42,7 @@ class SigningTests(unittest.TestCase):
 printf '%s\\n' "$(basename "$0") $*" >> "$RUNNER_TEMP/commands"
 case "$(basename "$0") $*" in
   "security find-identity"*) echo '1) ABC "Developer ID Application: Fixture (TEAM)"' ;;
+  "security list-keychains -d user") echo '    "/Users/runner/Library/Keychains/login.keychain-db"' ;;
   "xcrun notarytool submit"*) echo '{"id":"fixture-submission","status":"Invalid"}'; exit 1 ;;
   "xcrun notarytool log"*) echo '{"fixture":"failure log"}' > "${!#}" ;;
 esac
@@ -142,6 +143,52 @@ esac
         )
         self.assertTrue((self.root / "rlmesh-signing.p12").exists())
         self.assertFalse((self.root / "rlmesh-notary.p8").exists())
+
+    def test_the_intermediate_is_imported_and_searched_before_the_identity_lookup(self):
+        self.credentials()
+        result = self.invoke("sign", "target/macos-cli/rlmesh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        keychain = f"{self.root}/rlmesh-signing.keychain-db"
+        login = "/Users/runner/Library/Keychains/login.keychain-db"
+        calls = (self.root / "commands").read_text().splitlines()
+        p12 = calls.index(
+            f"security import {self.root}/rlmesh-signing.p12 -k {keychain} -P fixture -T /usr/bin/codesign"
+        )
+        intermediate = calls.index(
+            f"security import {ROOT}/scripts/apple/DeveloperIDG2CA.cer -k {keychain}"
+        )
+        searched = calls.index(f"security list-keychains -d user -s {keychain} {login}")
+        lookup = next(
+            i for i, call in enumerate(calls) if call.startswith("security find-identity")
+        )
+        self.assertLess(p12, intermediate)
+        self.assertLess(intermediate, searched)
+        self.assertLess(searched, lookup)
+        self.assertEqual(self.invoke("cleanup").returncode, 0)
+        calls = (self.root / "commands").read_text().splitlines()
+        self.assertIn(f"security list-keychains -d user -s {login}", calls)
+        self.assertFalse((self.root / "rlmesh-keychain-search-list").exists())
+
+    def test_a_changed_intermediate_is_refused(self):
+        self.credentials()
+        scripts = self.root / "scripts"
+        (scripts / "apple").mkdir(parents=True)
+        script = scripts / "release-macos-sign.sh"
+        script.write_text((ROOT / "scripts/release-macos-sign.sh").read_text())
+        (scripts / "apple/DeveloperIDG2CA.cer").write_bytes(b"not apple")
+        result = subprocess.run(
+            ["bash", str(script), "sign", "target/macos-cli/rlmesh"],
+            cwd=self.root,
+            env=self.env,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("pinned SHA-256", result.stderr)
+        self.assertNotIn(
+            "security find-identity", (self.root / "commands").read_text()
+        )
 
     def test_optional_notarization_refuses_a_partial_notary_key(self):
         self.env["RLMESH_MACOS_NOTARIZE"] = "optional"
